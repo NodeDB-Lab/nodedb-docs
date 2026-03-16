@@ -1,0 +1,3 @@
+# Oxidoc build artifacts
+.oxidoc-dev/
+dist/

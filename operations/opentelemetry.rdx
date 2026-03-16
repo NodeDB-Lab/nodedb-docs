@@ -1,0 +1,8 @@
+---
+title: OpenTelemetry Tracing
+description: Exporting traces via OTLP to Jaeger, Grafana Tempo, etc.
+---
+
+# OpenTelemetry Tracing
+
+TODO

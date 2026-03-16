@@ -1,0 +1,8 @@
+---
+title: Retention & Tiering
+description: RAM memtable to hourly NVMe flush to daily Parquet compaction.
+---
+
+# Retention & Tiering
+
+TODO

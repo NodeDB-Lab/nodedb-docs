@@ -1,0 +1,8 @@
+---
+title: Pre-Filtering
+description: AVX-512 Roaring Bitmap filtering during HNSW traversal.
+---
+
+# Pre-Filtering
+
+TODO

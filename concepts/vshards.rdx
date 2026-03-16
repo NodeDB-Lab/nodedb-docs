@@ -1,0 +1,8 @@
+---
+title: Virtual Shards
+description: 1024 vShards mapped to Raft groups for elastic scaling.
+---
+
+# Virtual Shards
+
+TODO

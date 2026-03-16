@@ -1,0 +1,8 @@
+---
+title: Compression
+description: Gorilla XOR for metrics, Zstd dictionaries for logs.
+---
+
+# Compression
+
+TODO

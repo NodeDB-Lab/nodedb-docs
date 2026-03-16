@@ -1,0 +1,8 @@
+---
+title: WAL Record Format
+description: Binary layout: magic, version, record_type, LSN, tenant, CRC32C.
+---
+
+# WAL Record Format
+
+TODO

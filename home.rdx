@@ -1,0 +1,36 @@
+---
+title: NodeDB - Hybrid Database for AI Workloads
+description: Distributed hybrid database unifying vectors, metadata, CRDTs, and timeseries into a single binary.
+layout: landing
+---
+
+<Hero title="NodeDB">
+<HeroAction label="Get Started" href="/docs/getting-started/quickstart" variant="primary" />
+<HeroAction label="GitHub" href="https://github.com/NodeDB/nodedb" variant="secondary" />
+
+One database for vectors, metadata, CRDTs, and timeseries. Built for multi-modal AI and agentic workloads.
+</Hero>
+
+<Section bg="muted">
+<FeatureGrid>
+<Feature icon="brain" title="Four Engines, One Binary">
+Vector (HNSW), Sparse/Metadata (B-Tree + BM25), CRDT (episodic state), and Timeseries — unified with shared storage and zero network hops.
+</Feature>
+<Feature icon="zap" title="Hybrid Execution Model">
+Tokio Control Plane for query planning, Thread-per-Core Data Plane with io_uring for physical execution. Lock-free SPSC bridge between them.
+</Feature>
+<Feature icon="database" title="Postgres Compatible">
+Speaks the PostgreSQL wire protocol. Use psql, any ORM, or any Postgres driver in any language.
+</Feature>
+<Feature icon="shield" title="Production Grade">
+WAL with O_DIRECT, tiered storage (RAM/NVMe/S3), Multi-Raft consensus, mTLS, tenant isolation.
+</Feature>
+</FeatureGrid>
+</Section>
+
+<Section>
+<CTA title="Ready to build?" description="Get NodeDB running in under a minute.">
+<HeroAction label="Quickstart" href="/docs/getting-started/quickstart" variant="primary" />
+<HeroAction label="Architecture" href="/docs/architecture/overview" variant="secondary" />
+</CTA>
+</Section>
