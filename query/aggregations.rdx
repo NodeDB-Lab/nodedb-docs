@@ -1,0 +1,358 @@
+---
+title: Aggregations & Window Functions
+description: COUNT, SUM, AVG, GROUP BY, HAVING, window functions.
+---
+
+# Aggregations & Window Functions
+
+Aggregations compute summaries over groups of rows. Window functions compute values relative to each row in a window.
+
+## Basic Aggregates
+
+### COUNT
+
+Count rows:
+
+```sql
+SELECT COUNT(*) FROM documents;
+```
+
+Count non-null values:
+
+```sql
+SELECT COUNT(author) FROM documents;  -- excludes NULL
+```
+
+Count distinct:
+
+```sql
+SELECT COUNT(DISTINCT author) FROM documents;
+```
+
+### SUM
+
+Sum numeric values:
+
+```sql
+SELECT SUM(views) as total_views FROM documents;
+```
+
+With GROUP BY:
+
+```sql
+SELECT category, SUM(views) as total
+FROM documents
+GROUP BY category;
+```
+
+### AVG
+
+Average:
+
+```sql
+SELECT AVG(views) as avg_views FROM documents;
+```
+
+### MIN / MAX
+
+Minimum and maximum:
+
+```sql
+SELECT
+  MIN(created_at) as oldest,
+  MAX(created_at) as newest,
+  MAX(views) as max_views
+FROM documents;
+```
+
+## GROUP BY
+
+Aggregate by column values:
+
+```sql
+SELECT
+  category,
+  COUNT(*) as doc_count,
+  AVG(views) as avg_views
+FROM documents
+GROUP BY category;
+```
+
+Multiple columns:
+
+```sql
+SELECT
+  category,
+  status,
+  COUNT(*) as count
+FROM documents
+GROUP BY category, status;
+```
+
+## HAVING
+
+Filter groups (applied after aggregation):
+
+```sql
+SELECT
+  category,
+  COUNT(*) as count
+FROM documents
+GROUP BY category
+HAVING COUNT(*) > 10;  -- only categories with >10 docs
+```
+
+Complex conditions:
+
+```sql
+SELECT
+  author,
+  SUM(views) as total_views,
+  AVG(views) as avg_views
+FROM documents
+GROUP BY author
+HAVING SUM(views) > 1000 AND AVG(views) > 50;
+```
+
+## DISTINCT
+
+Remove duplicate rows:
+
+```sql
+SELECT DISTINCT category FROM documents;
+```
+
+With aggregates (all unique combinations):
+
+```sql
+SELECT DISTINCT category, status FROM documents;
+```
+
+## All Aggregate Functions
+
+| Function | Description | Example |
+|:---------|:------------|:--------|
+| COUNT(*) | Count all rows | COUNT(*) |
+| COUNT(col) | Count non-null | COUNT(author) |
+| SUM(col) | Sum numeric | SUM(views) |
+| AVG(col) | Average | AVG(views) |
+| MIN(col) | Minimum | MIN(created_at) |
+| MAX(col) | Maximum | MAX(views) |
+| STDDEV(col) | Standard deviation | STDDEV(views) |
+| VARIANCE(col) | Variance | VARIANCE(views) |
+
+## Window Functions
+
+Compute values relative to a window of rows. Return one value per input row (unlike GROUP BY).
+
+### ROW_NUMBER
+
+Rank rows sequentially:
+
+```sql
+SELECT
+  id,
+  title,
+  views,
+  ROW_NUMBER() OVER (ORDER BY views DESC) as rank
+FROM documents;
+```
+
+Result:
+```
+id | title | views | rank
+1  | Doc A | 1000  | 1
+2  | Doc B | 900   | 2
+3  | Doc C | 900   | 3
+4  | Doc D | 800   | 4
+```
+
+### RANK
+
+Rank with ties getting same rank:
+
+```sql
+SELECT
+  id,
+  title,
+  views,
+  RANK() OVER (ORDER BY views DESC) as rank
+FROM documents;
+```
+
+Result (note ties):
+```
+id | title | views | rank
+1  | Doc A | 1000  | 1
+2  | Doc B | 900   | 2
+3  | Doc C | 900   | 2
+4  | Doc D | 800   | 4
+```
+
+### DENSE_RANK
+
+Rank with no gaps:
+
+```sql
+SELECT
+  id,
+  title,
+  views,
+  DENSE_RANK() OVER (ORDER BY views DESC) as rank
+FROM documents;
+```
+
+Result:
+```
+id | title | views | rank
+1  | Doc A | 1000  | 1
+2  | Doc B | 900   | 2
+3  | Doc C | 900   | 2
+4  | Doc D | 800   | 3
+```
+
+### LAG / LEAD
+
+Access previous/next row:
+
+```sql
+SELECT
+  id,
+  views,
+  LAG(views) OVER (ORDER BY created_at) as prev_views,
+  LEAD(views) OVER (ORDER BY created_at) as next_views
+FROM documents;
+```
+
+Useful for detecting changes over time.
+
+### FIRST_VALUE / LAST_VALUE
+
+First and last in window:
+
+```sql
+SELECT
+  id,
+  title,
+  views,
+  FIRST_VALUE(title) OVER (ORDER BY created_at) as first_doc,
+  LAST_VALUE(title) OVER (ORDER BY created_at) as last_doc
+FROM documents;
+```
+
+### Running Total
+
+Cumulative sum:
+
+```sql
+SELECT
+  id,
+  views,
+  SUM(views) OVER (ORDER BY created_at) as cumulative_views
+FROM documents;
+```
+
+Result:
+```
+id | views | cumulative_views
+1  | 100   | 100
+2  | 200   | 300
+3  | 150   | 450
+```
+
+## PARTITION BY
+
+Separate windows by column value:
+
+```sql
+SELECT
+  author,
+  title,
+  views,
+  ROW_NUMBER() OVER (PARTITION BY author ORDER BY views DESC) as author_rank
+FROM documents;
+```
+
+Each author gets their own ranking (1, 2, 3...).
+
+Multiple partitions:
+
+```sql
+SELECT
+  category,
+  author,
+  title,
+  views,
+  RANK() OVER (PARTITION BY category, author ORDER BY views DESC) as rank
+FROM documents;
+```
+
+## Complex Window Examples
+
+### Top 3 per Category
+
+```sql
+WITH ranked AS (
+  SELECT
+    category,
+    title,
+    views,
+    ROW_NUMBER() OVER (PARTITION BY category ORDER BY views DESC) as rank
+  FROM documents
+)
+SELECT * FROM ranked WHERE rank <= 3;
+```
+
+### Percent of Total
+
+```sql
+SELECT
+  category,
+  COUNT(*) as count,
+  100.0 * COUNT(*) / SUM(COUNT(*)) OVER () as percent
+FROM documents
+GROUP BY category;
+```
+
+### Moving Average
+
+```sql
+SELECT
+  id,
+  views,
+  AVG(views) OVER (
+    ORDER BY created_at
+    ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+  ) as moving_avg_7_days
+FROM documents;
+```
+
+Average of current and 6 previous days.
+
+## Performance Tips
+
+1. **Create indexes on GROUP BY columns**: Faster grouping
+2. **Filter before GROUP BY**: WHERE reduces rows before aggregation
+3. **Use HAVING instead of WHERE for aggregate conditions**
+4. **Window functions are usually fast**: No shuffle required
+
+## Combining Aggregate and Window Functions
+
+```sql
+SELECT
+  category,
+  COUNT(*) as cat_count,
+  COUNT(*) OVER () as total_docs,
+  100.0 * COUNT(*) / COUNT(*) OVER () as percent
+FROM documents
+GROUP BY category;
+```
+
+Aggregation (GROUP BY) then windowing over groups.
+
+## Next Steps
+
+- [SELECT](/query/select) — Basic aggregation syntax
+- [JOINs](/query/joins) — Aggregate across multiple collections
+- [EXPLAIN](/query/explain) — Optimize aggregate queries
+- [Functions](/query/functions) — All aggregate functions

@@ -1,0 +1,464 @@
+---
+title: iOS and Android
+description: Integrate NodeDB-Lite on mobile platforms with Swift and Kotlin bindings
+---
+
+# iOS and Android Integration
+
+NodeDB-Lite ships with C FFI bindings and language wrappers for iOS (Swift) and Android (Kotlin/JNI).
+
+## Architecture
+
+```
+┌─ NodeDB-Lite Native (Rust) ─────┐
+│ (aarch64-apple-ios)             │
+│ (aarch64-linux-android)         │
+└──────────┬──────────────────────┘
+           │
+      C FFI (nodedb-lite-ffi)
+           │
+    ┌──────┴───────┐
+    │              │
+  Swift        Kotlin/JNI
+  (iOS)        (Android)
+```
+
+## C FFI API
+
+Low-level C bindings (used by both platforms):
+
+```c
+// Handle management
+typedef struct NodeDbHandle NodeDbHandle;
+
+NodeDbHandle* nodedb_open(const char* path, const char* peer_id);
+int nodedb_close(NodeDbHandle* handle);
+int nodedb_flush(NodeDbHandle* handle);
+
+// Vector operations
+int nodedb_vector_insert(
+    NodeDbHandle* handle,
+    const char* collection,
+    const char* id,
+    const float* embedding,
+    int dim
+);
+
+int nodedb_vector_search(
+    NodeDbHandle* handle,
+    const char* collection,
+    const float* query,
+    int dim,
+    int k,
+    char** out_json  // caller must free with nodedb_free_string
+);
+
+int nodedb_vector_delete(
+    NodeDbHandle* handle,
+    const char* collection,
+    const char* id
+);
+
+// Graph operations
+int nodedb_graph_insert_edge(
+    NodeDbHandle* handle,
+    const char* from_node,
+    const char* to_node,
+    const char* edge_type
+);
+
+int nodedb_graph_traverse(
+    NodeDbHandle* handle,
+    const char* start_node,
+    int depth,
+    char** out_json  // subgraph as JSON
+);
+
+int nodedb_graph_delete_edge(
+    NodeDbHandle* handle,
+    const char* edge_id
+);
+
+// Document operations
+int nodedb_document_put(
+    NodeDbHandle* handle,
+    const char* collection,
+    const char* id,
+    const char* json_doc
+);
+
+int nodedb_document_get(
+    NodeDbHandle* handle,
+    const char* collection,
+    const char* id,
+    char** out_json
+);
+
+int nodedb_document_delete(
+    NodeDbHandle* handle,
+    const char* collection,
+    const char* id
+);
+
+// Utility
+void nodedb_free_string(char* ptr);
+```
+
+### Error Codes
+
+```c
+#define NODEDB_OK               0
+#define NODEDB_ERR_NULL        -1   // Null pointer
+#define NODEDB_ERR_UTF8        -2   // Invalid UTF-8
+#define NODEDB_ERR_FAILED      -3   // Operation failed
+#define NODEDB_ERR_NOT_FOUND   -4   // Collection/doc not found
+```
+
+## iOS Integration
+
+### 1. Link the Framework
+
+Add `nodedb-lite-ffi` (compiled to `aarch64-apple-ios`) to your Xcode project:
+
+```bash
+# In your Cargo.toml workspace
+cargo build --target aarch64-apple-ios --release
+# Outputs: target/aarch64-apple-ios/release/libnodedb_lite_ffi.a
+```
+
+Add the static library and header to Xcode:
+- Link Binary: `libnodedb_lite_ffi.a`
+- Header Search Paths: path to `nodedb-lite-ffi/include/`
+
+### 2. Swift Wrapper
+
+Create a Swift wrapper class:
+
+```swift
+import Foundation
+
+class NodeDbLite {
+    private var handle: UnsafeMutableRawPointer?
+
+    init?(at path: String, peerId: String) {
+        guard let h = nodedb_open(path, peerId) else {
+            return nil
+        }
+        self.handle = h
+    }
+
+    deinit {
+        if let h = handle {
+            nodedb_close(h)
+        }
+    }
+
+    func flush() throws {
+        guard let h = handle else { throw NSError(domain: "NodeDb", code: -1) }
+        let result = nodedb_flush(h)
+        guard result == NODEDB_OK else { throw NodeDbError.flush }
+    }
+
+    func vectorInsert(
+        collection: String,
+        id: String,
+        embedding: [Float]
+    ) throws {
+        guard let h = handle else { throw NSError(domain: "NodeDb", code: -1) }
+        let result = embedding.withUnsafeBytes { buf in
+            nodedb_vector_insert(h, collection, id, buf.baseAddress?.assumingMemoryBound(to: Float.self), Int32(embedding.count))
+        }
+        guard result == NODEDB_OK else { throw NodeDbError.vectorInsert }
+    }
+
+    func vectorSearch(
+        collection: String,
+        query: [Float],
+        k: Int
+    ) throws -> [[String: Any]] {
+        guard let h = handle else { throw NSError(domain: "NodeDb", code: -1) }
+
+        var outJson: UnsafeMutablePointer<CChar>? = nil
+        let result = query.withUnsafeBytes { buf in
+            nodedb_vector_search(h, collection, buf.baseAddress?.assumingMemoryBound(to: Float.self), Int32(query.count), Int32(k), &outJson)
+        }
+
+        guard result == NODEDB_OK else { throw NodeDbError.vectorSearch }
+        defer { if let j = outJson { nodedb_free_string(j) } }
+
+        guard let j = outJson, let data = String(cString: j).data(using: .utf8) else {
+            return []
+        }
+        return try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
+    }
+
+    func vectorDelete(collection: String, id: String) throws {
+        guard let h = handle else { throw NSError(domain: "NodeDb", code: -1) }
+        let result = nodedb_vector_delete(h, collection, id)
+        guard result == NODEDB_OK else { throw NodeDbError.vectorDelete }
+    }
+
+    func graphInsertEdge(from: String, to: String, type: String) throws {
+        guard let h = handle else { throw NSError(domain: "NodeDb", code: -1) }
+        let result = nodedb_graph_insert_edge(h, from, to, type)
+        guard result == NODEDB_OK else { throw NodeDbError.graphInsert }
+    }
+
+    func graphTraverse(from: String, depth: Int) throws -> [String: Any] {
+        guard let h = handle else { throw NSError(domain: "NodeDb", code: -1) }
+        var outJson: UnsafeMutablePointer<CChar>? = nil
+        let result = nodedb_graph_traverse(h, from, Int32(depth), &outJson)
+
+        guard result == NODEDB_OK else { throw NodeDbError.graphTraverse }
+        defer { if let j = outJson { nodedb_free_string(j) } }
+
+        guard let j = outJson, let data = String(cString: j).data(using: .utf8) else {
+            return [:]
+        }
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    }
+
+    func documentPut(collection: String, id: String, json: [String: Any]) throws {
+        guard let h = handle else { throw NSError(domain: "NodeDb", code: -1) }
+        let jsonData = try JSONSerialization.data(withJSONObject: json)
+        let jsonStr = String(data: jsonData, encoding: .utf8) ?? "{}"
+        let result = nodedb_document_put(h, collection, id, jsonStr)
+        guard result == NODEDB_OK else { throw NodeDbError.documentPut }
+    }
+
+    func documentGet(collection: String, id: String) throws -> [String: Any]? {
+        guard let h = handle else { throw NSError(domain: "NodeDb", code: -1) }
+        var outJson: UnsafeMutablePointer<CChar>? = nil
+        let result = nodedb_document_get(h, collection, id, &outJson)
+
+        guard result == NODEDB_OK || result == NODEDB_ERR_NOT_FOUND else { throw NodeDbError.documentGet }
+        guard result == NODEDB_OK, let j = outJson else { return nil }
+        defer { nodedb_free_string(j) }
+
+        guard let data = String(cString: j).data(using: .utf8) else { return nil }
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    func documentDelete(collection: String, id: String) throws {
+        guard let h = handle else { throw NSError(domain: "NodeDb", code: -1) }
+        let result = nodedb_document_delete(h, collection, id)
+        guard result == NODEDB_OK else { throw NodeDbError.documentDelete }
+    }
+}
+
+enum NodeDbError: Error {
+    case flush, vectorInsert, vectorSearch, vectorDelete
+    case graphInsert, graphTraverse, graphDelete
+    case documentPut, documentGet, documentDelete
+}
+```
+
+### 3. Swift Usage
+
+```swift
+let db = NodeDbLite(at: "\(NSHomeDirectory())/Documents/mydb.redb", peerId: "ios-01")!
+
+// Insert vectors
+try db.vectorInsert(collection: "docs", id: "doc-1", embedding: [0.1, 0.2, 0.3])
+
+// Search
+let results = try db.vectorSearch(collection: "docs", query: [0.1, 0.2, 0.3], k: 5)
+for result in results {
+    print("ID: \(result["id"] ?? "unknown"), Distance: \(result["distance"] ?? 0.0)")
+}
+
+// Graph
+try db.graphInsertEdge(from: "alice", to: "bob", type: "knows")
+let sg = try db.graphTraverse(from: "alice", depth: 2)
+
+// Documents
+try db.documentPut(collection: "notes", id: "n1", json: ["title": "Hello"])
+if let doc = try db.documentGet(collection: "notes", id: "n1") {
+    print("Title: \(doc["title"] ?? "untitled")")
+}
+
+// Persist
+try db.flush()
+```
+
+## Android Integration
+
+### 1. NDK Setup
+
+Install Android NDK and add to your project:
+
+```gradle
+// build.gradle
+android {
+    ndkVersion = "26.1.10909125"
+
+    defaultConfig {
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+    }
+}
+```
+
+Compile NodeDB-Lite for `aarch64-linux-android`:
+
+```bash
+cargo build --target aarch64-linux-android --release
+# Copy target/aarch64-linux-android/release/libnodedb_lite_ffi.so
+# to app/src/main/jniLibs/arm64-v8a/
+```
+
+### 2. Kotlin Wrapper
+
+Create a Kotlin class wrapping the C FFI:
+
+```kotlin
+package com.nodedb.lite
+
+class NodeDbLite(path: String, peerId: String) {
+    private external fun nativeOpen(path: String, peerId: String): Long
+    private external fun nativeClose(handle: Long): Int
+    private external fun nativeFlush(handle: Long): Int
+
+    private external fun nativeVectorInsert(
+        handle: Long,
+        collection: String,
+        id: String,
+        embedding: FloatArray
+    ): Int
+
+    private external fun nativeVectorSearch(
+        handle: Long,
+        collection: String,
+        query: FloatArray,
+        k: Int
+    ): String?
+
+    private external fun nativeGraphInsertEdge(
+        handle: Long,
+        from: String,
+        to: String,
+        type: String
+    ): Int
+
+    private external fun nativeGraphTraverse(
+        handle: Long,
+        start: String,
+        depth: Int
+    ): String?
+
+    private external fun nativeDocumentPut(
+        handle: Long,
+        collection: String,
+        id: String,
+        json: String
+    ): Int
+
+    private external fun nativeDocumentGet(
+        handle: Long,
+        collection: String,
+        id: String
+    ): String?
+
+    private val handle = nativeOpen(path, peerId)
+
+    fun flush(): Boolean = nativeFlush(handle) == 0
+
+    fun vectorInsert(collection: String, id: String, embedding: FloatArray): Boolean {
+        return nativeVectorInsert(handle, collection, id, embedding) == 0
+    }
+
+    fun vectorSearch(collection: String, query: FloatArray, k: Int): List<Map<String, Any>>? {
+        val json = nativeVectorSearch(handle, collection, query, k) ?: return null
+        return parseJsonResults(json)
+    }
+
+    fun graphInsertEdge(from: String, to: String, type: String): Boolean {
+        return nativeGraphInsertEdge(handle, from, to, type) == 0
+    }
+
+    fun graphTraverse(start: String, depth: Int): Map<String, Any>? {
+        val json = nativeGraphTraverse(handle, start, depth) ?: return null
+        return parseJsonGraph(json)
+    }
+
+    fun documentPut(collection: String, id: String, json: Map<String, Any>): Boolean {
+        val jsonStr = jsonToString(json)
+        return nativeDocumentPut(handle, collection, id, jsonStr) == 0
+    }
+
+    fun documentGet(collection: String, id: String): Map<String, Any>? {
+        val json = nativeDocumentGet(handle, collection, id) ?: return null
+        return parseJson(json)
+    }
+
+    fun close() {
+        nativeClose(handle)
+    }
+
+    companion object {
+        init {
+            System.loadLibrary("nodedb_lite_ffi")
+        }
+    }
+
+    private fun parseJsonResults(json: String): List<Map<String, Any>> {
+        // Use org.json or kotlinx.serialization
+        return emptyList()
+    }
+
+    private fun parseJsonGraph(json: String): Map<String, Any> {
+        return emptyMap()
+    }
+
+    private fun parseJson(json: String): Map<String, Any> {
+        return emptyMap()
+    }
+
+    private fun jsonToString(map: Map<String, Any>): String {
+        return "{}"
+    }
+}
+```
+
+### 3. Kotlin Usage
+
+```kotlin
+val db = NodeDbLite("/data/data/com.example.app/databases/mydb.redb", "android-01")
+
+// Insert vectors
+db.vectorInsert("docs", "doc-1", floatArrayOf(0.1f, 0.2f, 0.3f))
+
+// Search
+val results = db.vectorSearch("docs", floatArrayOf(0.1f, 0.2f, 0.3f), 5)
+results?.forEach { result ->
+    println("ID: ${result["id"]}, Distance: ${result["distance"]}")
+}
+
+// Graph
+db.graphInsertEdge("alice", "bob", "knows")
+val sg = db.graphTraverse("alice", 2)
+
+// Documents
+db.documentPut("notes", "n1", mapOf("title" to "Hello"))
+val doc = db.documentGet("notes", "n1")
+
+// Persist
+db.flush()
+db.close()
+```
+
+## Platform Differences
+
+| Aspect | iOS | Android |
+|--------|-----|---------|
+| **Compilation** | XCode + Cargo | Android NDK + Cargo |
+| **Storage Path** | `NSHomeDirectory()/Documents/` | `/data/data/com.app/databases/` |
+| **Threading** | async/await + GCD | Kotlin coroutines |
+| **Memory Budget** | 100 MB default | 100 MB default |
+
+## Next Steps
+
+- **[Rust SDK](./rust-sdk.rdx)**: Native implementation reference
+- **[C FFI Spec](https://github.com/NodeDB/nodedb-lite/tree/main/nodedb-lite-ffi)**: Full C header
+- **[Sync Protocol](./sync.rdx)**: Enable cloud synchronization

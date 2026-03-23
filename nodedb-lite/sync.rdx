@@ -1,0 +1,349 @@
+---
+title: Sync Protocol
+description: WebSocket synchronization with NodeDB Origin for multi-device CRDT replication
+---
+
+# Sync Protocol
+
+NodeDB-Lite syncs mutations to NodeDB Origin (cloud) and pulls remote changes via a custom WebSocket protocol. Synchronization is asynchronous and eventual-consistent.
+
+## Architecture
+
+```
+┌─ NodeDB-Lite (Device 1) ──────┐
+│                                │
+│ CRDT State + Deltas            │
+│ Memory Governor                │
+│ Query Engines (HNSW, CSR)      │
+│                                │
+│ ┌──── Sync Task ──────────────┐│
+│ │ Delta push/pull              ││
+│ │ Vector clock tracking        ││
+│ │ Auto-reconnect              ││
+│ └──────────────────────────────┘
+│       ↓ WebSocket              │
+└────────┼────────────────────────┘
+         │
+         │ TCP + TLS
+         ↓
+      NodeDB Origin (Cloud)
+         ↑
+         │
+┌────────┼────────────────────────┐
+│ NodeDB-Lite (Device 2)   │      │
+│                          │      │
+│ CRDT State + Deltas      │      │
+│ ← Deltas pulled + merged │      │
+│                          │      │
+└──────────────────────────┴──────┘
+```
+
+## WebSocket Protocol
+
+5-byte frame header + payload:
+
+```
+┌─ Frame Header (5 bytes) ──────────────┐
+│ msg_type (1B)   │ length (4B LE)      │
+├─────────────────┼────────────────────┤
+│ 0-10            │ payload bytes       │
+└─────────────────┴────────────────────┘
+   + Payload (JSON or binary)
+```
+
+### Message Types
+
+| ID | Name | Direction | Purpose |
+|----|----|-----------|---------|
+| 0 | Handshake | C→S | Client identifies peer and peer clock |
+| 1 | HandshakeAck | S→C | Server acknowledges |
+| 2 | DeltaPush | C→S | Client sends pending deltas |
+| 3 | DeltaAck | S→C | Server accepts deltas |
+| 4 | DeltaReject | S→C | Server rejects deltas (conflict) |
+| 5 | ShapeSubscribe | C→S | Subscribe to partial replication |
+| 6 | ShapeSnapshot | S→C | Initial snapshot for shape |
+| 7 | ShapeDelta | S→C | Incremental delta for shape |
+| 8 | ShapeUnsubscribe | C→S | Unsubscribe from shape |
+| 9 | VectorClockSync | S→C | Peer clock sync (periodic) |
+| 10 | PingPong | C↔S | Keepalive |
+
+## Handshake
+
+### Client sends Handshake:
+
+```json
+{
+  "peer_id": "mobile-device-01",
+  "vector_clock": {
+    "mobile-device-01": 42,
+    "device-02": 15,
+    "cloud": 100
+  },
+  "supported_shapes": ["Document", "Graph", "Vector"],
+  "protocol_version": 1
+}
+```
+
+### Server replies HandshakeAck:
+
+```json
+{
+  "peer_id": "cloud",
+  "vector_clock": {
+    "cloud": 101,
+    "mobile-device-01": 42,
+    "device-02": 15
+  },
+  "server_time": 1679000000,
+  "accepted": true
+}
+```
+
+If `accepted: false`, connection closes. Reasons: invalid peer ID, protocol mismatch, rate limited.
+
+## Delta Push
+
+### Client sends DeltaPush:
+
+```json
+{
+  "deltas": [
+    {
+      "id": "delta-1001",
+      "peer_id": "mobile-device-01",
+      "timestamp": 1679000000,
+      "vector_clock": { "mobile-device-01": 43 },
+      "operations": [
+        {
+          "type": "vector_insert",
+          "collection": "embeddings",
+          "doc_id": "emb-123",
+          "embedding": [0.1, 0.2, 0.3],
+          "metadata": null
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Server replies DeltaAck:
+
+```json
+{
+  "acknowledged_delta_ids": ["delta-1001"],
+  "server_vector_clock": { "cloud": 102 }
+}
+```
+
+Client should call `acknowledge_deltas()` to clear pending buffer.
+
+### Server sends DeltaReject on conflict:
+
+```json
+{
+  "rejected_delta_id": "delta-1001",
+  "reason": "UniqueViolation",
+  "compensation_hint": {
+    "type": "UniqueViolation",
+    "field": "email",
+    "existing_value": "alice@example.com",
+    "details": "Document email already exists in collection"
+  }
+}
+```
+
+## Shape Subscriptions
+
+Subscribe to partial replicas (fetch only matching data):
+
+### Client sends ShapeSubscribe:
+
+```json
+{
+  "shape_id": "shape-docs-2024",
+  "definition": {
+    "type": "Document",
+    "collection": "notes",
+    "predicate": { "archived": false }
+  }
+}
+```
+
+### Server sends ShapeSnapshot:
+
+```json
+{
+  "shape_id": "shape-docs-2024",
+  "snapshot": [
+    {
+      "id": "note-1",
+      "data": { "title": "Hello", "archived": false }
+    },
+    {
+      "id": "note-2",
+      "data": { "title": "World", "archived": false }
+    }
+  ]
+}
+```
+
+### Server sends ShapeDelta (incremental):
+
+```json
+{
+  "shape_id": "shape-docs-2024",
+  "delta": {
+    "inserted": [
+      { "id": "note-3", "data": { "title": "New", "archived": false } }
+    ],
+    "updated": [
+      { "id": "note-1", "data": { "title": "Updated", "archived": false } }
+    ],
+    "deleted": ["note-2"]
+  }
+}
+```
+
+## Vector Clock Synchronization
+
+Server periodically sends vector clock sync to reconcile causality:
+
+```json
+{
+  "vector_clock": {
+    "cloud": 105,
+    "mobile-device-01": 50,
+    "device-02": 25
+  },
+  "timestamp": 1679000010
+}
+```
+
+Clients update their local vector clock to avoid stale reads.
+
+## Reconnection and Backoff
+
+On network failure, NodeDB-Lite retries with exponential backoff:
+
+```
+Attempt 1:  1 second
+Attempt 2:  2 seconds
+Attempt 3:  4 seconds
+Attempt 4:  8 seconds
+...
+Max:       60 seconds (capped)
+```
+
+Jitter (±10%) prevents thundering herd. Connection resets backoff timer.
+
+## Rust SDK Usage
+
+### Enable Sync
+
+```rust
+use nodedb_lite::{NodeDbLite, SyncConfig, ShapeDefinition, ShapeType};
+
+let db = NodeDbLite::open(&storage, "device-01").await?;
+
+let config = SyncConfig {
+    origin_url: "ws://localhost:9090".to_string(),
+    shapes: vec![
+        ShapeDefinition {
+            id: "my-notes".to_string(),
+            shape_type: ShapeType::Document {
+                collection: "notes".to_string(),
+                predicate: None,  // all documents
+            },
+        }
+    ],
+};
+
+db.start_sync(config).await?;
+```
+
+### Handle Pending Deltas
+
+```rust
+// Get deltas not yet sent
+let pending = db.pending_crdt_deltas().await?;
+println!("Pending deltas: {}", pending.len());
+
+// After server acks, mark as acknowledged
+db.acknowledge_deltas(&[delta_id]).await?;
+```
+
+### Import Remote Deltas
+
+```rust
+// Pull remote mutations (normally done by sync task)
+let remote_deltas = /* ... fetch from Origin ... */;
+db.import_remote_deltas(remote_deltas).await?;
+```
+
+## Conflict Handling
+
+When the server detects conflicts, it sends `DeltaReject` with `CompensationHint`. Applications can register handlers:
+
+```rust
+use nodedb_lite::CompensationRegistry;
+
+let registry = CompensationRegistry::new();
+registry.register("UniqueViolation", |hint| {
+    println!("Unique constraint violation: {:?}", hint);
+    // Return compensated delta or skip
+    None
+});
+```
+
+See [Compensation](./compensation.rdx) for detailed conflict resolution.
+
+## Sync Configuration
+
+```rust
+pub struct SyncConfig {
+    /// WebSocket URL (ws:// or wss://)
+    pub origin_url: String,
+
+    /// Partial replication subscriptions
+    pub shapes: Vec<ShapeDefinition>,
+
+    /// Retry backoff config (optional)
+    pub max_backoff_ms: u64,      // default 60000
+    pub initial_backoff_ms: u64,  // default 1000
+
+    /// Vector clock grace period (optional)
+    pub vector_clock_sync_interval_ms: u64,  // default 30000
+
+    /// Compensation handlers (optional)
+    pub compensation_registry: Option<CompensationRegistry>,
+}
+```
+
+## Performance Considerations
+
+- **Delta Batching**: Collect mutations before pushing. Batch 100 deltas → 1 WebSocket frame.
+- **Shape Subscriptions**: Reduce payload by subscribing only to needed data.
+- **Vector Clock**: Track causality; avoids redundant merges.
+- **Reconnection**: Exponential backoff prevents server overload during outages.
+- **Memory**: Pending deltas buffered in memory; large batches may require `flush()` to disk.
+
+## Error Handling
+
+Sync task runs in background. Handle errors via callback:
+
+```rust
+db.start_sync(config).await?;
+
+// Later: check sync status (pseudo-code)
+let status = db.sync_status().await?;
+if !status.connected {
+    eprintln!("Sync disconnected: {}", status.error);
+}
+```
+
+## Next Steps
+
+- **[Shapes](./shapes.rdx)**: Partial replication in detail
+- **[Compensation](./compensation.rdx)**: Conflict resolution strategies
+- **[Rust SDK](./rust-sdk.rdx)**: Complete API reference

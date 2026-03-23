@@ -1,0 +1,300 @@
+---
+title: Graph Traversal Operations
+description: BFS, DFS, shortest path, subgraph extraction with limits.
+---
+
+# Graph Traversal Operations
+
+The Graph Engine supports multiple traversal primitives for exploring and analyzing graph structure. All operations respect node visit caps (100K default) and can filter by edge labels and direction.
+
+## Breadth-First Search (BFS)
+
+**Usage**: Explore neighborhoods, find all nodes within N hops, recommendation ranking.
+
+**Parameters**:
+- `start_node`: Starting node ID (string)
+- `depth`: Maximum hops (1-10, typical: 2-3)
+- `direction`: 'out' (outgoing), 'in' (incoming), 'both'
+- `label_filter`: Optional edge label to follow
+- `max_visited_nodes`: Cap on nodes visited (default 100K)
+
+**Latency**: 1-50ms for depth ≤ 3 depending on branching factor.
+
+**SQL Example**:
+
+```sql
+-- Find all documents within 2 hops (co-authored, co-cited)
+SELECT node_id, distance
+FROM graph_bfs(
+  start_node => 'user:123',
+  depth => 2,
+  direction => 'out',
+  label_filter => NULL
+)
+WHERE distance <= 2
+ORDER BY distance;
+```
+
+**Output**:
+```
+node_id      | distance | hops
+user:456     | 1        | direct follow
+user:789     | 2        | friend of friend
+doc:100      | 1        | authored
+doc:150      | 2        | co-authored
+```
+
+**Label filtering**:
+
+```sql
+-- Only follow 'references' edges
+SELECT node_id, distance
+FROM graph_bfs(
+  start_node => 'paper:1',
+  depth => 3,
+  direction => 'out',
+  label_filter => 'references'
+)
+WHERE distance <= 3;
+
+-- Find all friend-of-friend relationships (not coworker relationships)
+SELECT * FROM graph_bfs(
+  start_node => 'user:123',
+  depth => 2,
+  direction => 'out',
+  label_filter => 'friend'
+);
+```
+
+**Direction options**:
+
+```sql
+-- Outgoing: follow links forward
+SELECT * FROM graph_bfs(start_node => 'user:1', depth => 2, direction => 'out');
+-- Result: User 1's followers, followers' followers
+
+-- Incoming: who points to this node
+SELECT * FROM graph_bfs(start_node => 'page:1', depth => 2, direction => 'in');
+-- Result: Pages that link to page:1, pages that link to those
+
+-- Both directions
+SELECT * FROM graph_bfs(start_node => 'user:1', depth => 2, direction => 'both');
+-- Result: All connected nodes within 2 hops (ignoring direction)
+```
+
+## Depth-First Search (DFS)
+
+**Usage**: Cycle detection, topological sort, exhaustive path exploration.
+
+**Parameters**: Same as BFS (start_node, depth, direction, label_filter, max_visited_nodes).
+
+**Latency**: 1-100ms depending on depth and branching.
+
+```sql
+-- Find all paths up to depth 5
+SELECT path_nodes, path_edges
+FROM graph_dfs(
+  start_node => 'root:1',
+  depth => 5,
+  direction => 'out'
+);
+```
+
+## Shortest Path (Bidirectional)
+
+**Usage**: Recommendation ranking, connection finding, path cost analysis.
+
+**Parameters**:
+- `start_node`: Source
+- `end_node`: Target
+- `direction`: 'out', 'in', 'both'
+- `max_hops`: Stop after finding path longer than this (optional)
+
+**Latency**: 10-100ms for paths up to 6 hops.
+
+**Algorithm**: Bidirectional BFS from both start and end, meeting in middle.
+
+```sql
+-- Find shortest path between two users
+SELECT nodes, edges, distance
+FROM graph_shortest_path(
+  start_node => 'user:123',
+  end_node => 'user:456',
+  direction => 'both'
+);
+```
+
+**Output**:
+```
+nodes          | edges                          | distance
+[1,5,8,3,456]  | [friendship, colleague, team]  | 4
+```
+
+**Multiple shortest paths**:
+
+```sql
+-- Find all shortest paths (if multiple)
+SELECT path_num, nodes, edges
+FROM graph_all_shortest_paths(
+  start_node => 'user:123',
+  end_node => 'user:456',
+  direction => 'both'
+);
+```
+
+## Subgraph Materialization
+
+**Usage**: Extract connected components, analyze clusters, prepare data for downstream ML.
+
+**Parameters**:
+- `start_node`: Root of subgraph
+- `depth`: How many hops to include
+- `direction`: Edge direction
+- `label_filter`: Optional edge type
+
+**Output**: Sets of nodes and edges meeting criteria.
+
+```sql
+-- Extract 2-hop neighborhood around user:1
+SELECT nodes, edges
+FROM graph_subgraph(
+  start_node => 'user:1',
+  depth => 2,
+  direction => 'out',
+  label_filter => NULL
+);
+
+-- Project as JSON for downstream processing
+SELECT json_agg(row_to_json(t)) FROM (
+  SELECT node_id, label FROM graph_subgraph(...) AS t(node_id, label)
+) t;
+```
+
+## Visit Limits and Caps
+
+All traversal respects `max_visited_nodes` (default 100K):
+
+```sql
+-- Stop after visiting 50K nodes
+SELECT * FROM graph_bfs(
+  start_node => 'root',
+  depth => 10,
+  max_visited_nodes => 50000
+);
+
+-- Configure globally for session
+SET graph_max_visited_nodes = 100000;
+```
+
+**Rationale**: Prevents runaway queries on highly connected graphs. Returns partial results if limit hit.
+
+## Performance Tuning
+
+### Branching Factor Impact
+
+```sql
+-- Linear graph: BFS is fast
+-- Depth 3, branching 2 → 8 nodes visited
+
+-- Highly connected: BFS is slow
+-- Depth 3, branching 100 → 1M nodes to visit (may hit cap)
+
+-- Use label filters to reduce branching:
+SELECT * FROM graph_bfs(
+  start_node => 'user:1',
+  depth => 3,
+  direction => 'out',
+  label_filter => 'friend'  -- only follow friend edges, skip noise
+);
+```
+
+### Caching
+
+Frequent traversals from same start nodes are cached:
+
+```toml
+[graph]
+traversal_cache_size_mb = 256
+traversal_cache_ttl_secs = 300
+```
+
+Cache hit (repeated traversal from same start): <1ms.
+Cache miss (new traversal): depends on graph size and filters.
+
+## Scatter-Gather for Multi-Core
+
+Large traversals (10K+ nodes) automatically parallelize across cores:
+
+```sql
+-- This query runs on multiple cores (transparent to user)
+SELECT * FROM graph_bfs(
+  start_node => 'root:1',
+  depth => 5,
+  max_visited_nodes => 500000
+);
+
+-- Parallelism tuned via config:
+[graph]
+scatter_gather_threads = 8  # match CPU cores
+```
+
+## Examples: Real-World Patterns
+
+**Recommendation: "People You May Know"**:
+
+```sql
+SELECT target_id, COUNT(*) as mutual_friends
+FROM graph_bfs(
+  start_node => 'user:me',
+  depth => 2,
+  direction => 'out',
+  label_filter => 'friend'
+) AS friends
+JOIN graph_edges ON friends.node_id = graph_edges.from_id
+WHERE graph_edges.to_id != 'user:me'
+  AND graph_edges.label = 'friend'
+GROUP BY target_id
+ORDER BY mutual_friends DESC
+LIMIT 10;
+```
+
+**Knowledge Graph Expansion**:
+
+```sql
+WITH related_entities AS (
+  SELECT node_id FROM graph_bfs(
+    start_node => 'entity:AI',
+    depth => 2,
+    direction => 'both',
+    label_filter => NULL
+  )
+)
+SELECT node_id, COUNT(incoming.from_id) as popularity
+FROM related_entities
+LEFT JOIN graph_edges incoming ON related_entities.node_id = incoming.to_id
+GROUP BY node_id
+ORDER BY popularity DESC;
+```
+
+**Find common ancestors**:
+
+```sql
+-- What companies do both users work for?
+SELECT common_node FROM (
+  SELECT node_id as common_node FROM graph_bfs(
+    start_node => 'user:123',
+    depth => 3,
+    direction => 'out',
+    label_filter => 'works_at'
+  )
+  INTERSECT
+  SELECT node_id FROM graph_bfs(
+    start_node => 'user:456',
+    depth => 3,
+    direction => 'out',
+    label_filter => 'works_at'
+  )
+) t;
+```
+
+See [Graph Engine Overview](/engines/graph/overview) for architecture and [GraphRAG](/engines/graph/graphrag) for vector + graph hybrid search.

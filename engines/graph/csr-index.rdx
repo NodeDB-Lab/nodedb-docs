@@ -1,0 +1,211 @@
+---
+title: CSR Index Structure
+description: Compressed Sparse Row format, bidirectional adjacency, compaction strategy.
+---
+
+# CSR Index Structure
+
+Compressed Sparse Row (CSR) is the memory-efficient adjacency representation underlying the Graph Engine. It stores billions of edges in minimal space while enabling fast neighborhood queries.
+
+## Data Layout
+
+**CSR stores two sparse matrices** (one per direction):
+
+### Outgoing Edges (from_id → to_id)
+
+```
+out_offsets[node_id] → index into out_targets[]
+out_offsets[node_id + 1] → next boundary
+
+Example:
+Node 0 has edges to [5, 7]
+Node 1 has edges to [2, 3, 9]
+Node 2 has no edges
+
+out_offsets: [0, 2, 5, 5, ...]
+out_targets: [5, 7, 2, 3, 9, ...]
+out_labels:  [1, 1, 2, 2, 1, ...]  (label per edge)
+```
+
+### Incoming Edges (to_id → from_id)
+
+```
+in_offsets[node_id] → index into in_sources[]
+in_targets[i] stores source node_id
+in_labels[i] stores edge label
+
+Enables efficient "find all incoming neighbors" queries.
+```
+
+## Memory Layout on Disk
+
+```
+Header:
+  num_nodes: u32
+  num_edges: u32
+  max_node_id: u32
+
+Out Adjacency:
+  out_offsets: [u32; num_nodes + 1]
+  out_targets: [u32; num_edges]
+  out_labels:  [u16; num_edges]
+
+In Adjacency:
+  in_offsets: [u32; num_nodes + 1]
+  in_sources: [u32; num_edges]
+  in_labels:  [u16; num_edges]
+
+Node ID Interning:
+  string_map: HashMap<String, u32> (pickled)
+  reverse_map: HashMap<u32, String> (pickled)
+```
+
+## Compaction Strategy
+
+Writes initially go to a **mutable write buffer**:
+
+```
+Write Buffer (in-memory):
+  - Hash of pending insertions/deletions
+  - Queries must check write buffer + CSR index
+  - No locking needed (SPSC channel from Control Plane)
+```
+
+**Compaction** merges write buffer into CSR on a schedule:
+
+1. **Flush decision**: Triggered when write buffer > 10MB or hourly
+2. **Merge phase**: Combine old CSR + write buffer into new CSR
+   - Sort new edges by from_id
+   - Rebuild out_offsets and out_targets
+   - Do same for in_adjacency
+3. **Atomic swap**: Replace old CSR with new (single pointer swap)
+4. **Read consistency**: Queries continue reading old CSR until compaction finishes, then switch
+
+**Zero downtime**: Read queries never block on compaction. New queries see new index immediately after swap.
+
+## Space Efficiency
+
+**Bytes per edge**:
+- 4 bytes out_targets[i]
+- 2 bytes out_labels[i]
+- 4 bytes in_sources[j]
+- 2 bytes in_labels[j]
+- Amortized 2 bytes out_offsets (shared across edges)
+- **Total: ~14 bytes per edge**
+
+**Comparison**:
+- Adjacency list (tuple storage): 32-64 bytes per edge
+- Relational normalized (3 tables): 48-96 bytes per edge
+- RDF triple store: 32-64 bytes per triple
+- **CSR: 14 bytes → 2-5x space reduction**
+
+## Node ID Interning
+
+String IDs ("user:123", "doc:456") are interned to u32 integers:
+
+```
+HashMap<String, u32> maps:
+  "user:123" → 0
+  "doc:456"  → 1
+  "user:789" → 2
+  ...
+
+Reverse map for results:
+  0 → "user:123"
+  1 → "doc:456"
+  ...
+```
+
+**Memory**: ~80 bytes per unique string + hashmap overhead (~5 bytes per entry). For 10M nodes: ~500MB.
+
+**Lookup time**: O(1) average case (hash table), <100ns per lookup.
+
+## Sorted Adjacency
+
+CSR automatically sorts neighbors by node ID within each adjacency list:
+
+```
+out_targets[out_offsets[5]:out_offsets[6]] = [1, 7, 12, 23, ...]
+-- neighbors are sorted
+```
+
+**Benefits**:
+- Cache-friendly traversal
+- Binary search within adjacency list
+- Predictable prefetch behavior (sequential memory access)
+
+## Filtering During Traversal
+
+Label filtering is efficient because labels are stored with adjacency:
+
+```
+Find all edges labeled "authored":
+for edge_idx in out_offsets[node]:out_offsets[node+1]:
+  if out_labels[edge_idx] == interned_label:
+    yield out_targets[edge_idx]
+
+O(degree) time, single scan with no random access.
+```
+
+## Examples
+
+**Create a graph**:
+```sql
+-- Nodes auto-created on first edge insertion
+INSERT INTO graph_edges (from_id, to_id, label)
+VALUES ('user:1', 'post:100', 'authored');
+
+INSERT INTO graph_edges (from_id, to_id, label)
+VALUES ('user:2', 'post:100', 'commented');
+
+INSERT INTO graph_edges (from_id, to_id, label)
+VALUES ('post:100', 'post:101', 'cites');
+
+-- CSR is built, compacted, and indexed automatically
+```
+
+**Query neighbors**:
+```sql
+-- Find all authored posts by a user (uses out_adjacency)
+SELECT to_id FROM graph_edges
+WHERE from_id = 'user:1' AND label = 'authored';
+
+-- Find all commenters on a post (uses in_adjacency)
+SELECT from_id FROM graph_edges
+WHERE to_id = 'post:100' AND label = 'commented';
+```
+
+## Limitations and Workarounds
+
+**CSR doesn't store properties on edges** (except label and node_id). For rich edge properties, store separately:
+
+```sql
+-- CSR edge (fast traversal)
+INSERT INTO graph_edges (from_id, to_id, label) VALUES (...);
+
+-- Properties in relational table
+INSERT INTO edge_properties (from_id, to_id, label, key, value) VALUES (...);
+
+-- Join on demand
+SELECT ep.key, ep.value FROM graph_edges ge
+JOIN edge_properties ep ON ge.from_id = ep.from_id AND ...
+WHERE ge.from_id = 'user:1';
+```
+
+## Performance Tuning
+
+**Compaction frequency**: Adjust via config:
+```toml
+[graph]
+write_buffer_flush_size_mb = 10
+write_buffer_flush_interval_secs = 3600
+```
+
+Smaller flush size → lower latency queries (less buffer to scan), higher CPU (more compactions).
+
+**Index sizing**: Monitor index memory:
+```sql
+SELECT index_name, size_mb FROM graph_indices;
+```
+
+See [Traversal](/engines/graph/traversal) for query operations and [GraphRAG](/engines/graph/graphrag) for hybrid search patterns.

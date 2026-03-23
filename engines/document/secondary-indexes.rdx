@@ -1,0 +1,274 @@
+---
+title: Secondary Indexes
+description: Creating indexes on document fields, auto-indexing, index-ordered scans.
+---
+
+# Secondary Indexes
+
+Secondary indexes accelerate queries on specific document fields. NodeDB creates BTree indexes on frequently accessed paths and can auto-index based on workload patterns.
+
+## Index Creation
+
+**Manual index on a field**:
+
+```sql
+-- Index top-level field
+CREATE INDEX idx_title ON documents (doc_get(data, 'title'));
+
+-- Index nested field
+CREATE INDEX idx_author ON documents (doc_get(data, 'metadata.author'));
+
+-- Index array element (all elements indexed)
+CREATE INDEX idx_tags ON documents
+  USING UNNEST(doc_get(data, 'tags'));
+```
+
+**Composite index** (multiple fields):
+
+```sql
+-- Speed up queries filtering by both status and created date
+CREATE INDEX idx_status_date ON documents (
+  doc_get(data, 'status'),
+  doc_get(data, 'created')
+);
+```
+
+**Conditional index** (partial):
+
+```sql
+-- Only index published documents (saves space, speeds up published queries)
+CREATE INDEX idx_published ON documents (doc_get(data, 'title'))
+  WHERE doc_get(data, 'status') = 'published';
+```
+
+**Case-insensitive index** (for text):
+
+```sql
+-- Index lowercase values for case-insensitive search
+CREATE INDEX idx_email_lower ON documents (
+  LOWER(doc_get(data, 'email'))
+);
+```
+
+## Index Maintenance
+
+Indexes are updated atomically with document inserts/updates:
+
+```sql
+-- Insert automatically updates all indices
+INSERT INTO documents (id, data) VALUES ('doc:1', data);
+-- idx_title, idx_author, idx_tags all updated before commit
+
+-- Update also maintains indices
+UPDATE documents SET data = new_data WHERE id = 'doc:1';
+
+-- Delete removes from all indices
+DELETE FROM documents WHERE id = 'doc:1';
+```
+
+**No manual reindexing needed** (unlike some databases). Indices stay consistent.
+
+## Auto-Indexing
+
+NodeDB can automatically create indices on frequently accessed fields:
+
+```toml
+[document_engine]
+# Enable auto-indexing
+auto_index_enabled = true
+# Index fields accessed in >100 queries
+auto_index_threshold = 100
+# Check every 60 seconds
+auto_index_check_interval_secs = 60
+```
+
+**View auto-indexed fields**:
+
+```sql
+SELECT field_path, access_count, index_name
+FROM document_auto_indexes
+ORDER BY access_count DESC;
+```
+
+## Index-Ordered Scans
+
+When a query's WHERE clause matches an index, results come pre-sorted:
+
+```sql
+-- This query uses idx_status_date and returns results in status, created order
+SELECT id, title
+FROM documents
+WHERE doc_get(data, 'status') = 'published'
+  AND doc_get(data, 'created') >= '2024-01-01'
+ORDER BY doc_get(data, 'created');
+-- Result set comes sorted; no additional sort needed
+```
+
+**Performance benefit**: Sorted results without explicit ORDER BY cost.
+
+**Examples**:
+
+```sql
+-- Uses index, naturally sorted
+SELECT id FROM documents
+WHERE doc_get(data, 'created') >= '2024-01-01'
+ORDER BY doc_get(data, 'created');
+-- Cost: index range scan (1-10ms) + no sort
+
+-- Without index, must scan all documents
+SELECT id FROM documents
+WHERE doc_get(data, 'custom_field') = 'value'
+ORDER BY doc_get(data, 'created');
+-- Cost: full scan + sort (100-500ms)
+```
+
+## Index Size and Memory
+
+BTree indices use memory proportional to indexed values:
+
+```sql
+-- Check index sizes
+SELECT index_name, size_mb, indexed_docs
+FROM pg_indexes
+WHERE table_name = 'documents';
+```
+
+**Example sizes** (1M documents):
+- Index on small STRING field: 50-100MB
+- Index on INTEGER field: 20-40MB
+- Composite index (2 fields): 80-150MB
+- Partial index (50% documents): 25-50MB
+
+**Memory budgets**: Configure via:
+
+```toml
+[document_engine]
+max_index_memory_mb = 500
+```
+
+When budget exceeded, old unused indices are dropped automatically.
+
+## Index Rebuilding
+
+Rebuild index if corrupted or to change parameters:
+
+```sql
+-- Drop and recreate
+DROP INDEX idx_title;
+CREATE INDEX idx_title ON documents (doc_get(data, 'title'));
+```
+
+**Offline operation**: Index rebuild is single-threaded. During rebuild:
+- New queries can read old index (if exists)
+- Writes queue until rebuild completes
+- Typical time: 1M documents → 10-30 seconds
+
+## Index Selection and Cost
+
+Query optimizer automatically picks best index:
+
+```sql
+-- Both predicates present; optimizer chooses best index
+EXPLAIN
+SELECT * FROM documents
+WHERE doc_get(data, 'status') = 'published'
+  AND doc_get(data, 'created') >= '2024-01-01';
+
+-- Output:
+-- Bitmap Index Scan using idx_status_date
+--   Index Cond: status = 'published' AND created >= '2024-01-01'
+--   -> 15000 rows fetched (estimate)
+--   -> Heap Fetches: 15000
+```
+
+**Index hints** (force specific index):
+
+```sql
+-- Use hint when optimizer chooses poorly
+SELECT /*+ INDEX(documents idx_status_date) */ *
+FROM documents
+WHERE doc_get(data, 'status') = 'published'
+  AND doc_get(data, 'created') >= '2024-01-01';
+```
+
+## Index Statistics
+
+Optimizer maintains statistics for cost estimation:
+
+```sql
+-- View index statistics
+SELECT index_name, avg_leaf_density, num_pages
+FROM pg_stat_indexes
+WHERE table_name = 'documents';
+
+-- Manually analyze if statistics stale
+ANALYZE documents;
+```
+
+**Auto-analyze**: Enabled by default; runs after 10K inserts.
+
+## Best Practices
+
+**Index selectively**: Not every field needs an index. Index fields used in:
+- WHERE clauses (frequent filters)
+- ORDER BY (common sorts)
+- JOIN conditions (field matching)
+
+**Avoid redundant indices**: If you have index on (status, created), don't also index (status).
+
+```sql
+-- Redundant; drop one
+CREATE INDEX idx_status ON documents (doc_get(data, 'status'));
+CREATE INDEX idx_status_date ON documents (doc_get(data, 'status'), doc_get(data, 'created'));
+
+-- Keep only composite; covers both queries
+```
+
+**Use partial indices**: For heavily skewed data:
+
+```sql
+-- Only 5% of documents are active; index only them
+CREATE INDEX idx_active ON documents (doc_get(data, 'title'))
+WHERE doc_get(data, 'status') = 'active';
+```
+
+**Monitor unused indices**:
+
+```sql
+-- Find indices with zero reads (candidates for deletion)
+SELECT index_name, idx_scan, idx_tup_read
+FROM pg_stat_indexes
+ORDER BY idx_scan
+LIMIT 10;
+```
+
+## Examples
+
+**Index for quick user profile lookup**:
+
+```sql
+CREATE INDEX idx_user_email ON documents (doc_get(data, 'email'))
+WHERE doc_get(data, 'type') = 'user';
+
+-- Query uses index
+SELECT doc_get(data, 'name') FROM documents
+WHERE doc_get(data, 'email') = 'alice@example.com';
+```
+
+**Composite index for log querying**:
+
+```sql
+CREATE INDEX idx_logs_level_time ON documents (
+  doc_get(data, 'level'),
+  doc_get(data, 'timestamp')
+)
+WHERE doc_get(data, 'type') = 'log';
+
+-- Query uses index for both predicates
+SELECT id FROM documents
+WHERE doc_get(data, 'level') = 'ERROR'
+  AND doc_get(data, 'timestamp') >= '2024-03-01'
+ORDER BY doc_get(data, 'timestamp') DESC;
+```
+
+See [Document Engine Overview](/engines/document/overview) for storage and [Field Functions](/engines/document/json-functions) for query syntax.

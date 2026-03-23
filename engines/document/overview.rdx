@@ -1,0 +1,170 @@
+---
+title: Document Engine Overview
+description: MessagePack-encoded documents with secondary indexes and full-text search.
+---
+
+# Document Engine Overview
+
+The Document Engine stores semi-structured JSON-like data in MessagePack format with efficient indexing and full-text search. It powers use cases like log aggregation, knowledge bases, document management, and event storage.
+
+## Core Capabilities
+
+**MessagePack Storage**: Binary-efficient serialization of nested documents. ~30% smaller than JSON, fast parsing.
+
+**Secondary Indexes**: BTree indexes on document fields for exact match and range queries. Auto-indexing on frequently accessed paths.
+
+**Full-Text Search**: Integrated BM25 ranking for text fields via `bm25_score()` UDF.
+
+**Field Extraction**: SQL functions to query nested document structure:
+- `doc_get(doc, path)`: Extract value at path
+- `doc_exists(doc, path)`: Check field existence
+- `doc_array_contains(array_field, value)`: Array membership
+
+**CRDT Variant**: Optional CRDTs for document fields, enabling conflict-free merges across replicas.
+
+## Data Model
+
+Documents are stored as opaque MessagePack blobs with optional schema:
+
+```sql
+-- Create collection without enforced schema
+CREATE COLLECTION documents (
+  id STRING PRIMARY KEY,
+  data BLOB
+);
+
+-- Insert semi-structured documents
+INSERT INTO documents (id, data)
+VALUES (
+  'doc:123',
+  PACK('{"title": "Guide", "tags": ["db", "ai"], "created": "2024-01-01"}')
+);
+
+-- Or with schema (enforced on write)
+CREATE COLLECTION documents_typed (
+  id STRING PRIMARY KEY,
+  title STRING,
+  tags ARRAY(STRING),
+  created TIMESTAMP,
+  metadata BLOB  -- additional untyped fields
+);
+```
+
+## Typical Queries
+
+**Field extraction**:
+
+```sql
+-- Extract nested fields from untyped documents
+SELECT
+  id,
+  doc_get(data, 'title') as title,
+  doc_get(data, 'created') as created
+FROM documents
+WHERE doc_exists(data, 'tags');
+```
+
+**Array queries**:
+
+```sql
+-- Find documents with specific tag
+SELECT id FROM documents
+WHERE doc_array_contains(doc_get(data, 'tags'), 'ai');
+
+-- Explode array into rows
+SELECT id, UNNEST(doc_get(data, 'tags')) as tag
+FROM documents;
+```
+
+**Full-text search**:
+
+```sql
+-- Combine structured filters with text search
+SELECT id, title, bm25_score(data, 'neural networks') as relevance
+FROM documents
+WHERE doc_get(data, 'status') = 'published'
+ORDER BY relevance DESC
+LIMIT 20;
+```
+
+**Range queries**:
+
+```sql
+-- Fetch documents created in date range
+SELECT id, doc_get(data, 'title')
+FROM documents
+WHERE doc_get(data, 'created') >= '2024-01-01'
+  AND doc_get(data, 'created') < '2024-02-01'
+ORDER BY doc_get(data, 'created') DESC;
+```
+
+## Architecture
+
+The Document Engine runs in the Data Plane. Documents are stored in redb (a pure Rust embedded database). Secondary indices are BTree-based. Full-text indexes live in parallel via splintr (BM25 integration).
+
+New documents go to a write buffer, then batch-compacted into redb. Indices are updated atomically during compaction.
+
+## Storage Format
+
+```
+Document entry:
+  Key: id (STRING)
+  Value: MessagePack blob
+
+Index entry (field-specific):
+  Key: (field_value, document_id)
+  Value: (empty) -- presence indicates match
+
+Full-text index (BM25):
+  Key: (token, document_id)
+  Value: BM25 score
+```
+
+## Performance Characteristics
+
+- **Insert**: 1-10µs per document (in write buffer)
+- **Lookup by ID**: <10µs (BTree key search)
+- **Field extraction**: <100ns (fast path for common fields)
+- **Full-text search**: 1-50ms for 1M documents (depends on term rarity)
+- **Range scan**: 100K-1M documents/second
+- **Memory**: ~1KB overhead per 10 documents (indices)
+
+## Index Types
+
+| Operation | Latency | Use Case |
+|-----------|---------|----------|
+| Lookup by ID | <10µs | User profiles, session data |
+| Range query | 1-10ms | Time-series events, sorted results |
+| Full-text search | 10-100ms | Log search, document discovery |
+| Tag/category filter | 1-5ms | Faceting, filtering |
+
+## CRDT Variant
+
+For distributed systems, enable CRDTs on specific fields:
+
+```sql
+-- Document with CRDT-tracked fields
+CREATE COLLECTION documents_crdt (
+  id STRING PRIMARY KEY,
+  title STRING CRDT(LWW),  -- Last-Write-Wins
+  tags ARRAY(STRING) CRDT(AddWins),  -- Set semantics
+  metadata BLOB
+);
+```
+
+During merge from another replica:
+- Conflicting updates resolved per CRDT policy (LWW takes timestamp, AddWins merges sets)
+- No manual conflict resolution needed
+- Convergent consistency guaranteed
+
+## Considerations
+
+**Schema flexibility**: Store untyped documents for flexibility, or enforce schema for safety.
+
+**Nested document depth**: MessagePack handles arbitrary nesting; query performance degrades with depth >5 levels.
+
+**Array size**: Large arrays (1K+ elements) should be stored separately; use reference instead.
+
+**Text search**: Only index text-like fields; indexing binary data wastes space.
+
+See [Secondary Indexes](/engines/document/secondary-indexes) for index creation and [Field Functions](/engines/document/json-functions) for extraction operators.

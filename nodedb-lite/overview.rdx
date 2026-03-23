@@ -1,0 +1,134 @@
+---
+title: NodeDB-Lite Overview
+description: Embedded edge database for AI agents with vector search, graph traversal, and offline CRDT operations
+---
+
+# NodeDB-Lite Overview
+
+NodeDB-Lite is a lightweight, embedded edge database designed for AI agents and intelligent applications running on constrained devices. It enables semantic search, knowledge graphs, and collaborative document operations entirely offline, syncing to the cloud via WebSocket when connectivity permits.
+
+## What is NodeDB-Lite?
+
+NodeDB-Lite unites vector search, graph traversal, and CRDT document operations in a single ~4.5 MB binary. It stores everything in memory during runtime for speed, persists state to disk using `redb` (a pure Rust ACID store), and loads that state at startup. The hot path never touches disk—all queries and mutations operate on in-memory indexes.
+
+### Key Capabilities
+
+- **Vector Search**: Semantic similarity queries using HNSW indexes. Insert embeddings, search by vector distance, optional metadata filtering.
+- **Graph Traversal**: Adjacency queries with edge properties and depth limits. Build knowledge graphs inline or import bulk data.
+- **Document Operations**: CRDT-powered document storage with offline-first semantics. Edits merge automatically without conflict resolution logic.
+- **Offline-First**: Works completely offline. Sync to NodeDB Origin (cloud) when available; local operations continue uninterrupted if the network fails.
+- **Multi-Platform**: Rust native on Linux/macOS/Windows, WASM in browsers, Swift iOS bindings, Kotlin Android bindings.
+
+## Architecture at a Glance
+
+```
+┌─ NodeDB-Lite Process ─────────────────────────────────────┐
+│                                                             │
+│  ┌─ In-Memory Indexes ──────────────────────────────────┐ │
+│  │                                                       │ │
+│  │  HNSW (Vector Search)     40% of memory budget      │ │
+│  │  CSR (Graph Adjacency)    15% of memory budget      │ │
+│  │  Loro (CRDT Documents)    15% of memory budget      │ │
+│  │  Query Operators          15% of memory budget      │ │
+│  │  Reserved Headroom        15% of memory budget      │ │
+│  │                                                       │ │
+│  └─────────────────────────────────────────────────────┘ │
+│           ↓                           ↓                    │
+│  ┌─ redb File ──────────────┐  ┌─ Memory Governor ────┐  │
+│  │ (ACID Persistence)       │  │ Auto-eviction at    │  │
+│  │ - Vectors                │  │ >95% pressure       │  │
+│  │ - Graph Edges            │  │                     │  │
+│  │ - Documents              │  │ Lazy reload on      │  │
+│  │ - Metadata               │  │ next query         │  │
+│  └─────────────────────────┘  └─────────────────────┘  │
+│                                                             │
+│  ┌─ WebSocket Sync (Optional) ──────────────────────────┐ │
+│  │ start_sync(SyncConfig) spawns background task        │ │
+│  │ - Delta push on local mutations                      │ │
+│  │ - Delta pull + merge on network events              │ │
+│  │ - Auto-reconnect with exponential backoff           │ │
+│  └─────────────────────────────────────────────────────┘ │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+         |
+         | WebSocket
+         ↓
+      NodeDB Origin (Cloud)
+    - Shape subscriptions
+    - Conflict compensation
+    - Multi-device sync
+```
+
+### Technology Stack
+
+- **Vector Index**: Hierarchical Navigable Small World (HNSW) for O(log n) approximate nearest-neighbor search
+- **Graph Index**: Compressed Sparse Row (CSR) for O(1) edge traversal per node
+- **CRDT Engine**: Loro integration for mergeable document operations (text, maps, arrays)
+- **Persistence**: redb, a pure Rust embedded key-value store with ACID guarantees
+- **Concurrency**: `async/await` with Tokio runtime
+- **Memory Governance**: Automatic eviction and lazy reloading when pressure exceeds thresholds
+
+## When to Use NodeDB-Lite
+
+**Good fits:**
+
+- AI chat agents on edge devices (phones, tablets) with offline capability
+- Collaborative note-taking / document apps with CRDT merging
+- Local recommendation systems with semantic search
+- Knowledge graphs for retrieval-augmented generation (RAG)
+- Telemetry and edge analytics with time-series data
+
+**Not a fit:**
+
+- High-frequency distributed transactions requiring strong ACID guarantees
+- Multi-user concurrent schema modifications
+- Real-time consistency across 10+ nodes (use NodeDB Origin instead)
+
+## Comparison with Alternatives
+
+| Feature | NodeDB-Lite | PGLite | SQLite | CouchDB |
+|---------|------------|--------|--------|---------|
+| **Vector Search** | ✓ HNSW | ✗ | ✗ | ✗ |
+| **Graph Traversal** | ✓ CSR | ✗ | ✗ | ✗ |
+| **CRDTs** | ✓ Loro | ✗ | ✗ ✓ (implicit) | ✓ |
+| **Memory Efficient** | ✓ 100 MB default | ✗ Heavy | ✓ | ✗ Heavy |
+| **Browser (WASM)** | ✓ 4.5 MB | ✓ | ✗ | ✗ |
+| **iOS/Android** | ✓ FFI + Kotlin | ✗ | ✓ | ✗ |
+| **Offline-First** | ✓ Full | ✓ Full | ✓ Full | ✓ Full |
+| **Cloud Sync** | ✓ NodeDB Origin | ✗ | ✗ | ✓ CouchDB Server |
+| **Pure Rust** | ✓ | ✗ WASM only | ✗ C | ✗ Erlang |
+
+## Getting Started
+
+1. **Rust**: Add `nodedb-lite` to `Cargo.toml`, call `NodeDbLite::open()`, insert vectors and documents.
+2. **JavaScript/WASM**: `npm install nodedb-lite-wasm`, await `NodeDbLiteWasm.open()`, use async methods.
+3. **iOS**: Link `nodedb-lite-ffi`, use Swift bindings, call C functions.
+4. **Android**: Link JNI, use Kotlin wrapper class with JSON marshaling.
+
+Each platform uses the same underlying in-memory engine; platform-specific bindings handle I/O and threading.
+
+## Memory Budget and Pressure
+
+NodeDB-Lite monitors memory usage and automatically evicts collections when pressure exceeds 95%. Three pressure levels:
+
+- **Normal** (<85%): All collections fully loaded. Queries run at full speed.
+- **Warning** (85–95%): Largest HNSW collections eligible for eviction. Queries still fast; serialization begins.
+- **Critical** (>95%): Automatic eviction triggered. Affected searches lazy-reload from disk on next query (slight latency spike).
+
+Default budget is 100 MB. Set custom budgets with `open_with_budget()`.
+
+## Sync to the Cloud
+
+Call `start_sync(config)` to spawn a background WebSocket task. NodeDB-Lite sends local mutations (deltas) to NodeDB Origin, pulls remote mutations, and merges using CRDT semantics. Conflicts are transparent; compensation handlers allow custom resolution logic.
+
+Sync works over unreliable networks: exponential backoff reconnection, automatic deduplication, and eventual consistency guarantees.
+
+## Next Steps
+
+- **[Quickstart](./quickstart.rdx)**: 5-minute end-to-end Rust example
+- **[Rust SDK](./rust-sdk.rdx)**: Complete API reference
+- **[JavaScript SDK](./javascript-sdk.rdx)**: WASM and browser usage
+- **[iOS & Android](./ios-android.rdx)**: Mobile platform bindings
+- **[Sync Protocol](./sync.rdx)**: WebSocket transport and delta handling
+- **[Shapes](./shapes.rdx)**: Partial replication subscriptions
+- **[Compensation](./compensation.rdx)**: Conflict resolution strategies

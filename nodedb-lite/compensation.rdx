@@ -1,0 +1,416 @@
+---
+title: Conflict Resolution and Compensation
+description: Handle delta rejections and semantic conflicts in distributed CRDT systems
+---
+
+# Conflict Resolution and Compensation
+
+When NodeDB-Lite pushes deltas to the cloud, NodeDB Origin may reject them due to constraint violations, permission denial, or schema mismatches. The compensation protocol allows graceful conflict resolution.
+
+## The Problem: The SQL Paradox
+
+CRDTs merge automatically and converge to the same state across peers. But they ignore semantic constraints.
+
+**Example:**
+
+Two devices insert the same `email` field with different values:
+
+```
+Device A: { email: "alice@example.com", name: "Alice" }
+Device B: { email: "bob@example.com", name: "Alice" }
+```
+
+CRDT merge produces:
+```
+Merged: { email: "bob@example.com", name: "Alice" }  // or vice versa
+```
+
+But the database has a UNIQUE constraint on `email`. One value violates it.
+
+**Solution:** Compensation handlers let applications decide: accept one value, reject the delta, transform it, or apply custom logic.
+
+## CompensationHint Types
+
+When Origin rejects a delta, it sends a `CompensationHint`:
+
+```rust
+pub enum CompensationHint {
+    UniqueViolation {
+        collection: String,
+        field: String,
+        existing_value: Value,
+        attempted_value: Value,
+    },
+    ForeignKeyMissing {
+        collection: String,
+        field: String,
+        referenced_collection: String,
+        referenced_id: String,
+    },
+    PermissionDenied {
+        operation: String,
+        resource: String,
+        reason: String,
+    },
+    RateLimited {
+        limit: u64,
+        window_seconds: u64,
+        reset_at: u64,
+    },
+    SchemaViolation {
+        field: String,
+        expected_type: String,
+        actual_type: String,
+    },
+    Custom {
+        code: String,
+        message: String,
+    },
+}
+```
+
+## CompensationRegistry
+
+Register handlers for each hint type:
+
+```rust
+use nodedb_lite::CompensationRegistry;
+
+let registry = CompensationRegistry::new();
+
+// Handle UniqueViolation: keep existing value (drop attempted insert)
+registry.register_unique_violation(|hint| {
+    println!("Unique violation: {} in {}", hint.field, hint.collection);
+    None  // return None to skip the mutation
+});
+
+// Handle ForeignKeyMissing: queue for retry
+registry.register_foreign_key_missing(|hint| {
+    eprintln!("Foreign key missing: {}.{}", hint.referenced_collection, hint.referenced_id);
+    // Could store for later retry, or return compensated delta
+    None
+});
+
+// Handle PermissionDenied: notify user
+registry.register_permission_denied(|hint| {
+    eprintln!("Permission denied: {}", hint.reason);
+    None
+});
+
+// Handle RateLimited: exponential backoff
+let mut backoff = 1000;
+registry.register_rate_limited(|hint| {
+    backoff = std::cmp::min(backoff * 2, 60000);
+    // Return compensated (retryable) delta after delay
+    None
+});
+
+// Handle SchemaViolation: coerce to correct type
+registry.register_schema_violation(|hint| {
+    println!("Schema violation: expected {}, got {}", hint.expected_type, hint.actual_type);
+    // Return corrected delta or None
+    None
+});
+
+// Custom handlers
+registry.register_custom("INSUFFICIENT_BALANCE", |hint| {
+    eprintln!("Insufficient balance: {}", hint.message);
+    None
+});
+```
+
+## Late-Binding Compensation
+
+Compensation is "late-binding": decisions are made when the conflict is discovered, not when the delta is created.
+
+### Flow
+
+```
+1. Device mutates locally:
+   db.document_put("users", "u1", { email: "alice@ex.com" }).await?
+
+2. CRDT delta created:
+   DeltaPush { id: "delta-001", operations: [...] }
+
+3. Delta sent to Origin:
+   "Send me delta-001"
+
+4. Origin receives and validates:
+   "email='alice@ex.com' violates UNIQUE constraint"
+
+5. Origin sends DeltaReject:
+   { rejected_delta_id: "delta-001", hint: UniqueViolation {...} }
+
+6. Device receives rejection:
+   Handler called: registry.handle(CompensationHint::UniqueViolation)
+
+7. Handler returns decision:
+   Some(CompensatedDelta) or None (skip)
+
+8. Device applies decision:
+   Retry transformed delta, or drop it
+```
+
+## Compensation Strategies
+
+### Strategy 1: Accept Server State (Conflict Avoidance)
+
+When a unique constraint fails, keep the existing value:
+
+```rust
+registry.register_unique_violation(|hint| {
+    eprintln!(
+        "Unique violation on {}: existing={}, attempted={}",
+        hint.field, hint.existing_value, hint.attempted_value
+    );
+    None  // Drop the local change
+});
+```
+
+**Semantics**: Server wins. Local change is discarded. Next sync pulls the server value.
+
+### Strategy 2: Transform and Retry
+
+Generate a variant of the conflicting value:
+
+```rust
+registry.register_unique_violation(|hint| {
+    if hint.field == "email" {
+        // If alice@example.com exists, try alice+1@example.com
+        if let Value::String(email) = &hint.attempted_value {
+            let parts: Vec<&str> = email.split('@').collect();
+            if parts.len() == 2 {
+                let new_email = format!("{}+conflict@{}", parts[0], parts[1]);
+                // Return transformed delta
+                return Some(TransformedDelta {
+                    field: hint.field.clone(),
+                    new_value: Value::String(new_email),
+                });
+            }
+        }
+    }
+    None
+});
+```
+
+**Semantics**: Local change succeeds with modification. Server eventually accepts.
+
+### Strategy 3: Queue for User Review
+
+Buffer rejected deltas for manual resolution:
+
+```rust
+let conflict_buffer = Arc::new(Mutex::new(Vec::new()));
+
+{
+    let buffer = Arc::clone(&conflict_buffer);
+    registry.register_permission_denied(|hint| {
+        let mut buf = buffer.lock().unwrap();
+        buf.push(ConflictedDelta {
+            hint: hint.clone(),
+            timestamp: SystemTime::now(),
+        });
+        None  // Don't auto-compensate
+    });
+}
+
+// Later: UI asks user
+let conflicts = conflict_buffer.lock().unwrap().clone();
+for conflict in conflicts {
+    println!("Conflict: {:?}", conflict.hint);
+    // User chooses: apply, discard, or retry
+}
+```
+
+**Semantics**: User decides. Offers fine-grained control.
+
+### Strategy 4: Rate Limit Backoff
+
+Exponential backoff on rate-limited rejections:
+
+```rust
+let backoff_state = Arc::new(Mutex::new(BackoffState {
+    current_ms: 1000,
+    max_ms: 60000,
+}));
+
+{
+    let state = Arc::clone(&backoff_state);
+    registry.register_rate_limited(|hint| {
+        let mut bs = state.lock().unwrap();
+        bs.current_ms = std::cmp::min(bs.current_ms * 2, bs.max_ms);
+        println!("Rate limited. Backoff: {} ms", bs.current_ms);
+        // Delta is queued; sync task retries after delay
+        None
+    });
+}
+```
+
+**Semantics**: Automatic retry with exponential backoff. No data loss.
+
+## Rollback Semantics
+
+Important: **Compensation does NOT rollback local state.**
+
+When a delta is rejected and no compensation is applied (handler returns `None`):
+
+1. Local in-memory state **remains unchanged** (the mutation is already applied)
+2. The delta is **not sent** to Origin again
+3. On next pull, Origin's version is imported, overwriting local state
+
+This creates temporary divergence until sync pulls the remote version.
+
+### Example: Two Users, Same Document
+
+```
+Initial state: { count: 0 }
+
+Device A (user=alice):
+  count += 1  (local: 1)
+  Delta sent → "increment count"
+
+Device B (user=bob):
+  count += 1  (local: 1)
+  Delta sent → "increment count"
+
+Origin receives A's delta:
+  count = 1  (accepted)
+
+Origin receives B's delta:
+  count = 1 again (no change)
+  BUT constraint: "only alice can modify count"
+  Reject with PermissionDenied
+
+Device B handler:
+  returns None (no compensation)
+
+Device B state:
+  Still shows count: 1 (local)
+  Delta never sent again
+
+Next sync:
+  Device B pulls: count = 1 (from alice's delta)
+  Converges immediately (same value by chance)
+```
+
+## Built-in Handlers
+
+NodeDB-Lite provides sensible defaults:
+
+```rust
+pub fn default_compensation_handlers() -> CompensationRegistry {
+    let mut registry = CompensationRegistry::new();
+
+    // Unique violations: keep existing
+    registry.register_unique_violation(|_| None);
+
+    // Foreign key missing: queue for retry (30s backoff)
+    registry.register_foreign_key_missing(|_| None);
+
+    // Rate limited: exponential backoff (1s → 60s)
+    registry.register_rate_limited(|_| None);
+
+    // Permission denied: log and skip
+    registry.register_permission_denied(|hint| {
+        eprintln!("Permission denied: {}", hint.reason);
+        None
+    });
+
+    // Schema violation: log and skip
+    registry.register_schema_violation(|hint| {
+        eprintln!("Schema violation: {}", hint.message);
+        None
+    });
+
+    registry
+}
+```
+
+Use defaults or override:
+
+```rust
+let db = NodeDbLite::open(&storage, "device-01").await?;
+let mut config = SyncConfig::default();
+config.compensation_registry = Some(default_compensation_handlers());
+db.start_sync(config).await?;
+```
+
+## Handling Complex Conflicts
+
+### Scenario: Inventory App
+
+Two users reduce inventory of same item from 10 to 5 and 3:
+
+```
+Server constraint: inventory >= 0, minimum order = 5
+
+Device A: inventory -= 5  (9 → 4)
+Device B: inventory -= 7  (9 → 2)
+
+Origin validates B's delta:
+  2 < 5 (minimum violated)
+  Reject: SchemaViolation
+
+Device B handler (custom logic):
+  "If result < minimum, round up to minimum"
+  Compensated delta: set inventory = 5
+  Return Some(new_delta)
+
+Origin receives compensated:
+  inventory = 5 (accepted)
+
+Both devices eventually show: inventory = 5
+```
+
+## Testing Compensation
+
+Simulate rejections in tests:
+
+```rust
+#[tokio::test]
+async fn test_unique_violation_handling() {
+    let db = NodeDbLite::open_test().await.unwrap();
+
+    let registry = CompensationRegistry::new();
+    let mut handled = Arc::new(Mutex::new(false));
+    {
+        let h = Arc::clone(&handled);
+        registry.register_unique_violation(|_| {
+            *h.lock().unwrap() = true;
+            None
+        });
+    }
+
+    // Simulate rejection
+    let hint = CompensationHint::UniqueViolation {
+        collection: "users".to_string(),
+        field: "email".to_string(),
+        existing_value: Value::String("alice@ex.com".to_string()),
+        attempted_value: Value::String("bob@ex.com".to_string()),
+    };
+
+    // Handler is invoked
+    assert!(*handled.lock().unwrap());
+}
+```
+
+## Monitoring Conflicts
+
+Log rejected deltas for observability:
+
+```rust
+registry.register_unique_violation(|hint| {
+    metrics::increment_counter!(
+        "nodedb.conflicts.unique_violations",
+        "collection" => &hint.collection,
+        "field" => &hint.field
+    );
+    None
+});
+```
+
+## Next Steps
+
+- **[Sync Protocol](./sync.rdx)**: DeltaReject messages
+- **[Shapes](./shapes.rdx)**: Partial replication that avoids conflicts
+- **[Rust SDK](./rust-sdk.rdx)**: Complete API

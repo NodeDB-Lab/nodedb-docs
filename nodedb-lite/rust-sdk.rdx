@@ -1,0 +1,422 @@
+---
+title: Rust SDK Reference
+description: Complete NodeDbLite API for vectors, graphs, documents, and memory management
+---
+
+# Rust SDK Reference
+
+NodeDB-Lite exposes a unified async API through the `NodeDb` trait and `NodeDbLite` concrete implementation.
+
+## Core Types
+
+### NodeDbLite
+
+The main entry point for all database operations.
+
+```rust
+impl NodeDbLite {
+    // Open existing DB or create new one
+    pub async fn open(
+        storage: &Path,
+        peer_id: &str
+    ) -> NodeDbResult<Self>;
+
+    // Open with custom memory budget (bytes)
+    pub async fn open_with_budget(
+        storage: &Path,
+        peer_id: &str,
+        memory_budget_bytes: usize
+    ) -> NodeDbResult<Self>;
+
+    // Flush all in-memory state to disk (atomic)
+    pub async fn flush(&self) -> NodeDbResult<()>;
+}
+```
+
+### Document
+
+Schemaless JSON-like document type.
+
+```rust
+impl Document {
+    pub fn from_json(json_str: &str) -> NodeDbResult<Self>;
+    pub fn from_map(map: HashMap<String, Value>) -> Self;
+    pub fn get_field(&self, key: &str) -> NodeDbResult<Value>;
+    pub fn set_field(&mut self, key: String, value: Value);
+}
+```
+
+### SearchResult
+
+Result from vector search.
+
+```rust
+pub struct SearchResult {
+    pub id: String,
+    pub distance: f32,           // L2 or cosine, depending on metric
+    pub metadata: Option<Document>,
+}
+```
+
+### SubGraph
+
+Result from graph traversal.
+
+```rust
+pub struct SubGraph {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+}
+
+pub struct Node {
+    pub id: NodeId,
+    pub properties: Option<Document>,
+}
+
+pub struct Edge {
+    pub id: EdgeId,
+    pub from: NodeId,
+    pub to: NodeId,
+    pub edge_type: String,
+    pub properties: Option<Document>,
+}
+```
+
+## Vector Operations
+
+### vector_insert
+
+Insert a single vector.
+
+```rust
+async fn vector_insert(
+    &self,
+    collection: &str,
+    id: &str,
+    embedding: &[f32],
+    metadata: Option<Document>
+) -> NodeDbResult<()>;
+```
+
+**Example:**
+```rust
+let embedding = vec![0.1, 0.2, 0.3];
+let mut meta = Document::from_map(HashMap::from([
+    ("title".to_string(), Value::String("Doc 1".to_string())),
+]));
+db.vector_insert("docs", "doc-1", &embedding, Some(meta)).await?;
+```
+
+### batch_vector_insert
+
+Insert multiple vectors in one operation (O(1) CRDT delta).
+
+```rust
+pub async fn batch_vector_insert(
+    &self,
+    collection: &str,
+    vectors: Vec<(&str, Vec<f32>)>
+) -> NodeDbResult<()>;
+```
+
+**Example:**
+```rust
+db.batch_vector_insert("docs", vec![
+    ("doc-1", vec![0.1, 0.2]),
+    ("doc-2", vec![0.2, 0.3]),
+    ("doc-3", vec![0.3, 0.4]),
+]).await?;
+```
+
+### vector_search
+
+Query k-nearest neighbors.
+
+```rust
+async fn vector_search(
+    &self,
+    collection: &str,
+    query: &[f32],
+    k: usize,
+    filter: Option<&MetadataFilter>
+) -> NodeDbResult<Vec<SearchResult>>;
+```
+
+**Example:**
+```rust
+let query = vec![0.15, 0.25];
+let results = db.vector_search("docs", &query, 5, None).await?;
+for result in results {
+    println!("{}: distance={}", result.id, result.distance);
+}
+```
+
+### vector_delete
+
+Remove a vector.
+
+```rust
+async fn vector_delete(
+    &self,
+    collection: &str,
+    id: &str
+) -> NodeDbResult<()>;
+```
+
+## Graph Operations
+
+### graph_insert_edge
+
+Add an edge between two nodes.
+
+```rust
+async fn graph_insert_edge(
+    &self,
+    from: &NodeId,
+    to: &NodeId,
+    edge_type: &str,
+    properties: Option<Document>
+) -> NodeDbResult<EdgeId>;
+```
+
+**Example:**
+```rust
+let edge_id = db.graph_insert_edge(
+    &NodeId::from("alice"),
+    &NodeId::from("bob"),
+    "knows",
+    None
+).await?;
+```
+
+### batch_graph_insert_edges
+
+Insert multiple edges (O(1) CRDT delta).
+
+```rust
+pub async fn batch_graph_insert_edges(
+    &self,
+    edges: Vec<(NodeId, NodeId, String, Option<Document>)>
+) -> NodeDbResult<()>;
+```
+
+### graph_traverse
+
+Depth-first traversal from a root node.
+
+```rust
+async fn graph_traverse(
+    &self,
+    start: &NodeId,
+    depth: u8,
+    edge_filter: Option<&EdgeFilter>
+) -> NodeDbResult<SubGraph>;
+```
+
+**Example:**
+```rust
+let sg = db.graph_traverse(&NodeId::from("alice"), 2, None).await?;
+println!("Found {} nodes and {} edges", sg.nodes.len(), sg.edges.len());
+```
+
+### graph_delete_edge
+
+Remove an edge.
+
+```rust
+async fn graph_delete_edge(
+    &self,
+    edge_id: &EdgeId
+) -> NodeDbResult<()>;
+```
+
+### compact_graph
+
+Reorder CSR after bulk loading (improves cache locality).
+
+```rust
+pub async fn compact_graph(&self) -> NodeDbResult<()>;
+```
+
+Call this after large batch inserts for optimal traversal performance.
+
+## Document Operations
+
+### document_put
+
+Insert or overwrite a document.
+
+```rust
+async fn document_put(
+    &self,
+    collection: &str,
+    doc: Document
+) -> NodeDbResult<()>;
+```
+
+### document_get
+
+Retrieve a document by ID.
+
+```rust
+async fn document_get(
+    &self,
+    collection: &str,
+    id: &str
+) -> NodeDbResult<Option<Document>>;
+```
+
+### document_delete
+
+Remove a document.
+
+```rust
+async fn document_delete(
+    &self,
+    collection: &str,
+    id: &str
+) -> NodeDbResult<()>;
+```
+
+## Memory Governance
+
+### open_with_budget
+
+Create a database with a custom memory budget (default 100 MB).
+
+```rust
+let db = NodeDbLite::open_with_budget(
+    &PathBuf::from("db.redb"),
+    "peer-1",
+    50_000_000  // 50 MB
+)?;
+```
+
+**Budget breakdown** (default 100 MB):
+- HNSW vectors: 40 MB (40%)
+- CSR graph: 15 MB (15%)
+- Loro CRDTs: 15 MB (15%)
+- Query operators: 15 MB (15%)
+- Headroom: 15 MB (15%)
+
+### Memory Pressure Levels
+
+- **Normal** (<85%): All collections loaded
+- **Warning** (85–95%): Eviction pending
+- **Critical** (>95%): Automatic eviction triggered
+
+When a collection is evicted, it persists to disk. On the next search, it lazy-reloads with a small latency spike.
+
+## Sync Operations
+
+### start_sync
+
+Enable WebSocket sync to NodeDB Origin.
+
+```rust
+pub async fn start_sync(
+    &self,
+    config: SyncConfig
+) -> NodeDbResult<()>;
+```
+
+**SyncConfig:**
+```rust
+pub struct SyncConfig {
+    pub origin_url: String,  // "ws://host:9090"
+    pub shapes: Vec<ShapeDefinition>,
+}
+```
+
+### pending_crdt_deltas
+
+Get pending mutations not yet sent.
+
+```rust
+pub async fn pending_crdt_deltas(
+    &self
+) -> NodeDbResult<Vec<CrdtDelta>>;
+```
+
+### acknowledge_deltas
+
+Mark deltas as acknowledged by remote.
+
+```rust
+pub async fn acknowledge_deltas(
+    &self,
+    delta_ids: &[DeltaId]
+) -> NodeDbResult<()>;
+```
+
+### import_remote_deltas
+
+Apply remote mutations locally.
+
+```rust
+pub async fn import_remote_deltas(
+    &self,
+    deltas: Vec<CrdtDelta>
+) -> NodeDbResult<()>;
+```
+
+## Error Handling
+
+All operations return `NodeDbResult<T>`.
+
+```rust
+pub type NodeDbResult<T> = Result<T, NodeDbError>;
+
+pub enum NodeDbError {
+    NotFound,
+    InvalidDimension,
+    MemoryExceeded,
+    IoError(String),
+    SerializationError(String),
+    SyncError(String),
+    // ... more variants
+}
+```
+
+**Example error handling:**
+```rust
+match db.vector_search("docs", &query, 5, None).await {
+    Ok(results) => println!("Found: {}", results.len()),
+    Err(NodeDbError::NotFound) => println!("Collection missing"),
+    Err(e) => eprintln!("Error: {:?}", e),
+}
+```
+
+## Complete Example with Error Handling
+
+```rust
+use nodedb_lite::{NodeDbLite, NodeDbError};
+use std::path::PathBuf;
+
+#[tokio::main]
+async fn main() -> Result<(), NodeDbError> {
+    let db = NodeDbLite::open_with_budget(
+        &PathBuf::from("./my_db.redb"),
+        "agent-01",
+        100_000_000  // 100 MB
+    ).await?;
+
+    // Insert with error handling
+    db.vector_insert("docs", "d1", &[0.1, 0.2], None).await?;
+
+    // Search with error handling
+    let results = db.vector_search("docs", &[0.1, 0.2], 10, None).await?;
+    println!("Results: {}", results.len());
+
+    // Persist
+    db.flush().await?;
+
+    Ok(())
+}
+```
+
+## Next Steps
+
+- **[Quickstart](./quickstart.rdx)**: Guided walkthrough
+- **[JavaScript/WASM SDK](./javascript-sdk.rdx)**: Browser API
+- **[Sync Protocol](./sync.rdx)**: Cloud synchronization

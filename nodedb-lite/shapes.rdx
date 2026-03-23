@@ -1,0 +1,343 @@
+---
+title: Shape Subscriptions
+description: Partial replication for efficient data synchronization with NodeDB Origin
+---
+
+# Shape Subscriptions
+
+Shapes define partial replicas. Instead of syncing all data, NodeDB-Lite subscriptions can fetch only documents matching a predicate, graph nodes within a radius, or vectors in specific collections. Reduces bandwidth and memory.
+
+## Motivation
+
+Syncing 1 million documents for a mobile app is wasteful. Shapes allow you to say:
+
+- "Send me only notes from the past 7 days"
+- "Send me the subgraph rooted at my user ID (depth 2)"
+- "Send me vectors in the 'chat-embeddings' collection only"
+
+## ShapeDefinition
+
+```rust
+pub struct ShapeDefinition {
+    pub id: String,           // unique shape identifier
+    pub shape_type: ShapeType,
+}
+
+pub enum ShapeType {
+    Document {
+        collection: String,
+        predicate: Option<Predicate>,  // filter on document fields
+    },
+    Graph {
+        root_nodes: Vec<NodeId>,
+        max_depth: u8,
+        edge_label: Option<String>,   // filter by edge type
+    },
+    Vector {
+        collection: String,
+        // implicit: all vectors in collection
+    },
+}
+
+pub struct Predicate {
+    pub field: String,
+    pub operator: PredicateOp,
+    pub value: Value,
+}
+
+pub enum PredicateOp {
+    Eq,
+    Gt, Gte,
+    Lt, Lte,
+    In(Vec<Value>),
+    Contains(String),  // substring
+    Exists,
+}
+```
+
+## Examples
+
+### Document Shape: Recent Notes
+
+Subscribe to notes modified in the last 7 days:
+
+```rust
+use nodedb_lite::{ShapeDefinition, ShapeType, Predicate, PredicateOp, Value};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+let seven_days_ago = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap()
+    .as_secs() - (7 * 86400);
+
+let shape = ShapeDefinition {
+    id: "recent-notes".to_string(),
+    shape_type: ShapeType::Document {
+        collection: "notes".to_string(),
+        predicate: Some(Predicate {
+            field: "updated_at".to_string(),
+            operator: PredicateOp::Gte,
+            value: Value::Integer(seven_days_ago as i64),
+        }),
+    },
+};
+```
+
+### Document Shape: By Status
+
+Subscribe to all active (non-archived) tasks:
+
+```rust
+let shape = ShapeDefinition {
+    id: "active-tasks".to_string(),
+    shape_type: ShapeType::Document {
+        collection: "tasks".to_string(),
+        predicate: Some(Predicate {
+            field: "archived".to_string(),
+            operator: PredicateOp::Eq,
+            value: Value::Boolean(false),
+        }),
+    },
+};
+```
+
+### Graph Shape: User Contacts
+
+Subscribe to a user and their direct connections (depth 1):
+
+```rust
+use nodedb_lite::NodeId;
+
+let shape = ShapeDefinition {
+    id: "my-contacts".to_string(),
+    shape_type: ShapeType::Graph {
+        root_nodes: vec![NodeId::from("user:alice")],
+        max_depth: 1,
+        edge_label: Some("contact".to_string()),
+    },
+};
+```
+
+### Vector Shape: Specific Collection
+
+Subscribe to all vectors in the "chat" collection:
+
+```rust
+let shape = ShapeDefinition {
+    id: "chat-vectors".to_string(),
+    shape_type: ShapeType::Vector {
+        collection: "chat".to_string(),
+    },
+};
+```
+
+## Subscription Lifecycle
+
+### 1. Subscribe
+
+Send `ShapeSubscribe` during sync handshake or later:
+
+```rust
+let config = SyncConfig {
+    origin_url: "ws://localhost:9090".to_string(),
+    shapes: vec![
+        shape_recent_notes,
+        shape_my_contacts,
+    ],
+};
+
+db.start_sync(config).await?;
+```
+
+### 2. Receive Snapshot
+
+Server sends all matching data in `ShapeSnapshot`:
+
+```json
+{
+  "shape_id": "recent-notes",
+  "snapshot": [
+    {
+      "id": "note-001",
+      "data": {
+        "title": "Groceries",
+        "updated_at": 1679000000,
+        "archived": false
+      }
+    },
+    {
+      "id": "note-002",
+      "data": {
+        "title": "Meeting Notes",
+        "updated_at": 1679100000,
+        "archived": false
+      }
+    }
+  ]
+}
+```
+
+NodeDB-Lite automatically merges snapshot into local CRDT state.
+
+### 3. Receive Incremental Deltas
+
+Server sends `ShapeDelta` for subsequent changes:
+
+```json
+{
+  "shape_id": "recent-notes",
+  "delta": {
+    "inserted": [
+      {
+        "id": "note-003",
+        "data": { "title": "New Note", "updated_at": 1679200000 }
+      }
+    ],
+    "updated": [
+      {
+        "id": "note-001",
+        "data": { "title": "Groceries (updated)", "updated_at": 1679050000 }
+      }
+    ],
+    "deleted": []
+  }
+}
+```
+
+### 4. Unsubscribe
+
+When no longer needed:
+
+```rust
+db.unsubscribe_shape("recent-notes").await?;
+```
+
+## Predicate Evaluation
+
+Server evaluates predicates on each delta before sending. Only matching documents are replicated.
+
+### could_match()
+
+For efficient filtering, use `could_match()` predicate:
+
+```rust
+pub fn could_match(doc: &Document, predicate: &Predicate) -> bool {
+    match predicate.operator {
+        PredicateOp::Eq => {
+            if let Some(field_val) = doc.get_field(&predicate.field) {
+                field_val == predicate.value
+            } else {
+                false
+            }
+        },
+        PredicateOp::Gte => {
+            if let Some(Value::Integer(field_val)) = doc.get_field(&predicate.field) {
+                if let Value::Integer(pred_val) = &predicate.value {
+                    field_val >= *pred_val
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        },
+        // ... other operators
+    }
+}
+```
+
+## Memory Efficiency
+
+Shapes dramatically reduce memory usage on devices:
+
+| Scenario | Without Shapes | With Shapes |
+|----------|---|---|
+| Mobile chat app (1M messages, sync recent 100) | 500 MB | 5 MB |
+| CRM with 10K contacts (sync only assigned) | 200 MB | 20 MB |
+| IoT sensor network (1M readings, sync last day) | 1 GB | 50 MB |
+
+## Nested Predicates (Future)
+
+Future versions may support AND/OR logic:
+
+```rust
+// Not yet implemented
+Predicate::And(vec![
+    Predicate { field: "archived", operator: Eq, value: false },
+    Predicate { field: "updated_at", operator: Gte, value: seven_days_ago },
+])
+```
+
+For now, use a single predicate per shape.
+
+## Sync Config with Shapes
+
+```rust
+use nodedb_lite::{NodeDbLite, SyncConfig, ShapeDefinition, ShapeType};
+
+let shapes = vec![
+    ShapeDefinition {
+        id: "active-docs".to_string(),
+        shape_type: ShapeType::Document {
+            collection: "documents".to_string(),
+            predicate: Some(Predicate {
+                field: "status".to_string(),
+                operator: PredicateOp::Eq,
+                value: Value::String("active".to_string()),
+            }),
+        },
+    },
+    ShapeDefinition {
+        id: "my-graph".to_string(),
+        shape_type: ShapeType::Graph {
+            root_nodes: vec![NodeId::from("user-123")],
+            max_depth: 2,
+            edge_label: None,
+        },
+    },
+];
+
+let config = SyncConfig {
+    origin_url: "ws://origin.nodedb.dev".to_string(),
+    shapes,
+};
+
+db.start_sync(config).await?;
+```
+
+## Client-Side Filtering
+
+Shapes filter on the server. For client-side filtering of received data:
+
+```rust
+// After importing deltas, query locally
+let filtered = db.document_get("documents", "doc-id").await?
+    .filter(|doc| doc.get_field("status") == Some(Value::String("active".to_string())));
+```
+
+## Query on Shape Data
+
+Once synced, query shape data with vector search, graph traversal, or SQL:
+
+```rust
+// After subscribing to "recent-notes" shape
+let results = db.vector_search("notes", &query_embedding, 10, None).await?;
+
+let sg = db.graph_traverse(&NodeId::from("user-alice"), 1, None).await?;
+```
+
+All in-memory indexes apply to synced data automatically.
+
+## Performance Tips
+
+1. **Keep Shapes Narrow**: Fewer documents = faster sync and lower memory.
+2. **Use max_depth Judiciously**: Graph shapes with depth 3+ can explode node count.
+3. **Predicate Selectivity**: Choose predicates that match <10% of data.
+4. **Batch Syncs**: Subscribe to multiple shapes at once; avoid serial subscriptions.
+5. **Unsubscribe Unused**: Remove shapes no longer needed to free memory.
+
+## Next Steps
+
+- **[Sync Protocol](./sync.rdx)**: WebSocket transport details
+- **[Compensation](./compensation.rdx)**: Conflict resolution on rejected deltas
+- **[Rust SDK](./rust-sdk.rdx)**: Complete API reference
