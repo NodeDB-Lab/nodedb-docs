@@ -1,8 +1,296 @@
 ---
 title: Cross-Model Queries
-description: Queries spanning vector, sparse, and CRDT engines with shared snapshots.
+description: Combining vector, text, graph, and CRDT engines in single queries.
 ---
 
 # Cross-Model Queries
 
-TODO
+NodeDB's hybrid architecture unifies four engines—Vector (semantic), Sparse (text/metadata), Graph (relationships), CRDT (collaborative state)—under a single SQL query. All queries execute against a **shared snapshot** for consistency.
+
+## Four Engines at a Glance
+
+| Engine | Data | Primary Use | Function |
+|:-------|:-----|:------------|:---------|
+| **Vector** | Embeddings | Semantic similarity | vector_distance() |
+| **Sparse** | Text/scalars | Keyword search, filtering | bm25_score(), WHERE |
+| **Graph** | Relationships | Entity connections | GRAPH expansion |
+| **CRDT** | Collaborative state | Multi-agent editing | crdt_state(), crdt_apply() |
+
+## Basic Multi-Engine Query
+
+Combine vector + sparse + metadata:
+
+```sql
+SELECT
+  documents.id,
+  documents.title,
+  vector_distance(documents.embedding, ARRAY[...]) as vec_score,
+  bm25_score(documents.content, 'query') as text_score,
+  documents.views as popularity
+FROM documents
+WHERE status = 'published'  -- Sparse: metadata filter
+  AND doc_exists(metadata, 'author')  -- CRDT: document structure check
+ORDER BY vec_score + text_score DESC
+LIMIT 10;
+```
+
+Execution plan:
+1. **Sparse**: Filter by `status = 'published'` (index scan if available)
+2. **CRDT**: Check `metadata` structure
+3. **Vector**: Score remaining documents
+4. **Aggregate**: Combine scores and limit
+
+## Vector + Graph Query
+
+Semantic search with relationship context:
+
+```sql
+SEARCH documents
+USING FUSION(
+  VECTOR(ARRAY[...], k=20),       -- Vector engine: semantic search
+  GRAPH(related_to, depth=2),     -- Graph engine: relationship expansion
+  TOP 10
+);
+```
+
+Internally:
+1. **Vector engine** finds 20 semantically similar documents
+2. **Graph engine** expands via relationships
+3. **RRF** ranks combined results
+4. Returns top 10
+
+## Vector + Sparse Filtering
+
+Pre-filter metadata, then semantic search:
+
+```sql
+SELECT
+  id,
+  title,
+  vector_distance(embedding, ARRAY[...]) as distance,
+  bm25_score(content, 'AI') as text_match
+FROM documents
+WHERE status = 'published'              -- Sparse: fast metadata filter
+  AND created_at >= '2026-01-01'        -- Sparse: date range
+  AND category IN ('AI', 'ML')          -- Sparse: enum filter
+ORDER BY distance                        -- Vector: semantic ranking
+LIMIT 10;
+```
+
+Optimization path:
+1. **Sparse** narrows to ~1K documents (indexed filter)
+2. **Vector** searches 1K (fast HNSW on subset)
+3. Returns top 10
+
+vs.
+
+1. **Vector** searches all 10M documents (slow)
+2. **Sparse** filters results (post-filtering inefficient)
+
+Always filter sparse first, then vector.
+
+## Text + Vector Ranking (RRF)
+
+Lexical (BM25) + semantic (vector) ranking:
+
+```sql
+WITH scored AS (
+  SELECT id, title,
+    ROW_NUMBER() OVER (ORDER BY vector_distance(embedding, ARRAY[...])) as vec_rank,
+    ROW_NUMBER() OVER (ORDER BY bm25_score(content, 'machine learning') DESC) as text_rank
+  FROM documents
+  WHERE status = 'published'
+)
+SELECT id, title,
+  rrf_score(vec_rank, text_rank, 60) as score
+FROM scored
+ORDER BY score DESC
+LIMIT 15;
+```
+
+Combines both engines fairly via RRF.
+
+## CRDT Collaborative Documents
+
+Combine collaborative state with semantic search:
+
+```sql
+-- Search documents and check CRDT sync status
+SELECT
+  documents.id,
+  documents.title,
+  vector_distance(documents.embedding, ARRAY[...]) as relevance,
+  crdt_state('documents', documents.id) as latest_state,
+  CASE
+    WHEN doc_exists(metadata, 'last_modified_by') THEN 'collaborative'
+    ELSE 'single_author'
+  END as edit_mode
+FROM documents
+WHERE status = 'published'
+ORDER BY relevance
+LIMIT 10;
+```
+
+For each result:
+- **Vector** ranks by semantic relevance
+- **CRDT** fetches latest collaborative state
+- **Sparse** provides metadata context
+
+## Cross-Tenant Vector Search
+
+Secure multi-tenant queries:
+
+```sql
+SELECT
+  documents.id,
+  documents.title,
+  vector_distance(documents.embedding, ARRAY[...]) as distance
+FROM documents
+WHERE tenant_id = CURRENT_TENANT_ID      -- Sparse: tenant isolation
+  AND CASE
+    WHEN doc_exists(metadata, 'owner') THEN
+      doc_get(metadata, 'owner') = CURRENT_USER_ID  -- RLS via CRDT structure
+    ELSE true
+  END
+ORDER BY distance
+LIMIT 20;
+```
+
+Multi-engine enforcement of isolation:
+- **Sparse** enforces tenant_id check (fast index scan)
+- **CRDT** enforces row-level security
+- **Vector** runs on filtered, secure subset
+
+## Real-Time Collaborative Editing + Search
+
+Update CRDT state while searching:
+
+```sql
+BEGIN;
+  -- Search
+  SELECT id, title, vector_distance(embedding, ARRAY[...]) as dist
+  FROM documents
+  WHERE status = 'published'
+  ORDER BY dist LIMIT 5;
+
+  -- Apply collaborative edit
+  SELECT crdt_apply('documents', 'doc_123', X'0a1b2c3d') as new_state;
+
+  -- Update metadata
+  UPDATE documents SET last_modified_at = NOW()
+  WHERE id = 'doc_123';
+
+COMMIT;
+```
+
+All three engines see consistent state within transaction:
+- **Vector**: Latest embedding
+- **CRDT**: Latest collaborative state
+- **Sparse**: Latest metadata
+
+Failure rolls back all changes.
+
+## Analytics: Multi-Engine Aggregation
+
+Combine engines for insights:
+
+```sql
+SELECT
+  category,
+  COUNT(*) as doc_count,
+  AVG(LENGTH(content)) as avg_content_length,
+  COUNT(DISTINCT doc_get(metadata, 'author')) as num_authors,
+  SUM(views) as total_views
+FROM documents
+WHERE status = 'published'
+  AND embedding IS NOT NULL      -- Vector: docs with embeddings
+  AND text_match(content, 'AI')  -- Sparse: full-text match
+GROUP BY category;
+```
+
+Aggregates across:
+- **Sparse**: Full-text matching
+- **Vector**: Embedding availability
+- **CRDT**: Document structure (metadata)
+
+## Snapshot Isolation Across Engines
+
+All operations within a transaction see a **consistent snapshot**:
+
+```sql
+BEGIN;
+  -- Read vector state at snapshot LSN (Log Sequence Number)
+  SELECT id, embedding FROM documents;
+
+  -- Read sparse state (same LSN)
+  SELECT id, status FROM documents;
+
+  -- Read graph relationships
+  SELECT source_id, target_id FROM edges;
+
+  -- Read CRDT state
+  SELECT crdt_state('documents', id);
+
+  -- All reads are consistent; no in-flight writes visible
+COMMIT;
+```
+
+NodeDB captures snapshot LSN at BEGIN. All engines read state ≤ LSN.
+
+## Write Consistency
+
+Updates span multiple engines:
+
+```sql
+BEGIN;
+  -- Update metadata (Sparse)
+  UPDATE documents SET status = 'archived' WHERE id = 1;
+
+  -- Update collaborative state (CRDT)
+  SELECT crdt_apply('documents', 'doc_1', X'...');
+
+  -- Insert relationship (Graph)
+  INSERT INTO edges (source_id, target_id) VALUES (1, 2);
+
+COMMIT;  -- All four engines commit atomically or all rollback
+```
+
+Commit phases:
+1. **WAL append**: All changes logged
+2. **Data Plane execution**: All engines execute in-order
+3. **Replication** (if cluster): Multi-Raft quorum
+4. **Acknowledgment**: Client sees result
+
+If any engine fails, entire transaction aborts.
+
+## Performance Considerations
+
+**Latency drivers**:
+1. **Sparse filtering** (WHERE) — 1-10ms for index scan
+2. **Vector scoring** — 1-100ms for HNSW traversal (k results)
+3. **CRDT state fetch** — 1-5ms per document
+4. **Graph expansion** — 10-500ms for multi-hop (depends on depth)
+5. **RRF reranking** — <5ms for fusion
+
+**Optimization strategy**:
+- **Narrow sparse first**: Use WHERE to reduce vector search cardinality
+- **Minimize CRDT fetches**: Batch crdt_state() calls
+- **Limit graph depth**: depth=1 to 2 for 100ms SLA
+- **Cache results**: Memoize CRDT/Graph for repeated queries
+
+## Limitations & Guarantees
+
+| Aspect | Guarantee |
+|:-------|:----------|
+| Snapshot isolation | ✓ All engines see consistent state |
+| Atomic writes | ✓ Multi-engine transactions |
+| Cross-engine joins | ✓ Supported via WHERE/CASE |
+| ACID properties | ✓ Enforced within transaction |
+| Serializability | ✗ Snapshot isolation (not full serializability) |
+
+## Next Steps
+
+- [Vector Search](/query/vector-search) — Vector engine details
+- [SQL Overview](/query/sql-overview) — SQL features
+- [Transactions](/query/sql-overview#transaction-isolation) — Multi-engine transactions
+- [Graph RAG](/query/graph-rag) — Graph + vector fusion

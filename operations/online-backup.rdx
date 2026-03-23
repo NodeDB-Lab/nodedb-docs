@@ -1,8 +1,320 @@
 ---
 title: Online Backup
-description: Consistent snapshots without downtime.
+description: Create hot backups while serving traffic with snapshot isolation.
 ---
 
 # Online Backup
 
-TODO
+NodeDB supports hot backups that capture consistent snapshots without stopping the database.
+
+## Create Backup
+
+Simple backup:
+
+```sql
+BACKUP TENANT tenant-42 TO '/backups/tenant-42-2025-03-23.snap';
+```
+
+Backup with options:
+
+```sql
+BACKUP TENANT tenant-42 TO '/var/backups/tenant-42.snap'
+  WITH
+    FULL = true,
+    INCLUDE_VECTORS = true,
+    INCLUDE_CRDT = true,
+    INCLUDE_SPARSE = true,
+    INCLUDE_TIMESERIES = true,
+    VERIFY = true;
+```
+
+Options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `FULL` | true | Include all data (false = metadata only) |
+| `INCLUDE_VECTORS` | true | Include vector indexes |
+| `INCLUDE_CRDT` | true | Include CRDT state |
+| `INCLUDE_SPARSE` | true | Include relational data |
+| `INCLUDE_TIMESERIES` | true | Include timeseries |
+| `VERIFY` | true | Verify backup integrity |
+| `COMPRESSION` | gzip | gzip, zstd, or none |
+
+## Snapshot Semantics
+
+Backup captures consistent state at LSN (Log Sequence Number):
+
+```
+Request:  BACKUP TENANT tenant-42 TO '/backup'
+Time 0ms: Freeze writes to tenant-42
+Time 5ms: Capture snapshot at LSN 0x123456
+Time 10ms: Create .snap files from snapshot
+Time 1000ms: Compress and finalize
+Time 2000ms: Resume writes to tenant-42
+Result: Consistent backup while other tenants still operate
+```
+
+All writes are frozen for the tenant being backed up, but other tenants continue.
+
+## Backup Output
+
+Backup creates per-core snapshot files + manifest:
+
+```
+/var/backups/
+└── tenant-42-2025-03-23.snap
+    ├── core_0.snap.gz
+    ├── core_1.snap.gz
+    ├── core_2.snap.gz
+    ├── core_3.snap.gz
+    └── manifest.msgpack
+```
+
+Each core file contains:
+
+- CRDT state
+- Vector quantized indexes
+- Sparse relational indexes
+- Timeseries chunks
+
+Manifest contains:
+
+- Metadata (tenant_id, lsn, timestamp)
+- Checksums
+- File hashes
+
+## Incremental Backup
+
+Backup only changes since last backup:
+
+```sql
+BACKUP TENANT tenant-42 TO '/backups/tenant-42-inc.snap'
+  INCREMENTAL FROM LSN 0x123456;
+```
+
+Size comparison:
+
+```
+Full backup:   2.5 GB (hour 1)
+Incremental:   150 MB (hour 2, only deltas)
+Incremental:   80 MB (hour 3, fewer changes)
+```
+
+Incremental backups reduce storage but require full backup base.
+
+## Automated Backup Schedule
+
+Configure periodic backups:
+
+```toml
+[backup]
+enabled = true
+schedule = "0 2 * * *"  # 2 AM daily
+destination = "/var/backups"
+retention_full_backups = 7
+retention_incremental = 30
+compression = "zstd"
+```
+
+Cron format examples:
+
+| Schedule | Meaning |
+|----------|---------|
+| `0 2 * * *` | Daily at 2 AM |
+| `0 */6 * * *` | Every 6 hours |
+| `0 0 * * 0` | Weekly Sunday midnight |
+| `0 0 1 * *` | Monthly 1st day |
+
+View backup history:
+
+```sql
+SELECT
+  backup_id,
+  tenant_id,
+  backup_time,
+  backup_size_gb,
+  lsn,
+  status
+FROM sys.backup_history
+ORDER BY backup_time DESC
+LIMIT 10;
+```
+
+## Monitor Backup Progress
+
+Check ongoing backup:
+
+```sql
+SELECT
+  backup_id,
+  status,
+  bytes_completed,
+  bytes_total,
+  ROUND(100.0 * bytes_completed / bytes_total, 1) as pct_complete,
+  estimated_remaining_secs
+FROM sys.backup_progress;
+```
+
+Example:
+
+```
+backup_id | status      | bytes_completed | bytes_total | pct_complete | est_remaining
+-----------|------------|-----------------|-------------|--------------|---------------
+42        | in_progress | 1.2 GB          | 4.5 GB      | 26.7         | 45
+```
+
+Cancel backup:
+
+```sql
+CANCEL BACKUP 42;
+```
+
+## Backup to Remote Storage
+
+Backup to S3:
+
+```sql
+BACKUP TENANT tenant-42 TO 's3://nodedb-backups/tenant-42-2025-03-23.snap'
+  WITH
+    AWS_REGION = 'us-east-1',
+    AWS_ACCESS_KEY_ID = 'AKIA...',
+    AWS_SECRET_ACCESS_KEY = '...',
+    STORAGE_CLASS = 'GLACIER';
+```
+
+Backup to Azure:
+
+```sql
+BACKUP TENANT tenant-42 TO 'azure://container/tenant-42.snap'
+  WITH
+    ACCOUNT_NAME = 'storage_account',
+    ACCOUNT_KEY = '...';
+```
+
+Backup to GCS:
+
+```sql
+BACKUP TENANT tenant-42 TO 'gs://bucket/tenant-42.snap'
+  WITH
+    SERVICE_ACCOUNT_JSON = '...';
+```
+
+## Backup to Local Path with Verification
+
+```sql
+BACKUP TENANT tenant-42 TO '/mnt/backup/tenant-42.snap'
+  WITH
+    VERIFY = true,
+    CHECKSUM_ALGORITHM = 'blake3';
+```
+
+Verify completes backup:
+
+1. Write all snapshot files
+2. Calculate checksums
+3. Create manifest with hashes
+4. Read back and verify hashes match
+5. Report success or failure
+
+## Bandwidth Throttling
+
+Limit backup network/disk bandwidth:
+
+```sql
+BACKUP TENANT tenant-42 TO 's3://backup'
+  WITH
+    BANDWIDTH_LIMIT_MB = 100;  -- 100 MB/s max
+```
+
+Useful for shared storage or high-latency networks.
+
+## Backup Retention
+
+Automatic cleanup of old backups:
+
+```toml
+[backup]
+retention_full_backups = 7      # Keep 7 full backups
+retention_incremental = 30      # Keep 30 days of incrementals
+auto_cleanup = true
+```
+
+Manual cleanup:
+
+```sql
+DELETE FROM sys.backups
+  WHERE backup_time < now() - interval '30 days'
+  AND backup_type = 'incremental';
+```
+
+## Monitoring Backup Metrics
+
+Prometheus metrics:
+
+```promql
+nodedb_backup_duration_seconds
+nodedb_backup_size_bytes
+nodedb_backup_errors_total
+nodedb_backup_last_success_timestamp
+```
+
+Alert on failed backup:
+
+```yaml
+- alert: BackupFailed
+  expr: |
+    (time() - nodedb_backup_last_success_timestamp) / 3600 > 26
+  annotations:
+    summary: "No successful backup in 26 hours"
+```
+
+## Backup Best Practices
+
+- Daily full backup, hourly incremental
+- Test restore in staging monthly
+- Store backups geographically distributed
+- Encrypt backups with tenant key
+- Verify backup integrity after creation
+- Monitor backup duration and size trends
+- Document backup schedule
+- Set alerts for backup failures
+- Use immutable storage (e.g., S3 Object Lock)
+- Never backup without testing restore
+
+## Troubleshooting Backups
+
+Backup slow:
+
+```sql
+SELECT
+  backup_id,
+  bytes_per_second,
+  estimated_remaining_secs
+FROM sys.backup_progress;
+```
+
+Check:
+- Disk I/O: `iostat -x 1 10`
+- Network: `iftop`, `nethogs`
+- CPU: `top -p <nodedb_pid>`
+- Memory pressure: `free -h`
+
+Backup out of disk space:
+
+```bash
+df -h /var/backups
+# Increase partition or use remote storage
+```
+
+Verify backup integrity:
+
+```sql
+SELECT verify_backup('/var/backups/tenant-42.snap');
+```
+
+Resume failed backup:
+
+```sql
+BACKUP TENANT tenant-42 TO '/backups/tenant-42.snap'
+  RESUME;
+```

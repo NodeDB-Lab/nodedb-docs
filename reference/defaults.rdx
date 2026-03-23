@@ -1,8 +1,190 @@
 ---
-title: Defaults
-description: Default values for all configurable parameters.
+title: "Default Configuration Values"
+description: "All configurable parameter defaults in server.toml"
 ---
 
-# Defaults
+# Default Configuration Values
 
-TODO
+This reference lists every configurable parameter in `server.toml` with its default value. Most parameters can be omitted from the configuration file to use defaults.
+
+## Network Defaults
+
+| Parameter | Default | Type | Notes |
+|-----------|---------|------|-------|
+| listen | 127.0.0.1:6433 | string | Native protocol address |
+| pg_listen | 127.0.0.1:6432 | string | PostgreSQL wire protocol address |
+| http_listen | 127.0.0.1:6480 | string | HTTP API address |
+
+For single-machine development, defaults restrict to loopback. Change to `0.0.0.0` to accept remote connections.
+
+## Storage and Memory Defaults
+
+| Parameter | Default | Type | Notes |
+|-----------|---------|------|-------|
+| data_dir | ~/.local/share/nodedb | string | Supports ~ expansion |
+| memory_limit | 1073741824 | u64 | 1 GiB in bytes |
+| data_plane_cores | CPU count - 1 | u32 | Auto-detected from system |
+| max_connections | 4096 | u32 | Per-server connection limit |
+| log_format | text | string | text or json |
+
+With 8-core system: data_plane_cores = 7
+
+## Engine Budget Defaults
+
+Total fractions must not exceed 1.0. Unallocated portion (default 0.15 = 15%) is reserved.
+
+| Parameter | Default | Fraction | With 1 GiB |
+|-----------|---------|----------|-----------|
+| vector_budget_fraction | 0.30 | 30% | 322 MiB |
+| sparse_budget_fraction | 0.15 | 15% | 161 MiB |
+| crdt_budget_fraction | 0.10 | 10% | 107 MiB |
+| timeseries_budget_fraction | 0.10 | 10% | 107 MiB |
+| query_budget_fraction | 0.20 | 20% | 215 MiB |
+| reserved | (implicit) | 15% | 161 MiB |
+
+Sum: 0.30 + 0.15 + 0.10 + 0.10 + 0.20 = 0.85 (85% allocated, 15% reserved)
+
+## Authentication Defaults
+
+| Parameter | Default | Type | Notes |
+|-----------|---------|------|-------|
+| mode | trust | string | trust, password, md5password, certificate |
+| superuser_name | admin | string | Default admin user |
+| min_password_length | 8 | u32 | Only in password mode |
+| max_failed_logins | 5 | u32 | 0 = disabled |
+| lockout_duration_secs | 300 | u32 | 5 minutes |
+| idle_timeout_secs | 3600 | u32 | 1 hour (0 = disabled) |
+| max_connections_per_user | 0 | u32 | 0 = unlimited |
+| password_expiry_days | 0 | u32 | 0 = disabled |
+| audit_retention_days | 0 | u32 | 0 = disabled |
+
+TLS and encryption sections are optional (not present by default).
+
+## TLS Defaults
+
+If [tls] section present:
+
+| Parameter | Default | Type | Notes |
+|-----------|---------|------|-------|
+| cert_reload_interval_secs | 3600 | u32 | 1 hour |
+
+cert_path and key_path have no defaults; both must be specified if TLS enabled.
+
+## Checkpoint Defaults
+
+| Parameter | Default | Type | Notes |
+|-----------|---------|------|-------|
+| interval_secs | 300 | u32 | 5 minutes |
+| core_timeout_secs | 30 | u32 | 30 seconds max per core |
+| wal_segment_target_mb | 64 | u32 | 64 MiB segments |
+| compaction_interval_secs | 600 | u32 | 10 minutes |
+| compaction_tombstone_threshold | 0.2 | f64 | 20% tombstones |
+
+Higher checkpoint interval (e.g., 600s) reduces write latency but increases recovery time if crash.
+
+## Cluster Defaults
+
+If [cluster] section present, all fields required:
+
+| Parameter | Required | Type | Notes |
+|-----------|----------|------|-------|
+| node_id | Yes | string | Unique node identifier |
+| listen | Yes | string | Inter-node address:port |
+| seed_nodes | Yes | array | Bootstrap nodes |
+| num_groups | Yes | u32 | Number of Raft shards |
+| replication_factor | Yes | u32 | Copies per shard |
+
+No cluster section = single-node mode (no defaults provided).
+
+## Example: Minimal Configuration
+
+Smallest valid configuration file using all defaults:
+
+```toml
+# All omitted parameters use defaults
+```
+
+Starts server on 127.0.0.1:6433 with 1 GiB memory, trust auth, local storage.
+
+## Example: Production Single-Node
+
+```toml
+listen = "0.0.0.0:6433"
+pg_listen = "0.0.0.0:6432"
+http_listen = "0.0.0.0:6480"
+data_dir = "/var/lib/nodedb"
+memory_limit = 17179869184  # 16 GiB
+data_plane_cores = 15
+max_connections = 2048
+log_format = "json"
+
+[auth]
+mode = "certificate"
+superuser_name = "admin"
+idle_timeout_secs = 1800
+
+[tls]
+cert_path = "/etc/nodedb/tls/server.crt"
+key_path = "/etc/nodedb/tls/server.key"
+cert_reload_interval_secs = 3600
+
+[checkpoint]
+interval_secs = 600
+wal_segment_target_mb = 128
+compaction_interval_secs = 1200
+```
+
+## Example: Vector-Heavy Workload
+
+Optimized for semantic search and embeddings:
+
+```toml
+memory_limit = 34359738368  # 32 GiB
+
+[engines]
+vector_budget_fraction = 0.50  # 16 GiB for vectors
+sparse_budget_fraction = 0.10  # 3.2 GiB for metadata
+crdt_budget_fraction = 0.05    # 1.6 GiB for CRDT
+timeseries_budget_fraction = 0.05  # 1.6 GiB for telemetry
+query_budget_fraction = 0.20   # 6.4 GiB for queries
+```
+
+## Example: Analytics-Heavy Workload
+
+Optimized for relational queries and aggregations:
+
+```toml
+memory_limit = 64849372160  # 64 GiB
+
+[engines]
+vector_budget_fraction = 0.20  # 12.8 GiB
+sparse_budget_fraction = 0.40  # 25.6 GiB for complex joins
+crdt_budget_fraction = 0.05    # 3.2 GiB
+timeseries_budget_fraction = 0.05  # 3.2 GiB
+query_budget_fraction = 0.25   # 16 GiB for large aggregations
+```
+
+## Runtime Parameter Defaults
+
+Some parameters can be set per-connection via SQL:
+
+| Parameter | Default | SQL Command | Notes |
+|-----------|---------|-------------|-------|
+| statement_timeout | 300 (seconds) | SET statement_timeout | Per-query override |
+| search_path | public | SET search_path | Schema search order |
+| datestyle | ISO | SET datestyle | Date format |
+
+## Recommended Tuning Checklist
+
+When deploying NodeDB:
+
+1. **Network** - Change listen from 127.0.0.1 to 0.0.0.0 if remote clients needed
+2. **Memory** - Set memory_limit based on system RAM (leave 20% for OS)
+3. **Auth** - Change mode from trust to certificate or md5password for production
+4. **Checkpoint** - Increase interval_secs if write latency is concern (default 300s is safe)
+5. **Engines** - Tune budget fractions based on workload (see examples above)
+6. **Data directory** - Ensure it's on fast storage, sufficient capacity
+7. **Logging** - Set log_format to json for structured logging
+8. **TLS** - Add [tls] section for encrypted connections
+
+All other parameters can use defaults for typical workloads.

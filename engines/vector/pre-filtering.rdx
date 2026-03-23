@@ -1,8 +1,152 @@
 ---
-title: Pre-Filtering
-description: AVX-512 Roaring Bitmap filtering during HNSW traversal.
+title: Pre-Filtering and Adaptive Strategy
+description: Roaring Bitmap filters, SIMD acceleration, and cost-based strategy selection.
 ---
 
-# Pre-Filtering
+# Pre-Filtering and Adaptive Strategy
 
-TODO
+Metadata filtering (e.g., category, date range, status) is essential for constrained vector search. NodeDB uses Roaring Bitmaps for filtering and adaptively chooses when to filter before, after, or alongside graph traversal.
+
+## Filtering Mechanisms
+
+### Pre-Filter (Graph → Filter)
+
+**Flow**: Traverse HNSW graph → check metadata filter → return candidate.
+
+**When to use**: High selectivity (10-50% of vectors pass filter)
+
+**Pros**:
+- Avoid traversing irrelevant branches early
+- Smaller search frontier
+- Faster for sparse results
+
+**Cons**:
+- May miss neighbors if they're filtered out
+- Requires accurate distance estimates
+
+**SQL**:
+```sql
+SELECT doc_id FROM documents
+WHERE category = 'research'
+ORDER BY vector_distance(embedding, ARRAY[...]) LIMIT 10;
+-- Internally: Search HNSW, skip non-research nodes
+```
+
+### Post-Filter (Filter → Graph)
+
+**Flow**: Collect all unfiltered results → check metadata → return k matches.
+
+**When to use**: Low selectivity (90%+ of vectors pass filter)
+
+**Pros**:
+- Always finds k best overall results
+- Simpler logic, fewer hops
+
+**Cons**:
+- Traverse many irrelevant nodes if selectivity is low
+- Higher latency for restrictive filters
+
+### Brute Force Search
+
+**Flow**: Scan all vectors, check filter, compute distances → sort.
+
+**When to use**: Very restrictive filters (<1% selectivity) or tiny result sets.
+
+**Pros**:
+- Guaranteed optimal results
+- Predictable latency for rare filters
+
+**Cons**:
+- Slower on large datasets
+- Full scan overhead
+
+## Roaring Bitmap Implementation
+
+NodeDB stores metadata filters as Roaring Bitmaps (compressed integer sets):
+
+**Data structure**: Tiered array → HashMap → Bitmap as density increases.
+
+**Memory**: ~10-100 bytes per 1K vectors (highly compressible).
+
+**SIMD acceleration**: Bitmap intersection via AVX2/AVX-512 instructions.
+
+**Latency**: Filter intersection in <1ms for 10M vectors.
+
+```sql
+-- Create filtered index (auto-maintains bitmap)
+CREATE INDEX metadata_idx ON documents (category);
+
+-- Query uses automatic pre-filter optimization
+SELECT doc_id FROM documents
+WHERE category IN ('research', 'news')
+ORDER BY vector_distance(embedding, ARRAY[...]) LIMIT 10;
+```
+
+## Adaptive Strategy Selection
+
+NodeDB estimates filter selectivity and chooses strategy:
+
+```
+selectivity > 70% → pre-filter (reduce search space)
+selectivity 20-70% → post-filter (standard hybrid)
+selectivity < 20% → brute force (avoid HNSW overhead)
+```
+
+**Selectivity estimation**:
+1. Sample filter across random vectors (fast, <1ms)
+2. Estimate percentage of matching vectors
+3. Choose strategy based on threshold
+
+**Cost model** (pseudo):
+```
+cost(pre_filter) = graph_traversal_cost + filter_checks
+cost(post_filter) = graph_traversal_cost + final_filter_cost
+cost(brute_force) = full_scan_cost
+
+choose strategy with lowest estimated cost
+```
+
+## Configuration
+
+```sql
+-- Force pre-filter strategy
+SET vector_filter_strategy = 'prefilter';
+
+-- Force post-filter strategy
+SET vector_filter_strategy = 'postfilter';
+
+-- Force brute force (not recommended)
+SET vector_filter_strategy = 'brute';
+
+-- Auto-select (default)
+SET vector_filter_strategy = 'auto';
+
+-- Adjust selectivity threshold for auto-switching
+SET vector_filter_selectivity_threshold = 30;  -- switch to brute at <30%
+```
+
+## Performance Tips
+
+**Multi-field filters**: Combine filters efficiently:
+```sql
+SELECT doc_id FROM documents
+WHERE category = 'research' AND status = 'published' AND date >= '2024-01-01'
+ORDER BY vector_distance(embedding, ARRAY[...]) LIMIT 20;
+-- Indexes on all three fields combined into single bitmap intersection
+```
+
+**Avoid overly restrictive filters**: If filter excludes 99.9% of results, brute force may be faster than graph search:
+```sql
+-- Bad: too restrictive
+WHERE region = 'antarctica' AND status = 'archived' AND ...
+
+-- Better: pre-filter at application level, or use higher LIMIT
+```
+
+**Index maintenance**: Create indices on frequently filtered columns:
+```sql
+CREATE INDEX idx_category ON documents (category);
+CREATE INDEX idx_date ON documents (date);
+```
+
+See [Vector Search Queries](/query/vector-search) for SQL examples and [Indexing Parameters](/engines/vector/indexing-params) for advanced tuning.

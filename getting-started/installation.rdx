@@ -1,8 +1,161 @@
 ---
 title: Installation
-description: Install NodeDB from source, prebuilt binaries, or Docker.
+description: Install NodeDB from source, with feature flags and verification steps.
 ---
 
 # Installation
 
-TODO
+NodeDB is distributed as source code and built locally using Rust's Cargo build system. This gives you full control over feature selection and optimization.
+
+## Prerequisites
+
+Before building NodeDB, ensure you have:
+
+- **Rust 1.89 or later**: Install from [rustup.rs](https://rustup.rs/) if you don't have it
+- **Linux kernel with io_uring support**: NodeDB's Data Plane uses io_uring for high-performance I/O
+  - Kernel 5.6+ (recommended 5.10+)
+  - Check with: `grep io_uring /proc/config.gz | zcat` or `cat /boot/config-$(uname -r) | grep IO_URING`
+- **C toolchain**: GCC or Clang for compiling C dependencies
+  - Ubuntu/Debian: `sudo apt-get install build-essential`
+  - Fedora/RHEL: `sudo dnf install gcc g++ make`
+  - Alpine: `apk add build-base`
+
+Optionally, for better build times:
+- **mold linker** (much faster than default GNU ld): `sudo apt-get install mold` or equivalent for your distro
+
+## Build from Source
+
+Clone the repository and build the release binary:
+
+```bash
+# Clone the repository
+git clone https://github.com/NodeDB/nodedb.git
+cd nodedb
+
+# Build release binary (optimized, ~2-5 minutes depending on hardware)
+cargo build --release
+
+# Binary location (add to your PATH or use full path)
+./target/release/nodedb --version
+```
+
+For development builds (faster compilation, slower runtime):
+
+```bash
+cargo build
+./target/debug/nodedb --version
+```
+
+## Feature Flags
+
+NodeDB supports optional feature flags to enable/disable functionality. Build with specific features:
+
+```bash
+# Cluster mode (Multi-Raft, distributed sharding)
+cargo build --release --features cluster
+
+# All features (cluster, edge client support, etc.)
+cargo build --release --all-features
+
+# Core only (single-node, minimal dependencies)
+cargo build --release --no-default-features
+```
+
+Available features:
+
+| Feature | Purpose | Default |
+|---------|---------|---------|
+| `cluster` | Distributed mode with Multi-Raft consensus and vShard replication | no |
+| `edge-sync` | Edge client synchronization and CRDT merge support | yes |
+| `timeseries` | Gorilla and Zstd-based timeseries engine | yes |
+| `s3-storage` | S3 backend for cold storage (L2 tier) | no |
+
+## Verify Installation
+
+Test that your installation is working:
+
+```bash
+# Check version
+./target/release/nodedb --version
+
+# Show help
+./target/release/nodedb --help
+
+# Run quick tests
+cargo test --release 2>&1 | tail -20
+```
+
+Expected output for `--help`:
+
+```
+NodeDB 0.1.0
+Distributed hybrid database for multi-modal AI workloads
+
+USAGE:
+    nodedb [OPTIONS]
+
+OPTIONS:
+    -c, --config <CONFIG>       Path to server.toml configuration file
+    -d, --data-dir <DATA_DIR>   Data directory (overrides config file)
+    -h, --help                  Print help information
+    -V, --version               Print version information
+```
+
+## Configuration on First Run
+
+NodeDB works without a configuration file using sensible defaults. To use a custom configuration:
+
+1. Create a `server.toml` file (see [Server Configuration](/getting-started/server-config))
+2. Start with: `./target/release/nodedb --config server.toml`
+
+Default behavior:
+- Listens on `127.0.0.1:6433` (native protocol)
+- Listens on `127.0.0.1:6432` (PostgreSQL wire protocol)
+- Listens on `127.0.0.1:6480` (HTTP API)
+- Data stored in `~/.local/share/nodedb/`
+- Uses all available CPU cores for the Data Plane
+
+## System Tuning (Optional but Recommended)
+
+For production deployments, tune your system:
+
+```bash
+# Increase file descriptors
+ulimit -n 65536
+
+# Increase memory lock limit for pinned allocations
+ulimit -l unlimited
+
+# Configure swappiness (prefer disk caching over swap)
+sysctl vm.swappiness=10
+
+# Increase network buffer sizes
+sysctl net.core.rmem_max=268435456
+sysctl net.core.wmem_max=268435456
+```
+
+## Troubleshooting Build Issues
+
+**io_uring not available error**: Your kernel doesn't support io_uring. Upgrade to Linux 5.6+ or use a container with a newer kernel.
+
+**Linking error with jemalloc**: Some systems have issues with jemalloc. Try:
+```bash
+JEMALLOC_OVERRIDE=/usr/lib/libjemalloc.so.2 cargo build --release
+```
+
+**Out of memory during build**: On systems with <4GB RAM, use:
+```bash
+cargo build --release -j 1
+```
+
+**Missing C dependencies**: Install build-essential or equivalent for your distro, then clean and rebuild:
+```bash
+cargo clean
+cargo build --release
+```
+
+## Next Steps
+
+- [Quick Start](/getting-started/quickstart) — Launch NodeDB and run your first queries
+- [Server Configuration](/getting-started/server-config) — Tune ports, memory, and authentication
+- [Architecture Overview](/concepts/overview) — Understand the hybrid execution model

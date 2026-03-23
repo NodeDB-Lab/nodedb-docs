@@ -1,8 +1,258 @@
 ---
 title: OpenTelemetry Tracing
-description: Exporting traces via OTLP to Jaeger, Grafana Tempo, etc.
+description: Export traces across hybrid execution planes with OTLP.
 ---
 
 # OpenTelemetry Tracing
 
-TODO
+NodeDB emits structured traces capturing cross-plane execution with full trace_id propagation.
+
+## Configuration
+
+Add to `server.toml`:
+
+```toml
+[tracing]
+enabled = true
+otlp_endpoint = "http://localhost:4317"
+trace_sample_rate = 1.0
+```
+
+## Trace_ID Propagation
+
+Traces flow from Control Plane to Data Plane via SPSC bridge:
+
+1. **Incoming Request** (Control Plane)
+   - PostgreSQL/HTTP connection receives request
+   - trace_id generated or extracted from headers
+   - Span created: request:1 (control plane)
+
+2. **SPSC Message** (Bridge)
+   - Query packet includes trace_id in header
+   - Cross-plane boundary marked
+
+3. **Data Plane Execution** (io_uring)
+   - Worker thread receives message with trace_id
+   - Span created: execute:2 (data plane, parent=request:1)
+   - Storage I/O spans nest under execute:2
+
+4. **Response** (Control Plane)
+   - Result flows back through bridge
+   - Response span closes chain
+
+Example trace:
+
+```
+request {id: trace-abc}
+├─ auth {duration: 1ms}
+├─ parse_query {duration: 2ms}
+├─ plan_query {duration: 5ms}
+└─ execute {id: trace-abc}
+    ├─ buffer_search {duration: 15ms}
+    ├─ vector_index {duration: 25ms}
+    ├─ wal_fsync {duration: 12ms}
+    └─ return_rows {duration: 3ms}
+```
+
+## Exporting to Jaeger
+
+Install Jaeger all-in-one:
+
+```bash
+docker run -d \
+  --name jaeger \
+  -p 5775:5775/udp \
+  -p 6831:6831/udp \
+  -p 16686:16686 \
+  jaegertracing/all-in-one:latest
+```
+
+Configure NodeDB:
+
+```toml
+[tracing]
+enabled = true
+otlp_endpoint = "http://localhost:4317"
+trace_sample_rate = 1.0
+```
+
+Access Jaeger UI at `http://localhost:16686`, search for service `nodedb`.
+
+## Grafana Tempo
+
+Export to Grafana Tempo for long-term storage and trace visualization.
+
+Configure Tempo as OTLP receiver:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 10s
+
+exporters:
+  otlp:
+    endpoint: localhost:4317
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]
+```
+
+Configure NodeDB:
+
+```toml
+[tracing]
+enabled = true
+otlp_endpoint = "http://tempo:4317"
+trace_sample_rate = 0.1
+```
+
+## Distributed Tracing Example
+
+Query execution across planes:
+
+```
+SELECT COUNT(*) FROM vectors WHERE distance(embedding, query_vec) < 0.8
+
+Timeline:
+0ms    - auth_check [control]
+2ms    - parse_sql [control]
+5ms    - plan_query [control]
+       └─ vector_search_plan
+
+8ms    - send_to_data_plane [bridge]
+        └─ message_id: 42, trace_id: abc123
+
+10ms   - dequeue_message [data_plane]
+       └─ worker_id: 3
+       └─ core_id: 5
+
+12ms   - acquire_mmap_lock [data_plane]
+       └─ lock_wait: 2ms
+
+14ms   - search_quantized_vectors [data_plane]
+       └─ pages_read: 128
+       └─ io_uring_submission
+
+41ms   - io_uring_completion [data_plane]
+       └─ actual_io_latency: 24ms
+
+43ms   - filter_results [data_plane]
+       └─ candidates: 1200
+       └─ passed_filter: 340
+
+46ms   - aggregate_count [data_plane]
+       └─ final_result: 340
+
+48ms   - return_to_control [bridge]
+
+50ms   - serialize_response [control]
+
+52ms   - send_pgwire [control]
+       └─ client_received
+```
+
+## Structured Logging
+
+Combined with OpenTelemetry:
+
+```json
+{
+  "timestamp": "2025-03-23T10:45:30.123Z",
+  "level": "info",
+  "message": "Query executed",
+  "trace_id": "abc123",
+  "span_id": "xyz789",
+  "plane": "data",
+  "worker_id": 3,
+  "query_latency_us": 52000,
+  "rows_returned": 340,
+  "wal_fsync_latency_us": 12000
+}
+```
+
+Enable structured logging:
+
+```toml
+[logging]
+format = "json"
+level = "info"
+```
+
+## Sampling Strategies
+
+### Head-Based Sampling
+
+Sample at ingestion time:
+
+```toml
+[tracing]
+trace_sample_rate = 0.1  # 10% sampling
+```
+
+### Tail-Based Sampling
+
+Sample based on trace outcome (requires Otel Collector):
+
+```yaml
+tail_sampling:
+  policies:
+    - name: error_sampling
+      type: status_code
+      status_code:
+        status_codes: [ERROR, UNSET]
+```
+
+## Span Attributes
+
+Common attributes across all spans:
+
+| Attribute | Example |
+|-----------|---------|
+| `http.method` | GET, POST |
+| `http.url` | /query |
+| `http.status_code` | 200, 500 |
+| `db.operation` | SELECT, INSERT |
+| `db.tenant_id` | tenant-42 |
+| `messaging.message_id` | 123 |
+| `engine` | vector, crdt, sparse |
+
+## Storage and Retention
+
+Configure in your backend (Jaeger, Tempo):
+
+- Trace TTL: 72 hours (default)
+- Storage: 100 GB for typical workload
+- Indexing: trace_id, span_name, service_name
+
+## Query Examples in Jaeger
+
+Find slow queries:
+
+```
+Service: nodedb
+Operation: execute
+Min Duration: 100ms
+```
+
+Find errors:
+
+```
+Service: nodedb
+Tags: span.kind=server, span.status=ERROR
+```
+
+Track query by trace_id:
+
+```
+Trace ID: abc123
+```

@@ -5,4 +5,133 @@ description: Pre-flight checks before deploying NodeDB to production.
 
 # Production Checklist
 
-TODO
+Use this checklist to ensure your NodeDB cluster is ready for production workloads.
+
+## Security
+
+- [ ] TLS certificates generated and verified
+  - Server certificate matches hostname
+  - Intermediate CA included in chain
+  - Private key secured with restricted permissions (0600)
+- [ ] Authentication mode configured (not `trust`)
+  - Password mode with SCRAM-SHA-256 or mTLS
+  - User passwords hashed, never plaintext
+- [ ] RBAC roles created
+  - Superuser account exists
+  - Application users have minimal required permissions
+  - Service accounts use API keys instead of passwords
+- [ ] Audit logging enabled and verified
+  - SHOW AUDIT LOG returns entries
+  - Log retention policy defined
+  - Logs shipped to external storage
+- [ ] mTLS for cluster communication enabled (if multi-node)
+  - CRL configured and test hot-reload
+  - Node certs have correct subjectAltName
+- [ ] Encryption at rest configured (production requirement)
+  - WAL encryption: AES-256-GCM enabled
+  - Data at rest: AES-256-XTS enabled
+  - KEK (key encryption key) stored in KMS or secure vault
+
+## Performance & Resources
+
+- [ ] Memory configuration
+  - Total system memory identified
+  - Engine budgets allocated (CRDT, Vector, Sparse, Timeseries)
+  - Per-core NUMA awareness enabled if multi-socket
+  - DataFusion spill threshold set appropriately
+- [ ] Connection limit set
+  - max_connections configured (at least 100, typically 1000-4096)
+  - Connection pool sizing tested
+  - Timeout verified: idle_timeout_secs set (default 3600s)
+- [ ] CPU cores identified and tuned
+  - io_uring enabled on Linux with kernel 5.10+
+  - Hyper-threading disabled if latency-sensitive
+  - CPU affinity configured for NUMA systems
+- [ ] Storage
+  - Data directory on fast NVMe (not HDD)
+  - Data directory has sufficient free space (at least 50% of target dataset)
+  - Filesystem: ext4, XFS, or Btrfs (not NTFS/FAT)
+  - O_DIRECT support verified (`blockdev --getfra /dev/nvme0n1`)
+
+## Deployment & Availability
+
+- [ ] Systemd unit file installed (or equivalent orchestration)
+- [ ] Health checks configured
+  - GET /health endpoint responding 200
+  - GET /health/ready endpoint checks data plane
+  - Monitoring tool configured to call health endpoints
+- [ ] Logging configured
+  - Log level appropriate (info for prod, debug for troubleshooting)
+  - Logs ship to centralized storage (ELK, Splunk, etc.)
+  - Log rotation configured (if file-based)
+- [ ] Monitoring & alerting
+  - Prometheus scraping GET /metrics
+  - Grafana dashboards set up
+  - Alerts for: high memory, WAL fsync latency >50ms, queue saturation >80%
+- [ ] Backup & recovery
+  - Backup destination configured and tested
+  - BACKUP TENANT works and produces valid snapshots
+  - RESTORE TENANT tested in staging
+  - WAL archiving to S3 verified (if multi-node)
+  - Recovery RTO/RPO requirements met
+
+## Configuration
+
+- [ ] Server configuration file validated
+  - All required sections present: [server], [engines], [auth]
+  - No syntax errors: `nodedb --config server.toml --validate`
+  - File permissions: 0600 (secrets may be present)
+- [ ] For multi-node clusters:
+  - node_id unique across all nodes
+  - seed_nodes list includes at least one bootstrap node
+  - QUIC transport port 9400 open between nodes
+  - replication_factor >= 3 for HA
+  - num_groups = (num_nodes - 1) / 2 + 1 for QUIC quorum
+- [ ] Tenants created and quotas set
+  - CREATE TENANT statements executed
+  - Storage quotas verified with SHOW TENANTS
+  - Tenant isolation tested (cross-tenant access blocked)
+
+## Testing
+
+- [ ] Smoke test in production environment
+  - nodedb binary starts without errors
+  - TCP connections on ports 6432 (pgwire), 6480 (HTTP), 6433 (native)
+  - Sample INSERT/SELECT queries work
+  - Authentication succeeds with configured mode
+- [ ] Load test
+  - Sustained 100 req/s sustained (or target QPS)
+  - p99 latency within SLA (write <15ms, vector search <50ms)
+  - Memory stays within budgets under load
+  - No crashes after 1 hour sustained load
+- [ ] Failover test (multi-node)
+  - Kill one node, cluster remains operational
+  - Data consistency verified after failover
+  - WAL recovery plays back correctly
+- [ ] Upgrade test (staging)
+  - Binary upgrade from N-1 version works
+  - Wire format compatibility verified
+  - No data loss during rolling upgrade
+
+## Operational Runbooks
+
+- [ ] Documented procedures for:
+  - Starting/stopping the service
+  - Taking a backup and restoring it
+  - Adding a new node to cluster
+  - Removing a failed node
+  - Scaling memory budgets
+  - Updating TLS certificates
+- [ ] On-call playbook includes:
+  - Health check endpoints to monitor
+  - Common error messages and responses
+  - Escalation contacts
+
+## Sign-Off
+
+- [ ] Infrastructure team reviewed deployment
+- [ ] Security team approved authentication & encryption config
+- [ ] Database team verified backup/recovery procedures
+- [ ] Operations team trained on monitoring & runbooks
+- [ ] Management approval obtained
+- [ ] Deployment date & time scheduled

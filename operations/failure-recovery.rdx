@@ -1,8 +1,357 @@
 ---
 title: Failure Recovery
-description: Recovering from node failures, split-brain, data loss.
+description: Recover from node failures and data corruption.
 ---
 
 # Failure Recovery
 
-TODO
+Recover from single node failures, multiple failures, and data corruption using WAL replay and snapshots.
+
+## Single Node Failure (Common Case)
+
+When one node fails in a 3-node cluster:
+
+1. **Detection** (automatic)
+   - Raft detects heartbeat loss within 3 seconds
+   - New leader elected within 5 seconds
+   - Cluster remains operational
+
+2. **Automatic Recovery** (automatic)
+   - Shards on failed node still available from replicas
+   - No data loss (3-way replication)
+   - Queries route to healthy replicas
+
+3. **Restore Failed Node** (within 1 hour)
+   - Restart node: `systemctl start nodedb@1`
+   - Node automatically catches up via WAL replay
+   - Cluster re-balances shards back to node
+
+Example:
+
+```bash
+# Node 1 dies (power loss)
+# 10 seconds later: Cluster elects new leader (node 2)
+# 30 seconds later: Queries still working (using nodes 2, 3)
+# 1 hour later: Node 1 rebooted
+nodedb --config server-1.toml
+# Node 1 rejoins cluster, replays WAL, catches up
+```
+
+Verify recovery:
+
+```sql
+SHOW NODES;
+-- Node 1 should show 'syncing' for a few seconds, then 'healthy'
+```
+
+## Multiple Node Failure (Quorum Loss)
+
+If 2 out of 3 nodes fail simultaneously:
+
+1. **Cluster Status:** Unavailable (lost quorum)
+2. **Last Write:** Lost (not replicated to majority)
+3. **Recovery:** Restore from backup
+
+Recover:
+
+```bash
+# Assume nodes 1 and 2 failed, node 3 alive
+
+# On node 3, force it to become leader (WARNING: may lose data!)
+psql -c "ALTER SYSTEM FORCE_PRIMARY_ROLE = true;"
+
+# Or restore from backup on nodes 1 and 2
+# Then rejoin
+```
+
+**CRITICAL**: Use force_primary_role only as last resort. Data may be incomplete.
+
+Better approach: Restore from backup on failed nodes.
+
+```bash
+# Node 1 recovery
+RESTORE TENANT tenant-42 FROM '/backups/tenant-42-latest.snap';
+
+# Node 1 rejoins cluster automatically
+```
+
+## Core Health Watchdog
+
+NodeDB monitors data plane thread health:
+
+```
+CoreHealthWatchdog monitors 4 worker threads
+Threshold: 3 panics in 60 seconds = degraded mode
+```
+
+Degraded mode behavior:
+
+```sql
+-- Liveness still OK (monitoring doesn't stop)
+curl http://localhost:6480/health
+-- Returns 200 OK
+
+-- Readiness fails (can't serve queries)
+curl http://localhost:6480/health/ready
+-- Returns 503 Service Unavailable
+
+-- Load balancer removes from rotation
+-- Queries fail with: "Node degraded, no workers available"
+```
+
+Check watchdog status:
+
+```sql
+SELECT
+  node_id,
+  thread_id,
+  last_panic_timestamp,
+  panic_count_60s,
+  status
+FROM sys.core_health;
+```
+
+Recover from degradation:
+
+```bash
+# Option 1: Restart node
+systemctl restart nodedb.service
+
+# Option 2: Check for panic cause
+journalctl -u nodedb.service -n 100
+
+# Option 3: If specific core is bad, disable it
+ALTER SYSTEM SET disabled_cpu_cores = [2];  # Disable core 2
+systemctl restart nodedb.service
+```
+
+## Data Corruption Recovery
+
+If data corruption detected:
+
+```sql
+SELECT verify_tenant_integrity('tenant-42');
+-- Returns: OK or CORRUPTED
+
+-- If corrupted
+REPAIR TENANT tenant-42;
+-- Attempts to rebuild corrupted indexes
+```
+
+If repair fails:
+
+```bash
+# Restore from backup
+RESTORE TENANT tenant-42 FROM '/backups/tenant-42-2025-03-23.snap'
+  DRY RUN;
+# Verify plan
+RESTORE TENANT tenant-42 FROM '/backups/tenant-42-2025-03-23.snap';
+```
+
+Causes of corruption:
+
+- Bit flip from bad RAM: use DIMM testing tools
+- Disk failure: replace disk
+- Software bug: report to NodeDB team
+
+## WAL Replay on Crash
+
+NodeDB automatically replays WAL on startup:
+
+```
+Startup sequence:
+  1. Read last checkpoint
+  2. Identify LSN to replay from
+  3. Replay all transactions from checkpoint to present
+  4. Verify integrity
+  5. Open for connections
+```
+
+Replay progress:
+
+```bash
+tail -f /var/log/nodedb/nodedb.log | grep "WAL recovery"
+# WAL recovery: segment 5, LSN 0x123456 / 0x789abc (65% complete)
+```
+
+If replay is slow:
+
+```bash
+# Check disk I/O
+iostat -x 1 5
+
+# Replay bandwidth
+iostat -x 1 5 | awk '{print $4}' # Read MB/s
+```
+
+Typical replay speed: 100-500 MB/s (depends on disk and CPU).
+
+## Point-in-Time Recovery from Disaster
+
+Total cluster corruption (all 3 nodes):
+
+```bash
+# Step 1: Stop all nodes
+systemctl stop nodedb.service
+
+# Step 2: Delete all data
+rm -rf /var/lib/nodedb/*
+
+# Step 3: Restore from backup on all nodes
+# On node 1
+RESTORE TENANT tenant-42 FROM '/backups/tenant-42-2025-03-22.snap' DRY RUN;
+RESTORE TENANT tenant-42 FROM '/backups/tenant-42-2025-03-22.snap'
+  TO TIMESTAMP '2025-03-23 15:30:00';
+
+# On node 2, 3
+# (same restore to same timestamp)
+
+# Step 4: Restart cluster
+systemctl start nodedb.service
+```
+
+Wait for cluster to form:
+
+```sql
+SHOW CLUSTER STATUS;
+-- Wait for status = 'healthy'
+```
+
+## Split-Brain Prevention
+
+NodeDB uses Raft consensus to prevent split-brain:
+
+```
+Scenario: Network partition
+  Partition A: [node-1, node-2]  (2 nodes, has quorum)
+  Partition B: [node-3]           (1 node, no quorum)
+
+Behavior:
+  Partition A: continues to serve (has quorum)
+  Partition B: returns errors (no quorum)
+
+When network heals:
+  Node 3 syncs from partition A
+  No split-brain, no conflicts
+```
+
+Check for split-brain (shouldn't happen):
+
+```sql
+SELECT DISTINCT cluster_id FROM sys.nodes;
+-- Should return exactly one cluster_id
+-- If multiple, manual intervention required
+```
+
+## Disaster Recovery Drill
+
+Quarterly test:
+
+```bash
+#!/bin/bash
+
+# 1. Simulate node failure
+echo "Simulating node 1 failure..."
+ssh nodedb-1 "sudo systemctl stop nodedb.service"
+sleep 30
+
+# 2. Verify cluster operational
+psql -h nodedb-2 -c "SELECT COUNT(*) FROM customers;" || echo "FAIL: Cluster down"
+
+# 3. Verify data available
+CUSTOMER_COUNT=$(psql -h nodedb-2 -c "SELECT COUNT(*) FROM customers;" -t)
+echo "Customer count: $CUSTOMER_COUNT"
+
+# 4. Restore node
+echo "Restoring node 1..."
+ssh nodedb-1 "sudo systemctl start nodedb.service"
+sleep 30
+
+# 5. Verify rejoin
+psql -c "SHOW NODES;" | grep -c "healthy" | grep -q "3" || echo "FAIL: Node not rejoined"
+
+# 6. Verify consistency
+psql -c "SELECT verify_cluster_consistency();" | grep -q "OK" || echo "FAIL: Inconsistent"
+
+echo "Disaster recovery drill completed successfully!"
+```
+
+## Monitoring for Failures
+
+Prometheus alerts:
+
+```yaml
+- alert: NodeDown
+  expr: nodedb_raft_node_healthy == 0
+  for: 1m
+  labels:
+    severity: critical
+
+- alert: HighReplicationLag
+  expr: nodedb_raft_replication_lag_entries > 10000
+  for: 5m
+  labels:
+    severity: warning
+
+- alert: WatchdogDegraded
+  expr: nodedb_watchdog_panic_rate > 0
+  for: 1m
+  labels:
+    severity: critical
+```
+
+Health dashboard:
+
+```sql
+SELECT
+  node_id,
+  status,
+  last_heartbeat,
+  CURRENT_TIMESTAMP - last_heartbeat as heartbeat_age,
+  replication_lag_entries
+FROM sys.nodes
+ORDER BY node_id;
+```
+
+## Recovery Runbook
+
+Quick reference for incidents:
+
+```
+1. Node Down
+   - Automatic failover occurs within 5s
+   - Restart node: systemctl start nodedb@<id>
+   - Node catches up from replicas
+
+2. Quorum Lost (2+ nodes down)
+   - Cluster unavailable
+   - Restore from backup on failed nodes
+   - Rejoin to healthy node
+
+3. Data Corruption
+   - Run: SELECT verify_tenant_integrity()
+   - If failed: RESTORE from latest backup
+   - Investigate cause
+
+4. Watchdog Degraded
+   - Check: journalctl -u nodedb.service
+   - Restart: systemctl restart nodedb.service
+   - If persists: possible hardware issue
+
+5. Total Cluster Failure
+   - Delete all data_dir
+   - Restore from backup on all nodes
+   - Restart cluster
+```
+
+## Best Practices
+
+- Monitor node health continuously
+- Test failure scenarios quarterly
+- Keep backups in separate region
+- Alert within 1 minute of failure
+- Document incident timeline
+- Post-mortem on each outage
+- Verify WAL archiving is working
+- Test point-in-time recovery monthly
+- Have runbook for all failure types

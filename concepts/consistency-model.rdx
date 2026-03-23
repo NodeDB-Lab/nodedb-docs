@@ -1,8 +1,366 @@
 ---
 title: Consistency Model
-description: Overview of consistency guarantees across read and write paths.
+description: Write linearizability with flexible read consistency (strong, bounded-staleness, eventual). Cross-model snapshot isolation.
 ---
 
 # Consistency Model
 
-TODO
+NodeDB enforces **write linearizability** across all engines but allows flexible read consistency. Writes are atomic and durable; reads can be strong, bounded-stale, or eventual depending on application needs.
+
+## Write Linearizability
+
+Every write is **linearizable**: once acknowledged, all subsequent reads see the write.
+
+### Single-Shard Writes
+
+For writes on a single shard (which is typical):
+
+```
+1. Client sends INSERT
+2. Control Plane routes to Data Plane shard leader
+3. Data Plane appends to WAL (O_DIRECT)
+4. Data Plane applies to L0 (memtable, indexes)
+5. Data Plane sends ACK back to Control Plane
+6. Control Plane sends response to client
+   ↓
+   "Acknowledged" = durable and visible
+
+7. Any subsequent query sees the write
+   (reads from L0 or L1 where mutation is visible)
+```
+
+**Latency:** Typically 1-10 ms (dominated by WAL group commit and NVMe write latency).
+
+### Multi-Shard Transactions
+
+For transactions touching multiple shards (rare):
+
+```
+1. Client sends multi-shard transaction
+2. Control Plane initiates 2PC (Two-Phase Commit)
+3. Phase 1: All shards prepare
+   - Each shard appends to local WAL (O_DIRECT)
+   - Each shard locks affected rows
+   - Each shard sends vote (OK or ABORT)
+4. Phase 2: Commit or abort
+   - If all OK: each shard commits to L0, sends ACK
+   - If any ABORT: all rollback
+5. Control Plane sends final response to client
+   ↓
+   All-or-nothing atomicity across shards
+```
+
+Cross-shard transactions are linearizable within the transaction timestamp.
+
+## Write Path Guarantees
+
+Every write goes through these checkpoints:
+
+```
+Client sends write
+  ↓
+│ Control Plane validates (syntax, schema, constraints)
+│ → Quota checks (memory, QPS, storage)
+│
+│ Data Plane receives via SPSC
+│ → Append to WAL (O_DIRECT, CRC32C)
+│ → Apply to L0 (in-memory, indexed)
+│ → For replicated shards: Raft quorum replicate
+│
+│ Write is now durable and committed
+│ → Send ACK to client
+│
+└─ Client receives: write is safe
+
+Subsequent reads:
+  ↓
+  See the write (linearizable visibility)
+```
+
+## Read Consistency Levels
+
+Reads are NOT automatically linearizable. Instead, applications choose their consistency level:
+
+### 1. Strong Consistency (Linearizable)
+
+Always reads from the current leader after ensuring the leader has replicated past the write.
+
+```sql
+SELECT * FROM documents WHERE id='doc123' CONSISTENCY STRONG;
+```
+
+**Mechanism:**
+
+```
+1. Client sends read request with CONSISTENCY STRONG
+2. Control Plane routes to shard leader
+3. Leader reads after ensuring commit_index >= request_lsn
+4. Returns result
+```
+
+**Latency:** ~5-10 ms (network to leader, waiting for replication).
+
+**Use cases:** Transactions that depend on previous write, balance transfers, critical data.
+
+### 2. Bounded Staleness
+
+Reads from any replica as long as it's within a staleness bound (e.g., 1 second behind leader).
+
+```sql
+SELECT * FROM documents WHERE id='doc123' CONSISTENCY BOUNDED_STALENESS('1s');
+```
+
+**Mechanism:**
+
+```
+1. Client sends read with CONSISTENCY BOUNDED_STALENESS('1s')
+2. Control Plane checks follower replication lag
+   Lag = leader_lsn - follower_lsn
+3. If lag <= 1s: read from follower (lower latency)
+   Else: read from leader (avoid stale data)
+4. Returns result
+```
+
+**Latency:** ~1-2 ms (network to any replica, usually closer).
+
+**Staleness:** ≤ 1 second behind leader.
+
+**Use cases:** Analytics, secondary reads, eventually-consistent UI.
+
+### 3. Eventual Consistency (CRDT-based)
+
+Reads from local replica; may be behind temporarily but will eventually converge.
+
+```sql
+SELECT * FROM drafts WHERE id='doc456' CONSISTENCY EVENTUAL;
+```
+
+**Mechanism:**
+
+```
+1. Client sends read with CONSISTENCY EVENTUAL
+2. Read from local replica (no coordination)
+3. Returns result (may be behind if deltas not yet merged)
+4. Deltas arrive asynchronously and merge conflict-free
+5. Document state eventually reflects all deltas
+```
+
+**Latency:** < 100 μs (local read, no network).
+
+**Convergence:** 100-500 ms (typical), bounded by replication lag.
+
+**Use cases:** Agent offline-first documents, rapid local reads, collaborative editing.
+
+## Multi-Engine Queries
+
+When a single query touches multiple engines (vector + relational + graph), how do we ensure consistency?
+
+**Cross-Model Snapshot Isolation:**
+
+```
+Query: "Find articles semantically similar to Q
+        WHERE published = true
+        AND GRAPH_HOP(author, OUT, 1) IN [user1, user2]"
+
+Execution:
+1. Control Plane determines required LSN for each engine
+   - Vector engine LSN: 500000
+   - Relational engine LSN: 500010 (slightly ahead)
+   - Graph engine LSN: 499990 (slightly behind)
+
+2. Decides snapshot LSN = MIN(500000, 500010, 499990) = 499990
+   (Conservative: ensures all results at same snapshot)
+
+3. Dispatches with snapshot_lsn = 499990
+   - Vector search: returns vectors as of LSN 499990
+   - Relational filter: returns metadata as of LSN 499990
+   - Graph traversal: returns edges as of LSN 499990
+
+4. Results fused via RRF (all from same consistent snapshot)
+
+5. Response includes watermark_lsn = 499990
+   Client knows: "results are as of LSN 499990"
+```
+
+**Trade-off:** Conservative watermark ensures all engines are at same snapshot, but may omit recent writes.
+
+**Alternative: Relaxed Consistency**
+
+```sql
+SELECT *, graph_score, vector_score FROM articles
+WHERE published = true
+ORDER BY vector_score DESC
+CONSISTENCY EVENTUAL
+INCLUDE WATERMARKS;
+```
+
+Returns results from each engine at its current LSN (not synchronized), with watermarks so client can understand freshness.
+
+## Constraint Enforcement
+
+### UNIQUE Constraints
+
+```sql
+CREATE COLLECTION users (
+    id UUID PRIMARY KEY,
+    email VARCHAR UNIQUE
+);
+
+INSERT INTO users (id, email) VALUES ('id1', 'alice@example.com');
+INSERT INTO users (id, email) VALUES ('id2', 'alice@example.com');
+-- Error: UNIQUE violation on email
+```
+
+Enforced at WAL-apply time:
+
+```
+1. Data Plane receives INSERT
+2. Check if email exists in L0/L1 indexes
+3. If exists: REJECT with ConstraintViolation
+4. Write not appended to WAL
+5. Client receives error
+```
+
+### Foreign Key Constraints
+
+```sql
+CREATE COLLECTION users (id UUID PRIMARY KEY);
+CREATE COLLECTION posts (user_id UUID REFERENCES users(id));
+
+INSERT INTO posts (user_id) VALUES ('nonexistent');
+-- Error: FK violation (user not found)
+```
+
+Enforced at WAL-apply time (or with pre-validation fast-path):
+
+```
+1. Data Plane receives INSERT (user_id='xyz')
+2. Check if user_id='xyz' exists in users collection
+3. If not exists: REJECT with ConstraintViolation
+4. Client receives error (fast-reject, no round-trip)
+```
+
+### CRDT Constraints + Dead-Letter Queue
+
+For CRDT collections, constraints are validated at Raft commit:
+
+```
+Agent A sends CRDT delta (offline)
+  ↓
+Control Plane (pre-validation, optional):
+  - Check if delta obviously violates constraints
+  - Return fast-reject if so
+  ↓
+Delta submitted to Raft log
+  ↓
+Raft consensus reached
+  ↓
+Data Plane applies delta to L0
+  ↓
+Constraints validated
+  ↓
+IF violation:
+  Move delta to dead-letter queue (DLQ)
+  Agent notified: "collision detected"
+  Agent can compensate offline
+ELSE:
+  Mutation committed
+```
+
+**Rationale:** CRDTs can have delayed delivery (offline agents). If a delta violates a constraint, it goes to DLQ instead of silently failing.
+
+## Snapshot Isolation
+
+All queries execute with **Snapshot Isolation** by default:
+
+```
+Snapshot Isolation = Serializable reads at a single point-in-time
+
+Query sees:
+  - All writes committed before snapshot timestamp
+  - None of the writes committed after
+
+Prevents dirty reads, non-repeatable reads, and phantom reads
+```
+
+Example:
+
+```
+T1: BEGIN SNAPSHOT
+T2:   SELECT SUM(amount) FROM accounts -> 1000
+T3: [Another transaction commits: -100]
+T4:   SELECT SUM(amount) FROM accounts -> still 1000 (snapshot isolation)
+T5: COMMIT
+
+Result: Consistent view even though world changed mid-transaction
+```
+
+## Write Skew Detection
+
+**Write skew**: Two concurrent transactions read the same data, both validate, both commit, but violate an invariant.
+
+Example:
+
+```
+Invariant: sum(amount) must be > 0 (accounts can't go negative overall)
+
+T1: BEGIN
+  SELECT SUM(amount) -> 100
+
+T2: BEGIN (concurrent)
+  SELECT SUM(amount) -> 100
+
+T1:   UPDATE account1 SET amount = amount - 80
+      SUM now = 20
+
+T2:   UPDATE account2 SET amount = amount - 80
+      SUM now = -60 (VIOLATED!)
+
+T1: COMMIT ✓
+T2: COMMIT ✓ (should be ✗)
+```
+
+**Detection:**
+
+```
+NodeDB tracks read/write sets:
+T1 read: accounts table
+T1 write: account1
+
+T2 read: accounts table
+T2 write: account2
+
+Conflict detection:
+  T1.writes overlaps with T2.reads? YES
+  T1.reads overlaps with T2.writes? YES
+  → Write skew detected
+
+Action: Abort T2 with SerializationFailure
+  T2 retries, sees account1 modification, SUM < 0, fails INSERT
+```
+
+NodeDB detects write skew for queries with:
+- `READ COMMITTED` isolation (not default)
+- OR explicit `FOR UPDATE` row locks
+- OR declared invariants (schema-level constraints)
+
+## Consistency Configuration
+
+Applications set consistency defaults:
+
+```sql
+-- Session-level default
+SET nodedb.consistency = 'STRONG';
+
+-- Query override
+SELECT * FROM documents WHERE id='doc123'
+CONSISTENCY BOUNDED_STALENESS('5s');
+
+-- Tenant default
+ALTER TENANT 'acme' SET default_consistency = 'EVENTUAL';
+```
+
+This allows a single cluster to serve diverse workloads:
+- Financial transactions: STRONG
+- Dashboards: BOUNDED_STALENESS
+- Agent state: EVENTUAL

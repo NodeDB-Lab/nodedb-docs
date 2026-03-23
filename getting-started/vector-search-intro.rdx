@@ -1,8 +1,339 @@
 ---
-title: Your First Vector Search
-description: Perform similarity search on embeddings.
+title: Vector Search
+description: Semantic search using embeddings and HNSW indexes.
 ---
 
-# Your First Vector Search
+# Vector Search
 
-TODO
+Vector search enables semantic similarity queries by comparing embedding vectors. NodeDB uses Hierarchical Navigable Small World (HNSW) indexes for sub-millisecond searches across millions of vectors.
+
+## What is Vector Search?
+
+Traditional databases match exact keywords. Vector search finds semantically similar items:
+
+```
+Query: "machine learning algorithms"
+↓
+Embeddings: [0.12, 0.45, 0.67, ...]
+↓
+Search: Find vectors closest to query vector
+↓
+Results: "deep learning", "neural networks", "AI models"
+```
+
+## Creating Vector Fields
+
+Define a vector column in your schema:
+
+```sql
+CREATE COLLECTION documents (
+  id integer PRIMARY KEY,
+  title text NOT NULL,
+  content text,
+  embedding vector(384, cosine)
+);
+```
+
+Key parameters:
+
+- `384` — embedding dimension (must match your model)
+- `cosine` — distance metric (options: `cosine`, `l2`, `inner_product`)
+
+Common embedding dimensions:
+- OpenAI text-embedding-3-small: 1536
+- OpenAI text-embedding-3-large: 3072
+- Sentence-transformers: 384 or 768
+- Llama: 4096
+
+## Distance Metrics
+
+Choose the metric that matches your embeddings:
+
+### Cosine Distance
+
+For **normalized** embeddings (recommended for most cases):
+
+```sql
+CREATE VECTOR INDEX idx ON docs (embedding) METRIC cosine M 16 EF_CONSTRUCTION 200;
+```
+
+Cosine measures angle between vectors (0 = identical, 1 = orthogonal).
+
+### L2 (Euclidean) Distance
+
+For **raw** embeddings without normalization:
+
+```sql
+CREATE VECTOR INDEX idx ON docs (embedding) METRIC l2 M 16 EF_CONSTRUCTION 200;
+```
+
+L2 measures straight-line distance.
+
+### Inner Product
+
+For relevance scoring (larger = more similar):
+
+```sql
+CREATE VECTOR INDEX idx ON docs (embedding) METRIC inner_product M 16 EF_CONSTRUCTION 200;
+```
+
+Inner product is fastest but requires normalized embeddings.
+
+## Creating a Vector Index
+
+An HNSW index speeds up similarity search. Create it after inserting data:
+
+```sql
+CREATE VECTOR INDEX idx_embeddings
+  ON documents (embedding)
+  METRIC cosine
+  M 16
+  EF_CONSTRUCTION 200;
+```
+
+Parameters:
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `M` | 16 | Max connections per node. Higher = better quality, more memory |
+| `EF_CONSTRUCTION` | 200 | Search width during index building. Higher = higher quality, slower build |
+| `EF_SEARCH` | 10 | Search width at query time (runtime parameter, set separately) |
+
+Tuning guidance:
+- **Fast, low memory**: M=8, EF_CONSTRUCTION=100
+- **Balanced (default)**: M=16, EF_CONSTRUCTION=200
+- **High recall**: M=32, EF_CONSTRUCTION=400
+
+## Inserting Vectors
+
+Insert documents with embeddings:
+
+```sql
+INSERT INTO documents (id, title, embedding) VALUES
+  (1, 'Machine Learning Basics', ARRAY[0.1, 0.2, 0.3, /* ... 381 more values ... */]),
+  (2, 'Deep Learning Guide', ARRAY[0.12, 0.22, 0.32, /* ... 381 more values ... */]);
+```
+
+Or insert from Python:
+
+```python
+import psycopg2
+from openai import OpenAI
+
+client = OpenAI()
+conn = psycopg2.connect("host=127.0.0.1 port=6432")
+cursor = conn.cursor()
+
+documents = ["Machine Learning", "Deep Learning", "Neural Networks"]
+for i, doc in enumerate(documents):
+    # Get embedding from OpenAI
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=doc
+    )
+    embedding = response.data[0].embedding
+
+    # Insert into NodeDB
+    cursor.execute(
+        "INSERT INTO documents (id, title, embedding) VALUES (%s, %s, %s)",
+        (i+1, doc, embedding)
+    )
+
+conn.commit()
+cursor.close()
+```
+
+## Basic Vector Search
+
+Find documents similar to a query:
+
+```sql
+SELECT id, title,
+  vector_distance(embedding, ARRAY[0.1, 0.2, 0.3, ...]) as distance
+FROM documents
+ORDER BY distance
+LIMIT 5;
+```
+
+The ARRAY contains the query embedding. Results sorted by distance (smaller = more similar).
+
+## Vector Search with WHERE Filters
+
+Combine semantic search with metadata filtering:
+
+```sql
+SELECT id, title, category,
+  vector_distance(embedding, ARRAY[0.1, 0.2, 0.3, ...]) as distance
+FROM documents
+WHERE category = 'AI'
+  AND published_at > '2026-01-01'
+ORDER BY distance
+LIMIT 10;
+```
+
+This searches only documents in the 'AI' category published in 2026.
+
+## RRF (Reciprocal Rank Fusion)
+
+Combine vector search with BM25 text search:
+
+```sql
+SELECT
+  d.id,
+  d.title,
+  (1.0 / (1 + vector_distance(d.embedding, ARRAY[...]))) as vector_score,
+  (bm25_score(d.content, 'machine learning') / 100.0) as text_score,
+  ((1.0 / (1 + vector_distance(d.embedding, ARRAY[...]))) +
+   (bm25_score(d.content, 'machine learning') / 100.0)) / 2.0 as rrf_score
+FROM documents d
+WHERE d.status = 'published'
+ORDER BY rrf_score DESC
+LIMIT 10;
+```
+
+This ranks results by both semantic similarity and text relevance.
+
+## Query Using HTTP API
+
+Vector search via HTTP:
+
+```bash
+curl -X POST http://127.0.0.1:6480/vector-search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection": "documents",
+    "embedding": [0.1, 0.2, 0.3, ...],
+    "limit": 10,
+    "filter": {
+      "category": "AI"
+    }
+  }'
+```
+
+Response:
+
+```json
+{
+  "results": [
+    {"id": 2, "title": "Deep Learning", "distance": 0.02},
+    {"id": 3, "title": "Neural Networks", "distance": 0.05}
+  ],
+  "latency_ms": 3.2
+}
+```
+
+## Performance Tuning
+
+### Index Size
+
+Check index memory usage:
+
+```sql
+SELECT pg_relation_size('idx_embeddings') / 1024.0 / 1024.0 as size_mb
+FROM pg_class
+WHERE relname = 'idx_embeddings';
+```
+
+If the index is too large, reduce M:
+
+```sql
+DROP INDEX idx_embeddings;
+CREATE VECTOR INDEX idx_embeddings ON documents (embedding)
+  METRIC cosine M 12 EF_CONSTRUCTION 150;
+```
+
+### Search Speed
+
+Tune EF_SEARCH for faster queries:
+
+```sql
+ALTER VECTOR INDEX idx_embeddings SET EF_SEARCH 20;
+```
+
+Lower EF_SEARCH = faster but potentially fewer relevant results.
+
+### Rebuild Strategy
+
+For very large collections (millions of vectors), build the index in batches:
+
+```sql
+-- Stage 1: Load data without index
+INSERT INTO documents ... SELECT * FROM staging_data;
+
+-- Stage 2: Create index on final data
+CREATE VECTOR INDEX idx_embeddings ON documents (embedding)
+  METRIC cosine M 16 EF_CONSTRUCTION 300;
+```
+
+## Quantization (Advanced)
+
+For very large collections, store quantized vectors to save memory:
+
+```sql
+CREATE VECTOR INDEX idx_embeddings
+  ON documents (embedding)
+  METRIC cosine
+  M 16
+  EF_CONSTRUCTION 200
+  QUANTIZATION int8;  -- Store as 8-bit integers
+```
+
+Quantization trades recall for memory efficiency. Most workloads still achieve >95% recall.
+
+## Common Issues
+
+**Slow vector search**: Create an index with `CREATE VECTOR INDEX`.
+
+**Index too large**: Reduce M or use quantization.
+
+**Wrong distance metric**: Check if embeddings are normalized. Use cosine for normalized, L2 for raw.
+
+**Low recall**: Increase EF_CONSTRUCTION or M when rebuilding the index.
+
+## Examples
+
+### Product Recommendation
+
+Find similar products:
+
+```sql
+SELECT id, name, price,
+  vector_distance(description_embedding, $1) as distance
+FROM products
+WHERE category = 'electronics'
+  AND price < 500
+ORDER BY distance
+LIMIT 5;
+```
+
+### Image Search
+
+Find visually similar images (using image embeddings):
+
+```sql
+SELECT id, image_url,
+  vector_distance(image_embedding, $1) as distance
+FROM images
+WHERE uploaded_by = $2
+ORDER BY distance
+LIMIT 20;
+```
+
+### Knowledge Base Search
+
+Hybrid semantic + keyword search:
+
+```sql
+SELECT id, title,
+  vector_distance(content_embedding, $1) as vec_sim
+FROM knowledge_base
+WHERE LOWER(content) LIKE LOWER($2)
+ORDER BY vec_sim
+LIMIT 10;
+```
+
+## Next Steps
+
+- [Create Collections](/getting-started/create-collection) — Define schemas with vector fields
+- [Insert Data](/getting-started/insert-data) — Bulk insert embeddings
+- [Engine Tuning](/getting-started/engine-tuning) — Optimize vector index parameters

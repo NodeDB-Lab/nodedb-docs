@@ -1,8 +1,360 @@
 ---
 title: Memory Budgets
-description: Allocate memory across engines and query buffers.
+description: Configure per-engine memory allocation and budget enforcement.
 ---
 
 # Memory Budgets
 
-TODO
+NodeDB's memory governor divides the global `memory_limit` among six engines, isolating each engine in its own allocation. This prevents one hot engine from starving others.
+
+## Default Budget Allocation
+
+The default allocation is tuned for balanced multi-modal workloads:
+
+```toml
+[engines]
+vector_budget_fraction = 0.30       # Vector (HNSW graphs, distance buffers)
+sparse_budget_fraction = 0.15       # Sparse/metadata (redb, BM25 indexes)
+crdt_budget_fraction = 0.10         # CRDT (loro documents, DLQ buffers)
+timeseries_budget_fraction = 0.10   # Timeseries (memtables, Gorilla)
+query_budget_fraction = 0.20        # Query execution (DataFusion sorts)
+                                     # 0.15 unallocated = headroom
+```
+
+With `memory_limit = 8gb`, this translates to:
+
+| Engine | Budget | Allocation |
+|--------|--------|-----------|
+| Vector | 30% | 2.4 GB |
+| Sparse | 15% | 1.2 GB |
+| CRDT | 10% | 0.8 GB |
+| Timeseries | 10% | 0.8 GB |
+| Query | 20% | 1.6 GB |
+| Headroom | 15% | 1.2 GB |
+
+## Understanding Budget Fractions
+
+Budget fractions are calculated as a percentage of global memory limit:
+
+```
+engine_budget = memory_limit * budget_fraction
+```
+
+Example with 8 GB global limit:
+
+```
+vector_budget = 8gb * 0.30 = 2.4gb
+sparse_budget = 8gb * 0.15 = 1.2gb
+```
+
+Fractions must sum to `<= 1.0`. The remainder is unallocated headroom for transient allocations.
+
+## Budget Enforcement
+
+Each engine gets a hard limit. When that limit is exceeded, operations are rejected:
+
+**Vector engine exceeds budget:**
+```
+ERROR: vector engine memory budget exceeded (2.4 GB used of 2.4 GB allocated)
+  Solution: reduce dataset size, reduce index M value, or increase global memory limit
+```
+
+**Query engine exceeds budget:**
+```
+ERROR: query execution memory exhausted
+  Solution: reduce result set size, increase memory_limit, or tune query_budget_fraction
+```
+
+When an engine hits its budget, it spills to disk (if configured) rather than crashing.
+
+## Per-Engine Budgets Explained
+
+### Vector Engine (Default 30%)
+
+Stores HNSW graph structures and distance computation buffers.
+
+Memory includes:
+- HNSW layer graphs (O(M * log N) per node)
+- Distance computation temporary buffers
+- Quantized payload caches
+
+**When to increase**:
+- Large scale vector search (millions of embeddings)
+- Multiple vector indexes
+- High M values (M=32+)
+
+**When to decrease**:
+- Vector search is <10% of your queries
+- Memory pressure from other engines
+
+**Example: High-volume vector workload**
+```toml
+[engines]
+vector_budget_fraction = 0.50       # 50% for vectors
+sparse_budget_fraction = 0.10
+crdt_budget_fraction = 0.05
+timeseries_budget_fraction = 0.05
+query_budget_fraction = 0.20
+```
+
+### Sparse/Metadata Engine (Default 15%)
+
+B-Tree storage (redb) and BM25 full-text indexes.
+
+Memory includes:
+- redb B-Tree pages (in-memory cache)
+- BM25 inverted index structures
+- Secondary index pages
+
+**When to increase**:
+- Large metadata collections (millions of rows)
+- Many secondary indexes
+- Frequent range queries
+
+**When to decrease**:
+- Workload is primarily vector search
+- Small metadata footprint
+
+### CRDT Engine (Default 10%)
+
+Collaborative document state (loro-based CRDTs).
+
+Memory includes:
+- Operational transformation logs
+- In-memory CRDT document trees
+- Merge delta buffers
+- Dead-letter queue for conflicts
+
+**When to increase**:
+- Heavy collaborative editing workload
+- Large documents with extensive history
+- High concurrent editor count
+
+**When to decrease**:
+- No CRDT usage
+- Simple CRDT schemas
+
+### Timeseries Engine (Default 10%)
+
+Gorilla-compressed metrics and Zstd-compressed logs.
+
+Memory includes:
+- Memtables (lock-free radix trees for L0 hot data)
+- Gorilla XOR encoding buffers
+- Compression dictionaries
+- Block indices for fast lookups
+
+**When to increase**:
+- High-volume metric/log ingestion
+- High cardinality time series
+- Long retention windows in memory
+
+**When to decrease**:
+- Infrequent time series queries
+- Aggressive tiering to cold storage
+
+### Query Engine (Default 20%)
+
+DataFusion execution memory (sorts, aggregations, joins).
+
+Memory includes:
+- Sort buffers (external sort spill to disk)
+- Hash join hash tables
+- Aggregation state accumulation
+- Window function buffers
+
+**When to increase**:
+- Large GROUP BY cardinalities
+- Complex joins over big tables
+- Many parallel queries
+
+**When to decrease**:
+- Queries are small and fast
+- Memory pressure from other engines
+
+**Note**: When query budget is exceeded, DataFusion automatically spills to disk. This is intentional and safe, but slower than in-memory.
+
+## Calculating Custom Budgets
+
+### Step 1: Identify Your Workload
+
+What do you do most?
+
+- 70% vector search, 20% metadata, 10% timeseries → Increase vector
+- 50% metadata, 30% graphs, 20% timeseries → Increase sparse
+- 40% metrics, 30% logs, 20% queries, 10% vectors → Increase timeseries
+
+### Step 2: Allocate Based on Workload
+
+Example: Vector-heavy workload (80% vectors, 10% metadata, 10% queries):
+
+```toml
+[engines]
+vector_budget_fraction = 0.50       # More vector budget
+sparse_budget_fraction = 0.10       # Less metadata
+crdt_budget_fraction = 0.05         # Minimal
+timeseries_budget_fraction = 0.05   # Minimal
+query_budget_fraction = 0.20        # Keep balanced
+# Total 0.90, headroom 0.10
+```
+
+### Step 3: Test and Iterate
+
+Monitor memory usage:
+
+```sql
+SELECT engine, allocated_bytes, used_bytes, used_percent
+FROM system.engine_memory_usage;
+```
+
+If an engine consistently hits its budget:
+- Increase its fraction
+- Decrease a lower-priority engine's fraction
+
+## Example Configurations
+
+### Small SSD (2 GB)
+
+Minimal deployments:
+
+```toml
+memory_limit = 2147483648          # 2 GB
+[engines]
+vector_budget_fraction = 0.25       # 512 MB
+sparse_budget_fraction = 0.15       # 300 MB
+crdt_budget_fraction = 0.05         # 100 MB
+timeseries_budget_fraction = 0.05   # 100 MB
+query_budget_fraction = 0.30        # 600 MB (need headroom for sorts)
+# Total 0.80, headroom 0.20 (400 MB)
+```
+
+### Medium Instance (8 GB)
+
+Balanced workload:
+
+```toml
+memory_limit = 8589934592          # 8 GB
+[engines]
+vector_budget_fraction = 0.30       # 2.4 GB
+sparse_budget_fraction = 0.15       # 1.2 GB
+crdt_budget_fraction = 0.10         # 0.8 GB
+timeseries_budget_fraction = 0.10   # 0.8 GB
+query_budget_fraction = 0.20        # 1.6 GB
+# Total 0.85, headroom 0.15 (1.2 GB)
+```
+
+### Large Server (64 GB)
+
+High-scale production:
+
+```toml
+memory_limit = 68719476736         # 64 GB
+[engines]
+vector_budget_fraction = 0.35       # 22.4 GB (10M+ embeddings)
+sparse_budget_fraction = 0.20       # 12.8 GB (metadata indexes)
+crdt_budget_fraction = 0.10         # 6.4 GB
+timeseries_budget_fraction = 0.15   # 9.6 GB (high-volume metrics)
+query_budget_fraction = 0.15        # 9.6 GB
+# Total 0.95, headroom 0.05 (3.2 GB)
+```
+
+### Vector-Only (Single-Purpose)
+
+Dedicated vector search appliance:
+
+```toml
+memory_limit = 32gb
+[engines]
+vector_budget_fraction = 0.80       # 25.6 GB for HNSW
+sparse_budget_fraction = 0.05       # 1.6 GB
+crdt_budget_fraction = 0.02         # 640 MB
+timeseries_budget_fraction = 0.01   # 320 MB
+query_budget_fraction = 0.07        # 2.2 GB
+# Total 0.95, headroom 0.05 (1.6 GB)
+```
+
+## Budget Monitoring
+
+Check memory usage in real-time:
+
+```sql
+SELECT
+  engine,
+  allocated_bytes / 1024 / 1024 as allocated_mb,
+  used_bytes / 1024 / 1024 as used_mb,
+  ROUND(100.0 * used_bytes / allocated_bytes, 2) as used_percent,
+  throttled_operations
+FROM system.engine_memory_usage
+ORDER BY used_percent DESC;
+```
+
+Expected output:
+
+```
+     engine      | allocated_mb | used_mb | used_percent | throttled_operations
+-----------------+--------------+---------+--------------+---------------------
+ vector          |         2400 |    2350 |        97.92 |                    0
+ query           |         1600 |     890 |        55.63 |                    0
+ sparse          |         1200 |    1100 |        91.67 |                    0
+ timeseries      |          800 |     200 |        25.00 |                    0
+ crdt            |          800 |     100 |        12.50 |                    0
+```
+
+When `used_percent` approaches 100%, operations in that engine may be throttled or rejected.
+
+## Adjusting Budgets at Runtime
+
+Modify budget fractions without restart:
+
+```sql
+ALTER SERVER SET
+  engine_vector_budget_fraction = 0.35,
+  engine_sparse_budget_fraction = 0.20;
+```
+
+Changes take effect immediately for new allocations. Existing allocations are unaffected.
+
+## Common Miscalculations
+
+**Mistake 1: Fractions > 1.0**
+```toml
+[engines]
+vector_budget_fraction = 0.50
+sparse_budget_fraction = 0.40
+query_budget_fraction = 0.30
+# ERROR: Total 1.20 exceeds 1.0
+```
+
+**Fix**: Reduce at least one fraction.
+
+**Mistake 2: No headroom**
+```toml
+[engines]
+# Total exactly 1.0, no headroom for transient allocations
+vector_budget_fraction = 0.30
+sparse_budget_fraction = 0.30
+query_budget_fraction = 0.40
+# ↑ Risky! Every temporary allocation causes contention
+```
+
+**Fix**: Leave 10-20% headroom.
+
+**Mistake 3: Allocating to unused engines**
+```toml
+# Using only vector search, but allocating to all engines
+[engines]
+vector_budget_fraction = 0.20
+sparse_budget_fraction = 0.20
+crdt_budget_fraction = 0.20
+timeseries_budget_fraction = 0.20
+query_budget_fraction = 0.20
+# ↑ Sparse, CRDT, timeseries are wasted!
+```
+
+**Fix**: Concentrate budget on active engines.
+
+## Next Steps
+
+- [Engine Tuning](/getting-started/engine-tuning) — Per-engine parameter tuning
+- [Server Configuration](/getting-started/server-config) — Global memory_limit
+- [Quick Start](/getting-started/quickstart) — Launch and experiment

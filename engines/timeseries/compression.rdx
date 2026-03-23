@@ -1,8 +1,270 @@
 ---
-title: Compression
-description: Gorilla XOR for metrics, Zstd dictionaries for logs.
+title: Compression Algorithms
+description: Gorilla XOR metrics, Zstd dictionary logs, compression ratios.
 ---
 
-# Compression
+# Compression Algorithms
 
-TODO
+NodeDB uses specialized compression for timeseries data: Gorilla XOR for metrics and Zstd with learned dictionaries for logs.
+
+## Gorilla XOR (Metrics)
+
+**Problem**: Raw metrics are 16 bytes each (8-byte timestamp + 8-byte value).
+
+**Solution**: Compress based on patterns in time series.
+
+### Algorithm
+
+**Step 1: Delta encoding (timestamp)**
+
+```
+Timestamps: 10:00:00, 10:00:10, 10:00:20
+            (3600000ms, 3600010ms, 3600020ms)
+
+Deltas:     (3600000ms, 10ms, 10ms)
+```
+
+For regular intervals (same delta), encode as 0 bits. Variable deltas need more bits.
+
+**Step 2: Delta-of-deltas (values)**
+
+```
+Values:     [45.2, 45.5, 45.6]
+Deltas:     [45.2, +0.3, +0.1]
+
+Delta-of-deltas:
+            [45.2, 0.3, -0.2]  (second delta = 0.3 - 0.5 = -0.2)
+```
+
+Encode delta-of-deltas more efficiently:
+- If 0: 1 bit
+- If small: 4-6 bits
+- If large: 8-12 bits
+
+**Step 3: XOR compression (values)**
+
+```
+Raw value bits:     0x4050999999999999 (45.2 in IEEE 754)
+Previous bits:      0x4050800000000000 (45.0)
+XOR:                0x0000199999999999
+
+Encoded:
+  - Leading zeros: 16 bits (skip them)
+  - Significant bits: 48 bits
+  - Total: ~8 bytes → compressed to 2-3 bytes
+```
+
+### Compression Ratios
+
+**Typical metrics** (regular intervals, small deltas):
+
+```
+Uncompressed:    16 bytes/sample
+Gorilla XOR:     1.5-2 bytes/sample
+Ratio:           12x compression
+
+Example:
+- Timestamp delta: 2 bits (regular 10s intervals)
+- Value delta-of-delta: 4 bits (small changes)
+- XOR: 10 bits (patterns in value changes)
+- Total: ~2 bytes
+```
+
+**Best case** (completely regular):
+
+```
+Uncompressed: 1M samples × 16 bytes = 16MB
+Gorilla:      1M samples × 1 byte   = 1MB
+Ratio:        16x compression
+```
+
+**Worst case** (random values):
+
+```
+Uncompressed: 1M samples × 16 bytes = 16MB
+Gorilla:      1M samples × 8 bytes  = 8MB (limited compression)
+Ratio:        2x compression
+```
+
+**Typical real-world**: 8-12x compression.
+
+## Zstd Dictionary (Logs)
+
+**Problem**: Raw text logs are highly repetitive (many common phrases).
+
+**Solution**: Pre-train dictionary on representative log samples.
+
+### Algorithm
+
+**Step 1: Analyze logs**
+
+```
+Sample logs:
+  "ERROR: database connection timeout after 30s"
+  "ERROR: database connection refused"
+  "WARN: database query slow (1000ms)"
+  "WARN: database connection timeout"
+  ...
+
+Frequent patterns:
+  "ERROR", "WARN", "database", "connection", "timeout", "query"
+```
+
+**Step 2: Create dictionary**
+
+```
+Dictionary (learned from sample):
+  [0] = "ERROR"
+  [1] = "WARN"
+  [2] = "database"
+  [3] = "connection"
+  [4] = "timeout"
+  [5] = "query"
+  ...
+```
+
+**Step 3: Compress with dictionary**
+
+```
+Original: "ERROR: database connection timeout after 30s"
+          (45 bytes)
+
+Compressed: [0] [2] [3] [4] after 30s
+            (byte codes + remaining text)
+            (~12 bytes)
+
+Ratio: 12 / 45 = 27% (3.7x compression)
+```
+
+### Compression Ratios
+
+**Typical logs** (common patterns):
+
+```
+Uncompressed: "ERROR: database connection timeout" × 1000 = 35KB
+Zstd dict:    Dictionary (5KB) + compressed (10KB)         = 15KB
+Ratio:        15 / 35 = 43% (2.3x compression)
+```
+
+**High-repetition logs** (same error repeated):
+
+```
+Uncompressed: 100K identical error messages = 3.5MB
+Zstd dict:    Dictionary + RLE encoding    = 500KB
+Ratio:        500KB / 3.5MB = 14% (7x compression)
+```
+
+**Low-repetition logs** (unique messages):
+
+```
+Uncompressed: 100K unique log messages = 5MB
+Zstd dict:    Dictionary + varied text = 3.5MB
+Ratio:        3.5MB / 5MB = 70% (1.4x compression)
+```
+
+**Typical real-world**: 3-5x compression.
+
+## Parquet (Archival)
+
+**For S3 storage**, further compress with Parquet columnar format:
+
+```
+Format:
+  - Column-oriented (all timestamps together, all values together)
+  - Dictionary encoding per column
+  - Snappy/Zstd compression per chunk
+  - Metadata (min/max/count) for pruning
+
+Compression:
+  Gorilla XOR + Parquet: 1.5MB → 300KB (5x reduction)
+  Reason: Columnar format + metadata pruning
+```
+
+## Tuning Compression
+
+**Gorilla parameters**:
+
+```toml
+[timeseries]
+gorilla_compression_level = 9          # 0-9 (higher = slower but better)
+gorilla_chunk_size = 1000              # Samples per chunk
+gorilla_timestamp_precision_ms = 10    # Rounding for timestamps
+```
+
+**Zstd parameters**:
+
+```toml
+[timeseries]
+zstd_compression_level = 3             # 1-22 (higher = slower but better)
+zstd_dictionary_size_kb = 32           # Dictionary size (32KB typical)
+zstd_dictionary_refresh_days = 1       # Retrain daily
+```
+
+**Trade-offs**:
+
+```
+Higher compression:
+  + Saves disk space
+  + Faster cloud upload
+  - Slower CPU (decompress on query)
+  - Higher latency
+
+Lower compression:
+  + Faster queries
+  + Lower CPU
+  - Uses more disk
+  - Slower uploads
+```
+
+## Performance Impact
+
+**Compression overhead** (per 1M metrics):
+
+```
+Gorilla XOR:
+  - Compression time: 100-500ms (depending on CPU)
+  - Decompression: 50-200ms (query time)
+  - Throughput: 10-50MB/sec
+
+Zstd dictionary:
+  - Training time: 1-5 seconds (on 100K samples)
+  - Compression: 50-200ms (per 10MB logs)
+  - Decompression: 30-100ms
+```
+
+## Examples
+
+**Metrics: Monitor compression**:
+
+```sql
+-- Check compressed size
+SELECT
+  metric_name,
+  COUNT(*) as sample_count,
+  SUM(compressed_size_bytes) as total_compressed,
+  SUM(uncompressed_size_bytes) as total_uncompressed,
+  ROUND(100.0 * SUM(compressed_size_bytes) / SUM(uncompressed_size_bytes)) as compression_pct
+FROM metrics_compression_stats
+GROUP BY metric_name
+ORDER BY compression_pct DESC;
+
+-- Results might show:
+-- cpu_usage     | 1000000 | 1500000 | 16000000 | 9%    (9x compression)
+-- memory_usage  | 1000000 | 2000000 | 16000000 | 13%   (7.7x compression)
+-- network_io    | 1000000 | 8000000 | 16000000 | 50%   (2x compression, high variability)
+```
+
+**Logs: Verify dictionary**:
+
+```sql
+-- Check dictionary coverage
+SELECT
+  dictionary_version,
+  dictionary_size_kb,
+  estimated_compression_ratio,
+  trained_on_samples
+FROM log_dictionaries
+ORDER BY dictionary_version DESC;
+```
+
+See [Metrics Ingestion](/engines/timeseries/metrics-ingestion) for write details and [Retention Tiering](/engines/timeseries/retention-tiering) for storage strategy.

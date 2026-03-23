@@ -1,8 +1,268 @@
 ---
 title: Graph RAG
-description: Vector search to graph expansion to RRF fusion pipeline.
+description: Vector search to graph expansion to RRF ranking pipeline.
 ---
 
 # Graph RAG
 
-TODO
+GraphRAG combines semantic search (vectors) with graph traversal and reranking for context-aware retrieval. NodeDB provides SEARCH...USING FUSION syntax for end-to-end GraphRAG.
+
+## Basic GraphRAG Pattern
+
+```sql
+SEARCH documents
+USING FUSION(
+  VECTOR(ARRAY[0.1, 0.2, ...], k=10),      -- semantic search, top 10
+  GRAPH(related_to, depth=2),              -- expand via graph, 2 hops
+  TOP 20                                   -- return top 20 from fusion
+);
+```
+
+Output: Ranked results from vector search with context from graph neighbors.
+
+## Components
+
+### Vector Search (Initial Retrieval)
+
+Find semantically similar documents:
+
+```
+VECTOR(ARRAY[query_vector], k=10)
+```
+
+- `query_vector`: Embedding to search
+- `k`: Number of initial results
+- Returns top-k documents by vector similarity
+
+### Graph Expansion (Context Gathering)
+
+Expand initial results through graph edges:
+
+```
+GRAPH(relation_type, depth=N)
+```
+
+- `relation_type`: Edge type (e.g., "related_to", "references", "similar")
+- `depth`: Number of hops (1-4 recommended)
+- Returns neighbors of initial results at distance ≤ depth
+
+### RRF Fusion (Reranking)
+
+Combine semantic + graph signals:
+
+```
+TOP N
+```
+
+- `N`: Final result count
+- Returns N highest-scoring documents after RRF
+
+## Complete GraphRAG Example
+
+Semantic search + graph expansion + ranking:
+
+```sql
+SEARCH documents
+USING FUSION(
+  VECTOR(ARRAY[0.1, 0.2, 0.3, ...], k=20),  -- top 20 by semantic similarity
+  GRAPH(related_to, depth=1),               -- 1-hop neighbors of top 20
+  TOP 10                                     -- top 10 after RRF
+)
+WHERE status = 'published'
+ORDER BY score DESC;
+```
+
+Steps:
+1. Find 20 documents similar to query vector
+2. Gather their direct neighbors (depth=1) via "related_to" edges
+3. Compute RRF score combining semantic rank + graph connectivity
+4. Return top 10
+5. Apply WHERE filter to results
+
+## Multi-Hop Graph Expansion
+
+Expand search context deeper:
+
+```sql
+SEARCH documents
+USING FUSION(
+  VECTOR(ARRAY[...], k=10),
+  GRAPH(references, depth=3),     -- 3-hop expansion
+  TOP 15
+);
+```
+
+Depth=3 finds documents referenced by documents referenced by initial results.
+
+## Multiple Graph Relations
+
+Combine different edge types:
+
+```sql
+SEARCH documents
+USING FUSION(
+  VECTOR(ARRAY[...], k=20),
+  GRAPH(
+    related_to,      -- semantic edges
+    cites,           -- citation edges
+    authored_by,     -- co-author clustering
+    depth=2
+  ),
+  TOP 20
+);
+```
+
+All edge types are followed during expansion.
+
+## GraphRAG with Metadata Filtering
+
+Pre-filter before graph expansion:
+
+```sql
+SEARCH documents
+USING FUSION(
+  VECTOR(ARRAY[...], k=50),      -- larger k for filtering
+  GRAPH(related_to, depth=1),
+  TOP 15
+)
+WHERE category = 'research'
+  AND published_date >= '2026-01-01'
+  AND author NOT IN ('spam_bot')
+ORDER BY score DESC;
+```
+
+WHERE applies to initial vectors, graph-expanded docs, and final results.
+
+## Practical Example: Research Paper Discovery
+
+Find papers similar to query, with related citations and co-authored papers:
+
+```sql
+SEARCH papers
+USING FUSION(
+  -- Find papers semantically similar to abstract vector
+  VECTOR(ARRAY[0.12, 0.34, 0.56, ...], k=30),
+  -- Expand through citation graph and co-author relationships
+  GRAPH(
+    cites,              -- papers cited by initial results
+    citations_from,     -- papers citing initial results
+    coauthored_by,      -- co-authored papers
+    depth=2
+  ),
+  TOP 20  -- return 20 most relevant papers
+)
+WHERE publication_year >= 2024
+ORDER BY relevance_score DESC;
+```
+
+Result: Initial semantically-similar papers + related research context.
+
+## Performance Tuning
+
+### Initial Vector k
+
+Larger k = deeper context but slower:
+
+```
+VECTOR(..., k=10)   -- fast, narrow context
+VECTOR(..., k=50)   -- balanced
+VECTOR(..., k=100)  -- comprehensive, slow
+```
+
+### Graph Depth
+
+Deeper = more context but exponential expansion:
+
+```
+GRAPH(..., depth=1)  -- direct neighbors only, fast
+GRAPH(..., depth=2)  -- 2 hops, moderate expansion
+GRAPH(..., depth=3)  -- 3 hops, large context, slower
+```
+
+For 1M documents, depth=3 can expand to 100K+ nodes.
+
+### Final TOP N
+
+Return fewer results to reduce reranking:
+
+```
+TOP 5    -- very selective
+TOP 20   -- balanced (recommended)
+TOP 50   -- comprehensive, slower
+```
+
+## GraphRAG vs Pure Vector Search
+
+**Pure Vector Search**:
+- ✓ Fast (milliseconds)
+- ✓ Direct semantic matching
+- ✗ Missing relationship context
+
+**GraphRAG**:
+- ✓ Contextual retrieval
+- ✓ Finds related documents
+- ✗ Slower (100ms-1s)
+- ✗ Requires graph data
+
+Use GraphRAG for:
+- Research/citation discovery
+- Knowledge base retrieval
+- Social network queries
+- Entity relationship exploration
+
+Use pure vector search for:
+- Real-time recommendations
+- High-throughput search
+- Simple semantic lookup
+
+## Creating the Graph for RAG
+
+First, insert documents and edges:
+
+```sql
+-- Create documents with embeddings
+CREATE COLLECTION documents;
+INSERT INTO documents (id, title, abstract, embedding) VALUES
+  (1, 'Paper A', '...', ARRAY[0.1, 0.2, ...]),
+  (2, 'Paper B', '...', ARRAY[0.3, 0.4, ...]),
+  (3, 'Paper C', '...', ARRAY[0.5, 0.6, ...]);
+
+-- Create edges between related documents
+CREATE COLLECTION edges;
+INSERT INTO edges (source_id, target_id, relation_type) VALUES
+  (1, 2, 'cites'),
+  (2, 3, 'related_to'),
+  (1, 3, 'coauthored_by');
+
+-- Create vector index
+CREATE VECTOR INDEX idx_embeddings
+ON documents (embedding)
+METRIC cosine;
+```
+
+Then query with GraphRAG:
+
+```sql
+SEARCH documents
+USING FUSION(
+  VECTOR(ARRAY[...], k=10),
+  GRAPH(cites, related_to, coauthored_by, depth=2),
+  TOP 5
+);
+```
+
+## Limitations
+
+| Constraint | Value | Notes |
+|:-----------|:------|:------|
+| Max graph depth | 4 | Computational limit |
+| Max initial results (k) | 1000 | Memory/performance |
+| Max final TOP | 1000 | Network transfer |
+| Supported edge types | Unlimited | Any string label |
+
+## Next Steps
+
+- [Vector Search](/query/vector-search) — Initial semantic search
+- [RRF Fusion](/query/rrf-fusion) — Reranking mechanics
+- [Graph Engine](/concepts/engines#graph-engine) — Graph data model
+- [SEARCH...USING Syntax](/reference/dsl) — Full DSL reference

@@ -5,4 +5,251 @@ description: SET nodedb.tenant_id, nodedb.consistency, and other extensions.
 
 # Session Variables
 
-TODO
+NodeDB extends PostgreSQL session variables to control consistency levels, multi-tenancy, and other behavioral parameters. Set these at connection time or mid-session.
+
+## Core Session Variables
+
+### nodedb.consistency
+
+Controls the consistency guarantee for reads and writes.
+
+```sql
+SET nodedb.consistency = 'strong';      -- Strong consistency
+SET nodedb.consistency = 'eventual';    -- Eventual consistency
+SET nodedb.consistency = 'bounded_staleness';  -- Bounded with max staleness
+```
+
+#### Strong Consistency
+Reads see all committed writes. Highest latency and cost.
+
+```python
+cursor.execute("SET nodedb.consistency = 'strong'")
+cursor.execute("SELECT * FROM documents")  # Waits for all replicas
+```
+
+#### Eventual Consistency
+Reads may see stale data. Lowest latency and cost.
+
+```python
+cursor.execute("SET nodedb.consistency = 'eventual'")
+cursor.execute("SELECT * FROM documents")  # Returns immediately
+```
+
+#### Bounded Staleness
+Reads see data no older than a specified duration.
+
+```python
+cursor.execute("SET nodedb.consistency = 'bounded_staleness'")
+cursor.execute("SET nodedb.max_staleness_ms = 1000")  -- max 1 second old
+cursor.execute("SELECT * FROM documents")
+```
+
+### nodedb.tenant_id
+
+Enable multi-tenancy by setting a tenant identifier. All queries in the session are scoped to this tenant.
+
+```sql
+SET nodedb.tenant_id = 'acme-corp';
+-- All subsequent queries are isolated to acme-corp
+SELECT * FROM documents;  -- Only documents visible to acme-corp
+INSERT INTO documents (id, data) VALUES ('doc1', '{}');  -- Inserted for acme-corp
+```
+
+When not set, operations use the default tenant context:
+
+```sql
+RESET nodedb.tenant_id;
+-- Operations now use default tenant
+```
+
+### nodedb.trace_level
+
+Control logging verbosity for the session.
+
+```sql
+SET nodedb.trace_level = 'debug';   -- Most verbose
+SET nodedb.trace_level = 'info';    -- Default
+SET nodedb.trace_level = 'warn';    -- Less verbose
+SET nodedb.trace_level = 'error';   -- Only errors
+```
+
+Useful for debugging slow queries or connection issues.
+
+## Setting Variables at Connection Time
+
+Different drivers support passing initial session variables:
+
+### libpq (psql, C clients)
+
+```bash
+psql "postgresql://localhost:6432/nodedb" \
+  -v nodedb_consistency='strong' \
+  -v nodedb_tenant_id='acme-corp'
+```
+
+Or via environment variables:
+
+```bash
+export PGOPTIONS="-c nodedb.consistency=strong -c nodedb.tenant_id=acme-corp"
+psql postgresql://localhost:6432/nodedb
+```
+
+### Python (psycopg2)
+
+```python
+import psycopg2
+
+conn = psycopg2.connect(
+    host="localhost",
+    port=6432,
+    user="postgres",
+    database="nodedb",
+    options="-c nodedb.consistency=strong -c nodedb.tenant_id=acme-corp"
+)
+cursor = conn.cursor()
+cursor.execute("SHOW nodedb.consistency")
+print(cursor.fetchone())  # ('strong',)
+```
+
+### Python (asyncpg)
+
+```python
+import asyncpg
+
+async def connect():
+    conn = await asyncpg.connect(
+        "postgresql://postgres@localhost:6432/nodedb",
+        init="""
+            SET nodedb.consistency = 'strong';
+            SET nodedb.tenant_id = 'acme-corp';
+        """
+    )
+    return conn
+```
+
+### JavaScript (pg)
+
+```javascript
+const { Client } = require('pg');
+
+const client = new Client({
+  host: 'localhost',
+  port: 6432,
+  user: 'postgres',
+  database: 'nodedb',
+});
+
+await client.connect();
+await client.query("SET nodedb.consistency = 'strong'");
+await client.query("SET nodedb.tenant_id = 'acme-corp'");
+```
+
+### Go (pq)
+
+```go
+conn, err := sql.Open("postgres",
+  "postgresql://localhost:6432/nodedb?application_name=myapp")
+if err != nil {
+  log.Fatal(err)
+}
+
+_, err = conn.Exec("SET nodedb.consistency = 'strong'")
+_, err = conn.Exec("SET nodedb.tenant_id = 'acme-corp'")
+```
+
+## Querying Session Variables
+
+Use SHOW to read current session variables:
+
+```sql
+SHOW nodedb.consistency;        -- 'strong'
+SHOW nodedb.tenant_id;          -- 'acme-corp'
+SHOW nodedb.trace_level;        -- 'info'
+SHOW ALL;                        -- All variables
+```
+
+## Multi-Tenancy Example
+
+Implement tenant isolation by setting the tenant at connection time:
+
+```python
+from psycopg2 import pool
+
+# One pool per tenant
+tenant_pools = {}
+
+def get_connection(tenant_id):
+    if tenant_id not in tenant_pools:
+        tenant_pools[tenant_id] = pool.SimpleConnectionPool(
+            1, 10,
+            host="localhost",
+            port=6432,
+            user="postgres",
+            database="nodedb",
+            options=f"-c nodedb.tenant_id={tenant_id}"
+        )
+    return tenant_pools[tenant_id].getconn()
+
+def release_connection(tenant_id, conn):
+    tenant_pools[tenant_id].putconn(conn)
+
+# Usage
+conn = get_connection("acme-corp")
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM documents")
+rows = cursor.fetchall()  # Only acme-corp documents
+release_connection("acme-corp", conn)
+```
+
+## Consistency Levels and Write Propagation
+
+When you write to NodeDB, propagation depends on consistency setting:
+
+| Consistency | Write Propagation | Read Guarantee |
+|---|---|---|
+| Strong | Waits for replication | Reads see all writes |
+| Eventual | Returns immediately | Reads may be stale |
+| Bounded Staleness | Returns immediately | Reads within max_staleness_ms |
+
+For example:
+
+```python
+# Strong: Write waits for replication
+cursor.execute("SET nodedb.consistency = 'strong'")
+cursor.execute("INSERT INTO docs (id, data) VALUES ('doc1', '{}')")  # Slow but safe
+
+# Eventual: Write returns immediately
+cursor.execute("SET nodedb.consistency = 'eventual'")
+cursor.execute("INSERT INTO docs (id, data) VALUES ('doc2', '{}')")  # Fast but possibly stale
+```
+
+## Variable Scope
+
+Session variables are per-connection. Multiple connections have independent variable sets:
+
+```python
+conn1 = psycopg2.connect("postgresql://localhost:6432/nodedb")
+conn2 = psycopg2.connect("postgresql://localhost:6432/nodedb")
+
+cursor1 = conn1.cursor()
+cursor2 = conn2.cursor()
+
+cursor1.execute("SET nodedb.tenant_id = 'tenant-a'")
+cursor2.execute("SET nodedb.tenant_id = 'tenant-b'")
+
+cursor1.execute("SELECT SHOW nodedb.tenant_id")
+print(cursor1.fetchone())  # ('tenant-a',)
+
+cursor2.execute("SHOW nodedb.tenant_id")
+print(cursor2.fetchone())  # ('tenant-b',)
+```
+
+## Resetting Variables
+
+Reset a variable to its default:
+
+```sql
+RESET nodedb.tenant_id;        -- Back to default tenant
+RESET nodedb.consistency;      -- Back to session default (usually 'eventual')
+RESET ALL;                     -- Reset all session variables
+```

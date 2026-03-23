@@ -1,8 +1,249 @@
 ---
-title: SELECT
-description: SELECT syntax, WHERE, ORDER BY, LIMIT, projections.
+title: SELECT Syntax
+description: SELECT, WHERE, ORDER BY, LIMIT, OFFSET, DISTINCT, HAVING, GROUP BY.
 ---
 
-# SELECT
+# SELECT Syntax
 
-TODO
+SELECT retrieves data from collections. The basic syntax is:
+
+```sql
+SELECT [DISTINCT] <columns>
+FROM <collection>
+[WHERE <predicate>]
+[GROUP BY <columns>] [HAVING <condition>]
+[ORDER BY <expr> [ASC|DESC], ...]
+[LIMIT <n>] [OFFSET <m>];
+```
+
+## Basic SELECT
+
+Retrieve all columns:
+
+```sql
+SELECT * FROM documents;
+```
+
+Select specific columns:
+
+```sql
+SELECT id, title, created_at FROM documents;
+```
+
+With aliases:
+
+```sql
+SELECT id AS doc_id, title AS doc_title FROM documents;
+```
+
+## WHERE Clause
+
+Filter rows by conditions:
+
+```sql
+SELECT * FROM documents WHERE status = 'published';
+```
+
+Multiple conditions with AND/OR:
+
+```sql
+SELECT * FROM documents
+WHERE status = 'published' AND created_at > '2026-01-01'
+   OR author = 'Alice';
+```
+
+Comparison operators:
+
+```sql
+SELECT * FROM documents WHERE views > 100;           -- greater than
+SELECT * FROM documents WHERE views >= 100;          -- greater or equal
+SELECT * FROM documents WHERE views < 1000;          -- less than
+SELECT * FROM documents WHERE views BETWEEN 100 AND 1000;  -- range
+SELECT * FROM documents WHERE id IN (1, 5, 9);       -- in list
+SELECT * FROM documents WHERE title IS NOT NULL;     -- null check
+```
+
+String matching:
+
+```sql
+SELECT * FROM documents WHERE title LIKE '%machine%';     -- wildcard (% = any chars)
+SELECT * FROM documents WHERE title ILIKE 'machine%';     -- case-insensitive
+SELECT * FROM documents WHERE content ~ '^[A-Z]';        -- regex match
+```
+
+## DISTINCT
+
+Remove duplicate rows:
+
+```sql
+SELECT DISTINCT author FROM documents;
+```
+
+With multiple columns:
+
+```sql
+SELECT DISTINCT author, category FROM documents;
+```
+
+## GROUP BY & HAVING
+
+Group rows and aggregate:
+
+```sql
+SELECT author, COUNT(*) as doc_count, AVG(views) as avg_views
+FROM documents
+GROUP BY author;
+```
+
+Filter groups with HAVING (applied after aggregation):
+
+```sql
+SELECT category, COUNT(*) as count
+FROM documents
+GROUP BY category
+HAVING COUNT(*) > 5;
+```
+
+Multiple GROUP BY columns:
+
+```sql
+SELECT author, category, COUNT(*) as count, SUM(views) as total_views
+FROM documents
+GROUP BY author, category;
+```
+
+## ORDER BY
+
+Sort results:
+
+```sql
+SELECT * FROM documents ORDER BY created_at DESC;
+```
+
+Multiple sort keys:
+
+```sql
+SELECT * FROM documents
+ORDER BY category ASC, created_at DESC, views DESC;
+```
+
+Order by calculated column:
+
+```sql
+SELECT id, title, LENGTH(content) as content_len
+FROM documents
+ORDER BY content_len DESC;
+```
+
+## LIMIT & OFFSET
+
+Limit result count:
+
+```sql
+SELECT * FROM documents LIMIT 10;
+```
+
+Skip rows:
+
+```sql
+SELECT * FROM documents LIMIT 10 OFFSET 20;
+```
+
+Or using shorthand:
+
+```sql
+SELECT * FROM documents LIMIT 10 OFFSET 20;  -- skip 20, take 10
+```
+
+Pagination example:
+
+```sql
+-- Page 3, 20 items per page
+SELECT * FROM documents ORDER BY id LIMIT 20 OFFSET 40;
+```
+
+## Aggregates
+
+| Function | Description |
+|:---------|:------------|
+| COUNT(*) | Count all rows |
+| COUNT(col) | Count non-null values in column |
+| SUM(col) | Sum numeric values |
+| AVG(col) | Average of numeric values |
+| MIN(col) | Minimum value |
+| MAX(col) | Maximum value |
+| STDDEV(col) | Standard deviation |
+| VARIANCE(col) | Variance |
+
+```sql
+SELECT COUNT(*) as total_docs,
+       COUNT(embedding) as docs_with_vectors,
+       AVG(views) as avg_views,
+       MAX(views) as max_views
+FROM documents;
+```
+
+## Subqueries
+
+Use SELECT within WHERE:
+
+```sql
+SELECT * FROM documents
+WHERE id IN (SELECT doc_id FROM bookmarks WHERE user_id = 5);
+```
+
+Scalar subquery (returns single value):
+
+```sql
+SELECT *, (SELECT COUNT(*) FROM comments WHERE doc_id = documents.id) as comment_count
+FROM documents;
+```
+
+FROM subquery:
+
+```sql
+SELECT author, COUNT(*) as count
+FROM (SELECT author, id FROM documents WHERE status = 'published')
+GROUP BY author;
+```
+
+## UNION & Set Operations
+
+Combine results from multiple SELECT:
+
+```sql
+SELECT id, title FROM documents WHERE category = 'AI'
+UNION
+SELECT id, name FROM articles WHERE topic = 'AI';
+```
+
+UNION removes duplicates. Use UNION ALL to keep duplicates:
+
+```sql
+SELECT id FROM documents
+UNION ALL
+SELECT id FROM articles;
+```
+
+## NULL Handling
+
+```sql
+SELECT * FROM documents WHERE embedding IS NULL;
+SELECT * FROM documents WHERE embedding IS NOT NULL;
+SELECT COALESCE(description, title) as summary FROM documents;
+```
+
+## Performance Notes
+
+1. **Index-friendly WHERE**: Create indexes on frequently filtered columns
+2. **Column projection**: SELECT only needed columns; NodeDB optimizes early
+3. **Filter before GROUP BY**: Reduces cardinality before aggregation
+4. **LIMIT early**: For large result sets, use LIMIT to bound memory
+5. **ORDER BY indexed column**: Faster when column is indexed
+
+## Next Steps
+
+- [JOINs](/query/joins) — Combine data from multiple collections
+- [Aggregations & Window Functions](/query/aggregations) — COUNT, SUM, ROW_NUMBER
+- [UPDATE & DELETE](/query/update-delete) — Modify data
+- [Vector Search](/query/vector-search) — Search by embeddings

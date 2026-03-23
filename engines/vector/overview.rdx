@@ -1,8 +1,76 @@
 ---
 title: Vector Engine Overview
-description: Semantic memory with HNSW graphs and SIMD distance math.
+description: Semantic memory with HNSW graphs, quantization, and SIMD distance math.
 ---
 
 # Vector Engine Overview
 
-TODO
+The Vector Engine is NodeDB's semantic memory system, optimized for nearest-neighbor search on high-dimensional embeddings. It powers similarity-based retrieval for AI applications—semantic search, recommendation systems, and content deduplication.
+
+## Core Capabilities
+
+**HNSW Indexing**: Multi-layer proximity graphs with logarithmic search complexity. Supports persistent indices with configurable graph structure (M and ef_construction parameters).
+
+**Distance Metrics**: Four metric options for different embedding types:
+- **L2**: Euclidean distance (default, for dense embeddings)
+- **Cosine**: Normalized similarity (text embeddings, SBERT)
+- **Neg Inner Product**: Negative dot product (biased toward magnitude, sparse embeddings)
+
+**Quantization**: Memory-efficient search without sacrificing accuracy:
+- **SQ8**: Scalar quantization to 8-bit integers (12x memory reduction)
+- **PQ**: Product quantization with codebook (vector partitions)
+- **IVF-PQ**: Coarse-to-fine: inverted file clusters + product quantization
+
+**Pre-filtering**: SIMD-accelerated filtering using Roaring Bitmaps:
+- Metadata filters before graph search (pre-filter)
+- Graph search then metadata check (post-filter)
+- Adaptive strategy selection based on selectivity
+
+## SQL Usage
+
+```sql
+-- Create vector collection with HNSW index
+CREATE VECTOR INDEX embedding_idx ON documents METRIC cosine M 16 EF_CONSTRUCTION 200;
+
+-- Semantic search with distance limit
+SELECT id, title, vector_distance(embedding, ARRAY[...]) as distance
+FROM documents
+ORDER BY vector_distance(embedding, ARRAY[...]) LIMIT 10;
+
+-- Search with metadata pre-filtering
+SELECT id, title
+FROM documents
+WHERE category = 'research'
+ORDER BY vector_distance(embedding, ARRAY[...]) LIMIT 5;
+
+-- Multi-vector search with RRF fusion
+SELECT id, title, bm25_score(content, 'query') as text_score
+FROM documents
+ORDER BY rrf(
+  vector_distance(embedding, ARRAY[...]),
+  bm25_score(content, 'query')
+) LIMIT 20;
+```
+
+## Architecture
+
+The Vector Engine runs in the Data Plane with dedicated CPU and memory budgets (default 30% of total). Indices are mmap-ed from NVMe for low-latency access. Quantized vectors live in compressed form on disk; decompression happens in SIMD-optimized loops during search.
+
+Graph layers are stored in memory for active queries. Compaction merges write buffers into the index graph atomically.
+
+## Performance Characteristics
+
+- **Search latency**: 1-50ms for 1M vectors (depends on M, ef_search, quantization)
+- **Index build time**: 100K vectors/second with ef_construction=200
+- **Memory per vector**: 8 bytes (L2 quantized) to 40 bytes (unquantized)
+- **Throughput**: 10K-100K concurrent searches on 8 CPU cores
+
+## Index Types
+
+| Type | Memory | Speed | Use Case |
+|------|--------|-------|----------|
+| `hnsw` | High | Fastest | Uncompressed, <5M vectors |
+| `hnsw_pq` | Medium | Fast | Large datasets, some accuracy loss |
+| `ivf_pq` | Low | Slower | Memory-constrained, 100M+ vectors |
+
+See [Indexing Parameters](/engines/vector/indexing-params) for tuning and [Distance Metrics](/engines/vector/distance-metrics) for metric selection.

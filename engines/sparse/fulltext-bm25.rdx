@@ -1,8 +1,276 @@
 ---
-title: Full-Text Search (BM25)
-description: splintr-powered inverted index with BM25 scoring.
+title: Full-Text Search with BM25
+description: splintr inverted index, BM25 probabilistic ranking, text analyzers.
 ---
 
-# Full-Text Search (BM25)
+# Full-Text Search with BM25
 
-TODO
+The Sparse Engine integrates splintr for full-text search on text fields. BM25 (Best Matching 25) provides probabilistic relevance ranking that accounts for term frequency, document length, and corpus statistics.
+
+## BM25 Overview
+
+**BM25 Ranking Formula**:
+
+```
+score(D, Q) = Σ IDF(q) * (f(q, D) * (k1 + 1)) / (f(q, D) + k1 * (1 - b + b * |D| / avgdl))
+```
+
+Where:
+- `f(q, D)`: Term frequency in document
+- `IDF(q)`: Inverse document frequency (log(N / df))
+- `k1`: Saturation parameter (default 1.5, tuning between 1-2)
+- `b`: Length normalization (default 0.75, between 0-1)
+- `|D|`: Document length
+- `avgdl`: Average document length
+
+**Intuition**: Frequent terms boost score, but with diminishing returns. Longer documents penalized slightly to favor conciseness.
+
+## Text Indexing
+
+**Create a full-text index**:
+
+```sql
+-- Index text field for full-text search
+CREATE FULLTEXT INDEX idx_content ON articles (content);
+
+-- Index multiple text fields in one index
+CREATE FULLTEXT INDEX idx_searchable ON articles (title, content, tags);
+```
+
+**Supported field types**: STRING, TEXT, BLOB (parsed as text).
+
+**Text analyzer** (default English):
+
+```sql
+-- Uses English stemmer + stopword removal
+-- "running" → "run", "the" removed
+CREATE FULLTEXT INDEX idx_en ON articles (content)
+LANGUAGE 'english';
+
+-- Other languages
+CREATE FULLTEXT INDEX idx_es ON articles (content) LANGUAGE 'spanish';
+CREATE FULLTEXT INDEX idx_fr ON articles (content) LANGUAGE 'french';
+```
+
+## Querying
+
+**Basic full-text search**:
+
+```sql
+-- Find articles mentioning "neural networks"
+SELECT id, title, bm25_score(content, 'neural networks') as relevance
+FROM articles
+WHERE bm25_score(content, 'neural networks') > 0.0
+ORDER BY relevance DESC
+LIMIT 20;
+```
+
+**Score thresholding**:
+
+```sql
+-- Only return results with minimum relevance
+SELECT id, title
+FROM articles
+WHERE bm25_score(content, 'machine learning') > 2.0
+ORDER BY bm25_score(content, 'machine learning') DESC;
+```
+
+**Query operators**:
+
+```sql
+-- Phrase search (exact word sequence)
+SELECT id FROM articles
+WHERE bm25_score(content, '"neural network"') > 0;
+
+-- Required terms (+)
+SELECT id FROM articles
+WHERE bm25_score(content, '+machine +learning') > 0;  -- both required
+
+-- Excluded terms (-)
+SELECT id FROM articles
+WHERE bm25_score(content, 'learning -reinforcement') > 0;  -- exclude RL
+
+-- Wildcard (prefix)
+SELECT id FROM articles
+WHERE bm25_score(content, 'neural*') > 0;  -- neural, networks, etc.
+```
+
+## Hybrid Search: Structured + Text
+
+Combine BM25 with metadata filters:
+
+```sql
+-- Articles matching both predicates
+SELECT
+  id,
+  title,
+  publication_date,
+  bm25_score(content, 'deep learning') as relevance
+FROM articles
+WHERE status = 'published'              -- Structured filter (BTree index)
+  AND publication_date >= '2024-01-01'  -- Range filter (BTree index)
+  AND bm25_score(content, 'deep learning') > 0.5  -- Text filter (BM25)
+ORDER BY relevance DESC
+LIMIT 50;
+```
+
+## Advanced Features
+
+### Field Weighting
+
+Weight some fields more heavily:
+
+```sql
+-- Title matches worth 3x content matches
+SELECT id, title
+FROM articles
+WHERE (
+  bm25_score(title, 'AI', weight=3.0) +
+  bm25_score(content, 'AI', weight=1.0)
+) > 2.0
+ORDER BY (bm25_score(title, 'AI', weight=3.0) + bm25_score(content, 'AI', weight=1.0)) DESC;
+```
+
+### Fuzzy Matching
+
+Match misspellings:
+
+```sql
+-- Fuzzy match with edit distance 1
+SELECT id FROM articles
+WHERE bm25_score(content, 'algoritm~1') > 0;
+-- Matches: algorithm, algorithmic, etc.
+```
+
+### Phrase Proximity
+
+Find terms close together:
+
+```sql
+-- Words within 5 positions of each other
+SELECT id FROM articles
+WHERE bm25_score(content, 'machine WITHIN 5 learning') > 0;
+```
+
+## Performance Characteristics
+
+**Index size**: ~10-30% of text size (with compression).
+
+**Index latency**: 1-50ms depending on query rarity.
+
+- Common terms (the, and, a): May be stopword-filtered, fast
+- Rare terms (proprietary names): Fast (few matching documents)
+- Medium terms (neural, network): Slower (many documents), 10-50ms
+
+**Index update**: <1µs per term added (batch-compacted).
+
+**Memory**: Index vocabulary cached in RAM (~50MB per 1M docs for typical English text).
+
+## Tuning BM25 Parameters
+
+Adjust BM25 constants via configuration:
+
+```toml
+[sparse_engine]
+bm25_k1 = 1.5        # Default: 1.5 (range 1.0-2.5)
+# Lower k1 → diminishing returns faster (favor frequent terms less)
+# Higher k1 → more weight to term frequency
+
+bm25_b = 0.75        # Default: 0.75 (range 0.0-1.0)
+# Lower b → less length normalization (long docs boosted)
+# Higher b → more length normalization (short docs favored)
+```
+
+**Tuning examples**:
+
+```toml
+# For short snippets, penalize long documents more
+bm25_k1 = 2.0
+bm25_b = 0.85
+
+# For technical documents, reward term frequency
+bm25_k1 = 1.2
+bm25_b = 0.6
+```
+
+## Indexing Strategy
+
+**When to index text**:
+
+```sql
+-- Index fields that are frequently searched
+CREATE FULLTEXT INDEX idx_user_bio ON users (bio);
+
+-- Skip if rarely searched
+-- CREATE FULLTEXT INDEX idx_user_address ON users (address);  -- don't index
+
+-- Index compound fields for flexible search
+CREATE FULLTEXT INDEX idx_product_info ON products (name, description, tags);
+```
+
+**Rebuilding indices**:
+
+```sql
+-- Rebuild if corrupted or after major algorithm update
+DROP FULLTEXT INDEX idx_content;
+CREATE FULLTEXT INDEX idx_content ON articles (content);
+-- Offline operation, 1-10 minutes for 100M documents
+```
+
+## Examples: Real-World Scenarios
+
+**Log search by error message**:
+
+```sql
+-- Find ERROR logs mentioning specific issue
+SELECT
+  id,
+  timestamp,
+  message,
+  bm25_score(message, 'connection timeout') as relevance
+FROM logs
+WHERE level = 'ERROR'
+  AND bm25_score(message, 'connection timeout') > 0.5
+ORDER BY timestamp DESC
+LIMIT 100;
+```
+
+**Document discovery with filters**:
+
+```sql
+-- Find published papers on topic, ranked by relevance
+SELECT
+  id,
+  title,
+  author,
+  publication_date,
+  bm25_score(abstract, 'reinforcement learning') as relevance
+FROM papers
+WHERE status = 'published'
+  AND publication_date >= '2024-01-01'
+  AND category IN ('ML', 'AI')
+  AND bm25_score(abstract, 'reinforcement learning') > 1.0
+ORDER BY relevance DESC
+LIMIT 20;
+```
+
+**Multi-field search with weights**:
+
+```sql
+-- Search title (important), then description, then tags
+SELECT id, product_name
+FROM products
+WHERE (
+  bm25_score(product_name, 'laptop', weight=5.0) +
+  bm25_score(description, 'laptop', weight=2.0) +
+  bm25_score(tags, 'laptop', weight=1.0)
+) > 2.0
+ORDER BY (
+  bm25_score(product_name, 'laptop', weight=5.0) +
+  bm25_score(description, 'laptop', weight=2.0) +
+  bm25_score(tags, 'laptop', weight=1.0)
+) DESC
+LIMIT 10;
+```
+
+See [B-Tree Indexes](/engines/sparse/btree-indexes) for structured search and [Sparse Engine Overview](/engines/sparse/overview) for integration patterns.

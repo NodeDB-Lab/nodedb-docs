@@ -1,8 +1,383 @@
 ---
 title: Built-in Functions
-description: Scalar UDFs: doc_get, doc_exists, doc_array_contains, distance functions.
+description: Vector, text search, document, CRDT, and aggregate functions.
 ---
 
 # Built-in Functions
 
-TODO
+NodeDB provides standard SQL functions plus custom UDFs for vectors, text search, and CRDT operations.
+
+## Vector Search Functions
+
+### vector_distance(field, query_vector)
+
+Compute distance between two vectors. Use in ORDER BY for top-k search:
+
+```sql
+SELECT id, title, vector_distance(embedding, ARRAY[0.1, 0.2, ...]) as dist
+FROM documents
+ORDER BY dist
+LIMIT 10;
+```
+
+Supported metrics (set in CREATE VECTOR INDEX):
+- `cosine` — Cosine distance (normalized vectors)
+- `l2` — Euclidean distance
+- `hamming` — Hamming distance (binary vectors)
+
+Returns `FLOAT` (0.0 = identical, 1.0 = opposite).
+
+## Full-Text Search Functions
+
+### bm25_score(field, query)
+
+BM25 relevance score for text field. Use with ORDER BY:
+
+```sql
+SELECT id, title, bm25_score(content, 'machine learning') as score
+FROM documents
+WHERE bm25_score(content, 'machine learning') > 0
+ORDER BY score DESC
+LIMIT 20;
+```
+
+Returns `FLOAT` (higher = more relevant).
+
+### text_match(field, keyword)
+
+Check if text matches keyword. Use in WHERE:
+
+```sql
+SELECT * FROM documents
+WHERE text_match(content, 'AI safety')
+ORDER BY bm25_score(content, 'AI safety') DESC;
+```
+
+Returns `BOOLEAN`.
+
+## Document Functions
+
+### doc_get(document, path)
+
+Extract value from JSON/document field:
+
+```sql
+SELECT id, doc_get(metadata, 'author') as author
+FROM documents;
+```
+
+Path syntax:
+
+```sql
+doc_get(metadata, 'nested.field.name')     -- nested access
+doc_get(metadata, 'array[0]')              -- array index
+doc_get(metadata, 'array[*].name')         -- all array elements
+```
+
+Returns type of extracted value (TEXT, INTEGER, FLOAT, etc.).
+
+### doc_exists(document, path)
+
+Check if path exists in document:
+
+```sql
+SELECT id, title
+FROM documents
+WHERE doc_exists(metadata, 'author');
+```
+
+Returns `BOOLEAN`.
+
+### doc_array_contains(document, path, value)
+
+Check if array contains value:
+
+```sql
+SELECT id, title
+FROM documents
+WHERE doc_array_contains(metadata, 'tags', 'machine-learning');
+```
+
+Returns `BOOLEAN`.
+
+## Scoring & Ranking Functions
+
+### rrf_score(rank1, rank2, ..., k)
+
+Reciprocal Rank Fusion combining multiple rankings. Calculate rank position from each source, then:
+
+```
+RRF_score = SUM(1 / (k + rank))
+```
+
+Example:
+
+```sql
+SELECT id,
+  rrf_score(vec_rank, bm25_rank, 60) as combined_score
+FROM (
+  SELECT id,
+    ROW_NUMBER() OVER (ORDER BY vector_distance(...)) as vec_rank,
+    ROW_NUMBER() OVER (ORDER BY bm25_score(...)) as bm25_rank
+  FROM documents
+);
+```
+
+Default k=60. Adjust k to balance ranking contribution.
+
+## CRDT Functions
+
+### crdt_state(collection, doc_id)
+
+Read CRDT snapshot for a document:
+
+```sql
+SELECT crdt_state('documents', 'doc_123');
+```
+
+Returns MessagePack-encoded CRDT state (BYTEA).
+
+### crdt_apply(collection, doc_id, delta)
+
+Apply CRDT delta to document:
+
+```sql
+SELECT crdt_apply('documents', 'doc_123', X'0a1b2c3d');
+```
+
+Delta must be valid Loro CRDT delta bytes. Returns applied state.
+
+## Standard SQL Aggregates
+
+### COUNT(*)
+
+Count all rows:
+
+```sql
+SELECT COUNT(*) as total FROM documents;
+```
+
+Count non-null values:
+
+```sql
+SELECT COUNT(embedding) as docs_with_vectors FROM documents;
+```
+
+Count distinct:
+
+```sql
+SELECT COUNT(DISTINCT author) as authors FROM documents;
+```
+
+### SUM(numeric_field)
+
+Sum numeric values:
+
+```sql
+SELECT SUM(views) as total_views FROM documents;
+```
+
+### AVG(numeric_field)
+
+Average:
+
+```sql
+SELECT AVG(views) as avg_views FROM documents;
+```
+
+### MIN(field), MAX(field)
+
+Minimum/maximum:
+
+```sql
+SELECT MIN(created_at), MAX(created_at) FROM documents;
+```
+
+Works on numeric, text, timestamp fields.
+
+### STDDEV(field), VARIANCE(field)
+
+Standard deviation and variance:
+
+```sql
+SELECT STDDEV(views) as stdev, VARIANCE(views) as var FROM documents;
+```
+
+## String Functions
+
+### LENGTH(text)
+
+String length:
+
+```sql
+SELECT id, LENGTH(title) as title_len FROM documents;
+```
+
+### UPPER(text), LOWER(text)
+
+Case conversion:
+
+```sql
+SELECT UPPER(title), LOWER(content) FROM documents;
+```
+
+### SUBSTRING(text, start, length)
+
+Extract substring:
+
+```sql
+SELECT SUBSTRING(title, 1, 50) as preview FROM documents;
+```
+
+### CONCAT(text, ...)
+
+Concatenate strings:
+
+```sql
+SELECT CONCAT(first_name, ' ', last_name) as full_name FROM users;
+```
+
+### TRIM(text), LTRIM(text), RTRIM(text)
+
+Remove whitespace:
+
+```sql
+SELECT TRIM(title) FROM documents;
+```
+
+### REPLACE(text, from, to)
+
+Replace substrings:
+
+```sql
+SELECT REPLACE(content, 'old', 'new') FROM documents;
+```
+
+## Numeric Functions
+
+### ROUND(number, decimals)
+
+Round to N decimal places:
+
+```sql
+SELECT ROUND(vector_distance(...), 3) FROM documents;
+```
+
+### ABS(number)
+
+Absolute value:
+
+```sql
+SELECT ABS(score - 100) FROM results;
+```
+
+### CEIL(number), FLOOR(number)
+
+Rounding up/down:
+
+```sql
+SELECT CEIL(3.2), FLOOR(3.8);  -- 4, 3
+```
+
+## Date/Time Functions
+
+### NOW()
+
+Current timestamp:
+
+```sql
+INSERT INTO documents (created_at) VALUES (NOW());
+```
+
+### DATE_TRUNC(interval, timestamp)
+
+Truncate to precision:
+
+```sql
+SELECT DATE_TRUNC('day', created_at) as day FROM documents;
+```
+
+Intervals: 'second', 'minute', 'hour', 'day', 'month', 'year'.
+
+### EXTRACT(part FROM timestamp)
+
+Extract part:
+
+```sql
+SELECT EXTRACT(YEAR FROM created_at) FROM documents;
+```
+
+Parts: 'year', 'month', 'day', 'hour', 'minute', 'second'.
+
+## Conditional Functions
+
+### CASE / WHEN
+
+Conditional logic:
+
+```sql
+SELECT id,
+  CASE
+    WHEN views > 1000 THEN 'popular'
+    WHEN views > 100 THEN 'trending'
+    ELSE 'new'
+  END as category
+FROM documents;
+```
+
+### COALESCE(col1, col2, ...)
+
+Return first non-null value:
+
+```sql
+SELECT COALESCE(description, title) as summary FROM documents;
+```
+
+### NULLIF(expr1, expr2)
+
+Return null if equal:
+
+```sql
+SELECT NULLIF(current, previous) FROM metrics;
+```
+
+## Window Functions
+
+### ROW_NUMBER()
+
+Rank rows sequentially:
+
+```sql
+SELECT id, ROW_NUMBER() OVER (ORDER BY views DESC) as rank FROM documents;
+```
+
+### RANK(), DENSE_RANK()
+
+Rank with ties:
+
+```sql
+SELECT id, RANK() OVER (ORDER BY views DESC) FROM documents;
+```
+
+### LAG(col), LEAD(col)
+
+Access previous/next row:
+
+```sql
+SELECT id, views, LAG(views) OVER (ORDER BY created_at) as prev_views FROM documents;
+```
+
+### FIRST_VALUE(col), LAST_VALUE(col)
+
+First/last value in window:
+
+```sql
+SELECT id, views, FIRST_VALUE(views) OVER (ORDER BY created_at) FROM documents;
+```
+
+## Next Steps
+
+- [Vector Search](/query/vector-search) — Using vector_distance
+- [Full-Text Search](/query/filtered-search) — Using bm25_score
+- [SELECT](/query/select) — Using functions in queries
+- [Aggregations](/query/aggregations) — COUNT, SUM, GROUP BY

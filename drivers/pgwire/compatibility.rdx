@@ -1,8 +1,238 @@
 ---
 title: Compatibility Matrix
-description: Tested clients, ORMs, and tools.
+description: Tested clients, ORMs, and tools with PostgreSQL wire protocol.
 ---
 
 # Compatibility Matrix
 
-TODO
+NodeDB's PostgreSQL wire protocol has been tested with a wide range of clients, ORMs, and tools. This matrix shows what works, what has limitations, and what doesn't work.
+
+## PostgreSQL Clients
+
+| Client | Version | Status | Notes |
+|---|---|---|---|
+| psql | 12+ | Full | Native PostgreSQL CLI works perfectly |
+| pgAdmin | 4+ | Full | GUI tool works; some features depend on system views |
+| DBeaver | 21+ | Full | Schema browser, query editor, data viewing all work |
+| DataGrip | 2021+ | Full | JetBrains IDE with full support |
+
+## Language Drivers
+
+### Python
+
+| Library | Version | Status | Notes |
+|---|---|---|---|
+| psycopg2 | 2.8+ | Full | Most popular; automatic prepared statements |
+| psycopg (v3) | 3.0+ | Full | Async variant; connection pools; recommended |
+| asyncpg | 0.20+ | Full | High-performance async driver |
+| pypg | latest | Full | Lightweight pure-Python implementation |
+
+Example with psycopg2:
+
+```python
+import psycopg2
+
+conn = psycopg2.connect(
+    "dbname=nodedb user=postgres host=127.0.0.1 port=6432"
+)
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM documents")
+print(cursor.fetchall())
+```
+
+### JavaScript/Node.js
+
+| Library | Version | Status | Notes |
+|---|---|---|---|
+| pg | 8.0+ | Full | Most popular Node.js driver |
+| postgres | 1.0+ | Full | Modern, async-only |
+| pgPromise | 10.0+ | Full | Promise-based wrapper |
+| sequelize | 6.0+ | Full | ORM with NodeDB support |
+
+Example with pg:
+
+```javascript
+const { Client } = require('pg');
+
+const client = new Client({
+  host: '127.0.0.1',
+  port: 6432,
+  user: 'postgres',
+  database: 'nodedb',
+});
+
+await client.connect();
+const res = await client.query('SELECT * FROM documents');
+console.log(res.rows);
+```
+
+### Go
+
+| Library | Version | Status | Notes |
+|---|---|---|---|
+| pq | v1.0+ | Full | Pure Go PostgreSQL driver |
+| pgx | v4.0+ | Full | High-performance with connection pooling |
+| database/sql | Go 1.8+ | Full | Standard library integration |
+
+Example with pq:
+
+```go
+import "database/sql"
+import _ "github.com/lib/pq"
+
+db, _ := sql.Open("postgres", "host=127.0.0.1 port=6432 user=postgres dbname=nodedb")
+rows, _ := db.Query("SELECT * FROM documents")
+```
+
+### Java
+
+| Library | Version | Status | Notes |
+|---|---|---|---|
+| JDBC (postgresql) | 42.2+ | Full | Standard Java database access |
+| Hikari | 4.0+ | Full | Connection pool; compatible with JDBC |
+| jOOQ | 3.14+ | Full | SQL builder; pgwire compatible |
+
+Example with JDBC:
+
+```java
+Class.forName("org.postgresql.Driver");
+Connection conn = DriverManager.getConnection(
+  "jdbc:postgresql://127.0.0.1:6432/nodedb", "postgres", "password"
+);
+Statement stmt = conn.createStatement();
+ResultSet rs = stmt.executeQuery("SELECT * FROM documents");
+```
+
+### Rust
+
+| Library | Version | Status | Notes |
+|---|---|---|---|
+| tokio-postgres | 0.7+ | Full | Async Rust driver |
+| sqlx | 0.6+ | Full | SQL toolkit with compile-time checking |
+| diesel | 2.0+ | Partial | ORM; works but no custom consistency control |
+| sea-orm | 0.10+ | Full | Async ORM with good support |
+
+Example with tokio-postgres:
+
+```rust
+use tokio_postgres::Client;
+
+let (client, connection) = tokio_postgres::connect(
+    "host=127.0.0.1 port=6432 user=postgres dbname=nodedb",
+    tokio_postgres::NoTls,
+).await?;
+
+let rows = client.query("SELECT * FROM documents", &[]).await?;
+```
+
+### PHP
+
+| Library | Version | Status | Notes |
+|---|---|---|---|
+| PDO PostgreSQL | 7.4+ | Full | Built-in PHP database extension |
+| Doctrine | 3.0+ | Full | ORM with pgwire support |
+| Eloquent | 8.0+ | Partial | Works via Laravel; no custom extensions |
+
+## ORMs and Query Builders
+
+### Full Support
+
+| ORM | Language | Status | Notes |
+|---|---|---|---|
+| SQLAlchemy | Python | Full | Uses psycopg2/asyncpg; all features work |
+| Sequelize | JavaScript | Full | Automatic prepared statements |
+| Diesel | Rust | Partial | Works; custom consistency via SQL SET |
+| SeaORM | Rust | Full | Async ORM; built on sqlx |
+| jOOQ | Java | Full | SQL builder; excellent type safety |
+| Doctrine | PHP | Full | Entity/query mapping |
+
+### Limited Support
+
+| ORM | Language | Notes |
+|---|---|---|
+| Prisma | JavaScript | Works but no native tenant/consistency control; use raw queries for custom extensions |
+| TypeORM | JavaScript | Works; custom variables via raw queries |
+| SQLBoiler | Go | Works; must use raw SQL for custom NodeDB features |
+| Gorm | Go | Works; recommended to use raw SQL for advanced features |
+
+Example with SQLAlchemy:
+
+```python
+from sqlalchemy import create_engine, text
+
+engine = create_engine("postgresql+psycopg2://postgres@127.0.0.1:6432/nodedb")
+with engine.connect() as conn:
+    # Set consistency
+    conn.execute(text("SET nodedb.consistency = 'strong'"))
+    result = conn.execute(text("SELECT * FROM documents"))
+    print(result.fetchall())
+```
+
+## Connection Poolers
+
+NodeDB is fully compatible with PostgreSQL connection poolers:
+
+| Pooler | Status | Notes |
+|---|---|---|
+| PgBouncer | Full | Use in transaction mode for best results |
+| pgcat | Full | Modern Rust pooler; recommended for new deployments |
+| pgPool | Full | Node.js native pooling |
+| HikariCP | Full | Java standard; high performance |
+
+See [connection poolers](../connection-poolers.md) for configuration examples.
+
+## What Works
+
+- All standard SQL (SELECT, INSERT, UPDATE, DELETE)
+- DDL (CREATE TABLE, ALTER TABLE, DROP TABLE)
+- Index operations (CREATE INDEX, DROP INDEX)
+- Transactions (BEGIN, COMMIT, ROLLBACK, SAVEPOINT)
+- Prepared statements and parameter binding
+- Schema introspection (system catalogs)
+- Session variables (SET/SHOW/RESET)
+- Error codes and messages
+- Authentication (SCRAM-SHA-256, MD5, Trust)
+- Connection pooling
+- Extended query protocol
+
+## What Doesn't Work
+
+- **Stored Procedures** — No PL/pgSQL or other procedural languages
+- **Triggers** — Server-side triggers not implemented
+- **Materialized Views** — Not supported
+- **Custom Types** — CREATE TYPE not supported
+- **User-Defined Functions** — No CREATE FUNCTION
+- **LISTEN/NOTIFY** — Use WebSocket subscriptions instead
+- **COPY Protocol** — Bulk loading uses document API
+- **Unlogged Tables** — Not relevant for distributed system
+- **Foreign Tables** — fdw not supported
+
+## Known Limitations
+
+1. **System Catalogs** — Some system views (e.g., pg_indexes) may be incomplete or read-only
+2. **CAST Chains** — Complex type casting may not work identically to PostgreSQL
+3. **Operator Precedence** — Follows PostgreSQL but some edge cases differ
+4. **Full-Text Search** — PostgreSQL FTS not implemented; use search API instead
+5. **Range Types** — Not supported; use alternative column designs
+
+## Recommendations
+
+For new applications:
+- Use **psycopg** (Python 3 async) or **asyncpg** for Python
+- Use **pg** or **postgres** for JavaScript
+- Use **pgx** for Go
+- Use **tokio-postgres** or **sqlx** for Rust
+- Use **JDBC** with Hikari for Java
+
+For existing PostgreSQL applications:
+- Connection strings work unchanged (just change host/port to NodeDB)
+- ORMs require no code changes
+- Custom consistency/tenant features use SET commands
+
+## Testing Your Application
+
+1. Change connection string to NodeDB
+2. Run your existing test suite
+3. If tests pass, application likely works
+4. For custom NodeDB features, add SET commands before queries
+5. Test failover and replication behavior separately

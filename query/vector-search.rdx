@@ -1,8 +1,289 @@
 ---
 title: Vector Search
-description: SELECT with ORDER BY vector_distance, top-k, ef_search.
+description: Semantic search using vector_distance, top-k queries, HNSW indexing.
 ---
 
 # Vector Search
 
-TODO
+Vector search finds semantically similar documents using embeddings. NodeDB uses HNSW (Hierarchical Navigable Small World) indexes for sub-millisecond top-k queries.
+
+## Basic Vector Search
+
+Find top-10 most similar documents:
+
+```sql
+CREATE VECTOR INDEX idx_embeddings
+ON documents (embedding)
+METRIC cosine;
+
+SELECT id, title, vector_distance(embedding, ARRAY[0.1, 0.2, 0.3, ...]) as distance
+FROM documents
+ORDER BY distance
+LIMIT 10;
+```
+
+The HNSW index automatically optimizes ORDER BY vector_distance + LIMIT.
+
+## Understanding Distances
+
+Distance depends on the metric:
+
+### Cosine Distance
+
+For normalized vectors (length = 1.0):
+- 0.0 = identical direction
+- 1.0 = opposite direction
+- 0.5 = perpendicular
+
+```sql
+-- Cosine distance between embeddings
+SELECT vector_distance(embedding, ARRAY[0.1, 0.2, ...]) as cos_dist FROM documents;
+```
+
+Best for: Text embeddings, semantic similarity.
+
+### L2 (Euclidean) Distance
+
+Straight-line distance in vector space:
+- 0.0 = identical
+- Unbounded (higher = farther)
+
+```sql
+-- L2 distance (requires L2 metric index)
+SELECT vector_distance(embedding, ARRAY[0.1, 0.2, ...]) as l2_dist FROM documents;
+```
+
+Best for: High-dimensional spatial similarity.
+
+### Hamming Distance
+
+Count differing bits (for binary vectors):
+- 0 = identical
+- N = N differing bits
+
+Best for: Fast approximate search on quantized embeddings.
+
+## Creating Vector Indexes
+
+Auto-detect metric from vectors:
+
+```sql
+CREATE VECTOR INDEX idx_embeddings ON documents (embedding);
+```
+
+Explicit metric:
+
+```sql
+CREATE VECTOR INDEX idx_embeddings
+ON documents (embedding)
+METRIC cosine;
+```
+
+Tuned HNSW parameters:
+
+```sql
+CREATE VECTOR INDEX idx_embeddings
+ON documents (embedding)
+METRIC l2
+M 32
+EF_CONSTRUCTION 500;
+```
+
+Parameters:
+
+| Param | Default | Effect |
+|:------|:--------|:-------|
+| M | 16 | Connections per node (4-64). Higher = slower build, better accuracy |
+| EF_CONSTRUCTION | 200 | Search width during build (100-1000). Higher = slower build, better index |
+
+## Top-K Search
+
+```sql
+-- Top 10
+SELECT * FROM documents ORDER BY vector_distance(...) LIMIT 10;
+
+-- Top 50
+SELECT * FROM documents ORDER BY vector_distance(...) LIMIT 50;
+```
+
+LIMIT is **required** for performance. Without LIMIT, the query scans all vectors.
+
+## Batch Vector Search
+
+Search for multiple query vectors:
+
+```sql
+SELECT doc_id, query_id, distance
+FROM (
+  SELECT documents.id as doc_id, q.id as query_id,
+    vector_distance(documents.embedding, q.embedding) as distance
+  FROM documents
+  CROSS JOIN (
+    VALUES
+      (1, ARRAY[0.1, 0.2, ...]),
+      (2, ARRAY[0.3, 0.4, ...]),
+      (3, ARRAY[0.5, 0.6, ...])
+  ) as q(id, embedding)
+) ranked
+ORDER BY query_id, distance
+LIMIT 10;  -- top 10 per query
+```
+
+## Vector Metadata in Results
+
+Retrieve both vector and metadata:
+
+```sql
+SELECT id, title, author,
+  vector_distance(embedding, ARRAY[0.1, 0.2, ...]) as distance
+FROM documents
+WHERE category = 'machine-learning'  -- pre-filter
+ORDER BY distance
+LIMIT 20;
+```
+
+## Efficiency Notes
+
+### With Index (Fast)
+
+```sql
+SELECT * FROM documents
+ORDER BY vector_distance(embedding, ARRAY[...])
+LIMIT 10;
+```
+
+If `CREATE VECTOR INDEX idx_embeddings ON documents (embedding)` exists, this is ~0.1-1ms for 1M documents.
+
+### Without Index (Slow)
+
+Same query without index: ~50-500ms (scans all vectors, scores each one).
+
+Always create vector indexes for frequent searches.
+
+## Index Parameters Tuning
+
+For **speed** (lower accuracy):
+```sql
+CREATE VECTOR INDEX idx_fast
+ON documents (embedding)
+M 8
+EF_CONSTRUCTION 100;
+```
+
+For **accuracy** (higher latency):
+```sql
+CREATE VECTOR INDEX idx_accurate
+ON documents (embedding)
+M 32
+EF_CONSTRUCTION 500;
+```
+
+Balanced (default):
+```sql
+CREATE VECTOR INDEX idx_balanced
+ON documents (embedding)
+M 16
+EF_CONSTRUCTION 200;
+```
+
+## Multiple Vector Fields
+
+Search across multiple embeddings:
+
+```sql
+SELECT id,
+  vector_distance(title_embedding, q1) as title_dist,
+  vector_distance(content_embedding, q2) as content_dist
+FROM documents
+ORDER BY title_dist + content_dist  -- combined
+LIMIT 10;
+```
+
+Create separate indexes:
+
+```sql
+CREATE VECTOR INDEX idx_title ON documents (title_embedding);
+CREATE VECTOR INDEX idx_content ON documents (content_embedding);
+```
+
+## Quantization for Speed
+
+NodeDB can quantize vectors to FP8 or NF4 for faster search:
+
+```sql
+-- Create index with quantization
+CREATE VECTOR INDEX idx_quantized
+ON documents (embedding)
+QUANTIZE FP8;  -- or NF4
+```
+
+Quantized indexes are faster (2-4x) but slightly less accurate.
+
+## Common Patterns
+
+### Similarity Search with Filters
+
+```sql
+SELECT id, title, vector_distance(embedding, ARRAY[...]) as dist
+FROM documents
+WHERE status = 'published' AND category IN ('AI', 'ML')
+ORDER BY dist
+LIMIT 10;
+```
+
+Filter first, then rank by distance.
+
+### Diversity Search
+
+```sql
+-- Skip very similar results
+SELECT id, title, vector_distance(embedding, ARRAY[...]) as dist
+FROM documents
+WHERE vector_distance(embedding, ARRAY[...]) > 0.3  -- min distance
+ORDER BY dist
+LIMIT 10;
+```
+
+### Semantic Clustering
+
+```sql
+-- Find all docs within distance threshold
+SELECT id, title, vector_distance(embedding, ARRAY[...]) as dist
+FROM documents
+WHERE vector_distance(embedding, ARRAY[...]) < 0.2
+ORDER BY dist;
+```
+
+## Performance Tips
+
+1. **Always create vector index**: 100-1000x faster
+2. **Use LIMIT**: Required for good performance; don't scan all vectors
+3. **Pre-filter**: WHERE before ORDER BY reduces comparison count
+4. **Use appropriate metric**: Cosine for normalized, L2 for raw vectors
+5. **Batch queries**: Search multiple vectors in one statement
+
+## Troubleshooting
+
+**Vector search is slow** → Create index
+```sql
+CREATE VECTOR INDEX idx_embeddings ON documents (embedding);
+```
+
+**"Collection does not exist"** → Create collection first
+```sql
+CREATE COLLECTION documents;
+INSERT INTO documents (id, embedding) VALUES (...);
+```
+
+**Dimension mismatch** → All query vectors must match embedding dimension
+```sql
+-- If documents.embedding is 384-dim, query must be 384-dim
+ARRAY[0.1, 0.2, ..., (384 values total)]
+```
+
+## Next Steps
+
+- [Filtered Search](/query/filtered-search) — Pre-filter before vector search
+- [Multi-Vector](/query/multi-vector) — Multiple vector fields
+- [RRF Fusion](/query/rrf-fusion) — Combine vector + text ranking
+- [DDL](/query/ddl) — CREATE VECTOR INDEX

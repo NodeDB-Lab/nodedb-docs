@@ -1,8 +1,443 @@
 ---
 title: Benchmarking
-description: Running and interpreting NodeDB benchmarks.
+description: Define SLOs and benchmark NodeDB performance.
 ---
 
 # Benchmarking
 
-TODO
+Establish performance baselines and verify SLOs (Service Level Objectives) before production.
+
+## SLO Targets
+
+Define expected performance:
+
+**Read-Heavy Workload** (80% reads, 20% writes):
+
+```
+Vector search:   p99 latency < 50ms
+Sparse query:    p99 latency < 20ms
+CRDT read:       p99 latency < 10ms
+Throughput:      > 10,000 req/sec on 3-node cluster
+```
+
+**Write-Heavy Workload** (20% reads, 80% writes):
+
+```
+Write latency:   p99 < 15ms
+Write throughput: > 5,000 writes/sec on 3-node cluster
+WAL fsync:       p99 < 20ms
+```
+
+**Balanced Workload:**
+
+```
+Read latency (p99):    < 30ms
+Write latency (p99):   < 15ms
+Bridge overhead:       < 15% (control/data plane)
+Combined throughput:   > 8,000 req/sec
+```
+
+## Benchmark Setup
+
+Hardware setup:
+
+```
+Database Server:
+  - 16 cores
+  - 64 GB RAM
+  - 1 TB NVMe SSD
+
+Load Testing Client:
+  - 8 cores
+  - 32 GB RAM
+  - On same network (< 1ms latency)
+  - Not on same hardware as database
+
+Network:
+  - < 1ms latency between client and server
+  - > 10 Gbps bandwidth
+```
+
+## Benchmark Scenarios
+
+### Scenario 1: Vector Search
+
+Load test vector search performance:
+
+```bash
+#!/bin/bash
+VECTORS=1000000  # 1M vectors
+DIMENSIONS=1536  # OpenAI embedding size
+QUERIES=10000    # Number of queries
+CONCURRENT=10    # Concurrent clients
+
+nodedb-bench vector-search \
+  --vectors=$VECTORS \
+  --dimensions=$DIMENSIONS \
+  --queries=$QUERIES \
+  --concurrent=$CONCURRENT \
+  --distance=cosine \
+  --k=10
+```
+
+Expected results:
+
+```
+Latency (ms):
+  p50:    12.3
+  p95:    35.2
+  p99:    48.5
+  max:    127.4
+
+Throughput:
+  queries/sec:  1,203
+
+Error rate:    0%
+```
+
+### Scenario 2: Writes
+
+Load test write performance:
+
+```bash
+nodedb-bench write-throughput \
+  --batch-size=1000 \
+  --concurrent=20 \
+  --duration=60s \
+  --payload-size=1kb
+```
+
+Expected results:
+
+```
+Write latency (ms):
+  p50:    3.2
+  p95:    12.1
+  p99:    14.8
+
+Throughput:
+  writes/sec:    5,432
+  MB/sec:        5.4
+```
+
+### Scenario 3: Mixed Workload
+
+Realistic mixed read/write:
+
+```bash
+nodedb-bench mixed \
+  --duration=120s \
+  --read-ratio=0.8 \
+  --write-ratio=0.2 \
+  --concurrent=50 \
+  --vector-queries=true \
+  --sparse-queries=true
+```
+
+Expected:
+
+```
+Total throughput:    8,234 req/sec
+Read latency (p99):  32ms
+Write latency (p99): 14ms
+Error rate:          0%
+```
+
+### Scenario 4: Bridge Overhead
+
+Measure control/data plane bridge latency:
+
+```bash
+# Run simple query repeatedly, measure latency
+for i in {1..10000}; do
+  time psql -c "SELECT 1;"
+done | awk '{print $2}' | sort -n | tail -1
+```
+
+Breakdown:
+
+```
+Total latency:     5.2ms
+├─ Control plane:  1.0ms (parse, plan)
+├─ Bridge:         0.8ms (15% of total)
+├─ Data plane:     1.5ms (execute)
+├─ Serialize:      0.4ms
+└─ Network RTT:    1.5ms
+```
+
+Target: Bridge < 15% of total = 0.78ms here.
+
+## Sustained Load Testing
+
+Test for 24+ hours to detect memory leaks:
+
+```bash
+#!/bin/bash
+DURATION_HOURS=24
+CONCURRENT=50
+QPS_TARGET=5000
+
+nodedb-bench sustained-load \
+  --duration=${DURATION_HOURS}h \
+  --concurrent=$CONCURRENT \
+  --qps-target=$QPS_TARGET \
+  --sample-interval=10s \
+  --output=results.json
+
+# Plot results
+gnuplot -e "
+set terminal png
+set output 'latency.png'
+set title 'Latency over 24 hours'
+set ylabel 'Latency (ms)'
+set xlabel 'Time (hours)'
+plot 'results.json' using 1:3 with lines title 'p99'
+"
+```
+
+Check for:
+
+- **Memory growth:** Should be flat +/- 5%
+- **Latency increase:** Should be stable
+- **GC pauses:** Smooth, no spikes
+- **Error rate:** Zero
+
+Example 24-hour chart:
+
+```
+Latency (p99)
+      50ms |
+      45ms |  ▁▂▂▂▁▂▂▂▁▂▂▂  <- stable
+      40ms |  ▁▂▂▂▁▂▂▂▁▂▂▂
+      35ms |  ▁▂▂▂▁▂▂▂▁▂▂▂
+           |________________________
+           0h       12h       24h
+```
+
+## Failover Testing
+
+Simulate node failure during load:
+
+```bash
+#!/bin/bash
+
+# Start load test in background
+nodedb-bench sustained-load \
+  --duration=10m \
+  --concurrent=50 \
+  --qps-target=5000 \
+  --output=results.json &
+
+BENCH_PID=$!
+
+# After 2 minutes, kill a node
+sleep 120
+systemctl stop nodedb@2
+
+# Measure:
+# - How many requests failed?
+# - Latency spike?
+# - Recovery time?
+
+wait $BENCH_PID
+
+# Analyze results
+grep "error_rate" results.json
+grep "latency_p99" results.json
+```
+
+Expected behavior:
+
+```
+Timeline:
+0-120s:   All healthy, p99=45ms, 0% errors
+120-125s: Node 2 dies, ~50 requests fail
+125s:     New leader elected
+125-130s: p99 spikes to 200ms
+130-180s: Gradual recovery to p99=45ms
+180s+:    Stable, node 2 recovers and rejoins
+```
+
+## Regression Testing
+
+Before releases, compare performance:
+
+```bash
+# Baseline (current version)
+nodedb-bench vector-search --queries=10000 --concurrent=20
+# p99: 48.5ms
+
+# After code changes
+nodedb-bench vector-search --queries=10000 --concurrent=20
+# p99: 52.1ms
+
+# Regression: +7.4% latency
+```
+
+Alert on regression > 5%:
+
+```bash
+THRESHOLD=1.05  # 5% regression threshold
+
+BASELINE=$(cat baseline.txt | grep p99)
+CURRENT=$(nodedb-bench vector-search | grep p99)
+
+RATIO=$(echo "scale=4; $CURRENT / $BASELINE" | bc)
+
+if (( $(echo "$RATIO > $THRESHOLD" | bc -l) )); then
+  echo "REGRESSION DETECTED: $RATIO"
+  exit 1
+fi
+```
+
+## Multi-Node Benchmark
+
+Benchmark distributed cluster:
+
+```bash
+nodedb-bench distributed \
+  --nodes="nodedb-1,nodedb-2,nodedb-3" \
+  --queries=50000 \
+  --concurrent=100 \
+  --measure-replication-lag=true
+```
+
+Metrics:
+
+```
+Single node (node 1):    10,234 req/sec
+All nodes:               28,945 req/sec  (2.8x improvement)
+Replication lag (p99):   85ms
+```
+
+Scaling efficiency: 2.8x / 3 nodes = 93% efficiency (ideal is 3.0x)
+
+## Benchmark Interpretation
+
+### Good Results
+
+```
+✓ Throughput increases with concurrent clients
+✓ p99 latency < SLO target
+✓ p99 / p50 ratio < 5x
+✓ No errors
+✓ Memory stable
+✓ 24-hour sustained stable
+```
+
+### Warning Signs
+
+```
+⚠ Latency increases superlinearly with load
+⚠ p99 > p50 by 10x or more (high variance)
+⚠ Memory growth over time
+⚠ Occasional spikes in latency
+⚠ High error rates at peak load
+```
+
+### Failure Indicators
+
+```
+✗ Crashes under load
+✗ Out of memory
+✗ 50%+ error rate at peak
+✗ p99 latency > 10x SLO
+✗ Cluster becomes unavailable
+```
+
+## Load Generation Tools
+
+Recommended tools:
+
+```bash
+# Option 1: nodedb-bench (built-in)
+nodedb-bench --help
+
+# Option 2: Apache JMeter
+jmeter -n -t benchmark.jmx
+
+# Option 3: wrk (HTTP)
+wrk -t8 -c50 -d60s http://localhost:6480/query
+
+# Option 4: pgbench (PostgreSQL compatible)
+pgbench -h localhost -c 50 -j 8 -T 60
+```
+
+## Continuous Benchmarking
+
+Automate benchmarks in CI/CD:
+
+```bash
+#!/bin/bash
+# Run before release
+
+set -e
+
+# Build release candidate
+cargo build --release -p nodedb
+
+# Start database
+./target/release/nodedb --config test.toml &
+DB_PID=$!
+sleep 5
+
+# Run benchmarks
+nodedb-bench vector-search --queries=10000 > bench.json
+
+# Check SLOs
+LATENCY=$(jq '.p99_latency_ms' bench.json)
+THROUGHPUT=$(jq '.queries_per_sec' bench.json)
+
+LATENCY_OK=$(( LATENCY < 60 ))
+THROUGHPUT_OK=$(( THROUGHPUT > 1000 ))
+
+if [ $LATENCY_OK -eq 0 ] || [ $THROUGHPUT_OK -eq 0 ]; then
+  echo "BENCHMARK FAILED"
+  cat bench.json
+  exit 1
+fi
+
+echo "BENCHMARK PASSED"
+kill $DB_PID
+```
+
+## Performance Regression Detection
+
+Track metrics over time:
+
+```
+Date       | p99_read | p99_write | throughput | Memory
+-----------|----------|-----------|------------|-------
+2025-03-01 | 35ms     | 12ms      | 8234/s    | 4.2GB
+2025-03-08 | 36ms     | 12ms      | 8210/s    | 4.3GB
+2025-03-15 | 38ms     | 13ms      | 8050/s    | 4.5GB  <-- Regression
+2025-03-22 | 45ms     | 14ms      | 7800/s    | 4.8GB  <-- Severe
+```
+
+Investigate regression:
+
+```bash
+# Compare commits
+git log --oneline v1.1.0..HEAD | head -20
+
+# Profile performance
+perf stat -p <nodedb_pid>
+perf record -p <nodedb_pid> -- sleep 60
+perf report
+
+# Check memory allocations
+heaptrack -c $(pgrep nodedb)
+```
+
+## Best Practices
+
+- Establish baselines before changes
+- Test realistic workloads, not artificial
+- Run sustained load tests (24+ hours)
+- Test failover scenarios
+- Benchmark after each release
+- Track metrics over time
+- Alert on performance regressions
+- Publish benchmark results publicly
+- Test multi-node clusters
+- Document hardware used for benchmarks

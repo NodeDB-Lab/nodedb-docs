@@ -1,8 +1,317 @@
 ---
 title: Kubernetes
-description: Deploying NodeDB on Kubernetes with Helm or manifests.
+description: Deploy NodeDB on Kubernetes using StatefulSet with persistent volumes.
 ---
 
-# Kubernetes
+# Kubernetes Deployment
 
-TODO
+Run NodeDB on Kubernetes with StatefulSet, persistent storage, and proper health probes.
+
+## Prerequisites
+
+- Kubernetes 1.21+
+- PersistentVolume provisioner (cloud storage or local)
+- Kubectl access to your cluster
+- NodeDB Docker image in your registry
+
+## StatefulSet Manifest
+
+Create `nodedb-statefulset.yaml`:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nodedb
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nodedb-config
+  namespace: nodedb
+data:
+  server.toml: |
+    [server]
+    listen_pgwire = "0.0.0.0:6432"
+    listen_http = "0.0.0.0:6480"
+    listen_native = "0.0.0.0:6433"
+    listen_sync_ws = "0.0.0.0:9090"
+    data_dir = "/var/lib/nodedb"
+    max_connections = 1000
+    idle_timeout_secs = 3600
+
+    [engines]
+    crdt_budget_mb = 512
+    vector_budget_mb = 1024
+    sparse_budget_mb = 256
+    timeseries_budget_mb = 512
+
+    [auth]
+    mode = "password"
+    scram_iterations = 4096
+
+    [checkpoint]
+    interval_secs = 300
+
+    [cluster]
+    node_id = 1
+    seed_nodes = ["nodedb-0.nodedb.nodedb.svc.cluster.local:9400", "nodedb-1.nodedb.nodedb.svc.cluster.local:9400", "nodedb-2.nodedb.nodedb.svc.cluster.local:9400"]
+    replication_factor = 3
+    quic_port = 9400
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodedb
+  namespace: nodedb
+  labels:
+    app: nodedb
+spec:
+  clusterIP: None
+  selector:
+    app: nodedb
+  ports:
+    - port: 6432
+      name: pgwire
+    - port: 6480
+      name: http
+    - port: 6433
+      name: native
+    - port: 9090
+      name: sync-ws
+    - port: 9400
+      name: raft
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodedb-lb
+  namespace: nodedb
+  labels:
+    app: nodedb
+spec:
+  type: LoadBalancer
+  selector:
+    app: nodedb
+  ports:
+    - port: 6432
+      targetPort: 6432
+      name: pgwire
+    - port: 6480
+      targetPort: 6480
+      name: http
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nodedb
+  namespace: nodedb
+spec:
+  serviceName: nodedb
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nodedb
+  template:
+    metadata:
+      labels:
+        app: nodedb
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - nodedb
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: nodedb
+          image: nodedb:v1.2.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6432
+              name: pgwire
+            - containerPort: 6480
+              name: http
+            - containerPort: 6433
+              name: native
+            - containerPort: 9090
+              name: sync-ws
+            - containerPort: 9400
+              name: raft
+          args:
+            - --config
+            - /etc/nodedb/server.toml
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/nodedb
+            - name: config
+              mountPath: /etc/nodedb
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+      volumes:
+        - name: config
+          configMap:
+            name: nodedb-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: fast-ssd
+        resources:
+          requests:
+            storage: 100Gi
+```
+
+## Deploy to Kubernetes
+
+```bash
+kubectl apply -f nodedb-statefulset.yaml
+
+# Verify deployment
+kubectl get statefulset -n nodedb
+kubectl get pods -n nodedb
+kubectl get pvc -n nodedb
+
+# Watch logs
+kubectl logs -f -n nodedb nodedb-0
+
+# Port-forward for local testing
+kubectl port-forward -n nodedb svc/nodedb-lb 6432:6432
+```
+
+## StorageClass Configuration
+
+For high-performance storage, define a StorageClass before deployment:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd
+provisioner: kubernetes.io/aws-ebs
+parameters:
+  type: gp3
+  iops: "3000"
+  throughput: "125"
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+```
+
+## Health Probes
+
+NodeDB exposes health endpoints for Kubernetes:
+
+- `GET /health` - Basic liveness check (database online)
+- `GET /health/ready` - Readiness check (data plane initialized)
+
+Both return 200 OK when healthy, 503 when degraded.
+
+## Multi-AZ Deployment
+
+Spread nodes across availability zones with pod anti-affinity:
+
+```yaml
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+            - key: app
+              operator: In
+              values:
+                - nodedb
+        topologyKey: topology.kubernetes.io/zone
+```
+
+This ensures no two NodeDB pods run in the same AZ.
+
+## Resource Sizing
+
+Adjust CPU and memory based on workload:
+
+| Workload | CPU | Memory | Storage |
+|----------|-----|--------|---------|
+| Development | 1-2 | 2-4 Gi | 20 Gi |
+| Small Production | 2-4 | 4-8 Gi | 50-100 Gi |
+| Large Production | 8-16 | 16-32 Gi | 500+ Gi |
+
+## Monitoring with Prometheus
+
+Install ServiceMonitor for Prometheus Operator:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nodedb
+  namespace: nodedb
+spec:
+  selector:
+    matchLabels:
+      app: nodedb
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+```
+
+## Troubleshooting
+
+Check pod status:
+```bash
+kubectl describe pod -n nodedb nodedb-0
+```
+
+Access logs:
+```bash
+kubectl logs -n nodedb nodedb-0
+```
+
+Execute commands in pod:
+```bash
+kubectl exec -it -n nodedb nodedb-0 -- /bin/bash
+```
+
+Verify cluster connectivity:
+```bash
+kubectl exec -n nodedb nodedb-0 -- curl http://nodedb-1.nodedb:6480/health
+```

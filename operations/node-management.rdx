@@ -1,8 +1,360 @@
 ---
 title: Node Management
-description: Join, leave, decommission, and replace nodes.
+description: Monitor and manage nodes in a multi-node cluster.
 ---
 
 # Node Management
 
-TODO
+Monitor cluster nodes, remove unhealthy nodes, and manage topology changes.
+
+## View Cluster Nodes
+
+List all nodes:
+
+```sql
+SHOW NODES;
+```
+
+Output:
+
+```
+node_id | node_name  | raft_addr      | status    | uptime_secs | cpu_pct | memory_gb
+--------|------------|----------------|-----------|-------------|---------|----------
+1       | nodedb-1   | nodedb-1:9400  | healthy   | 432000      | 45.2    | 3.5
+2       | nodedb-2   | nodedb-2:9400  | healthy   | 431900      | 22.1    | 3.2
+3       | nodedb-3   | nodedb-3:9400  | degraded  | 430000      | 78.5    | 7.1
+```
+
+View node details:
+
+```sql
+SELECT
+  node_id,
+  node_name,
+  status,
+  health_check_failures,
+  last_heartbeat,
+  replicas_count,
+  leader_score
+FROM sys.nodes
+WHERE node_id = 1;
+```
+
+## Node Health
+
+Check node health status:
+
+```sql
+SHOW PEER HEALTH;
+```
+
+Example:
+
+```
+node_id | health_status | latency_ms | cpu_pct | memory_pct | disk_pct | wal_lag_entries
+--------|---------------|------------|---------|------------|----------|----------------
+1       | healthy       | 2.1        | 45      | 60         | 75       | 0
+2       | healthy       | 1.9        | 22      | 55         | 70       | 0
+3       | degraded      | 45.2       | 78      | 88         | 95       | 1200
+```
+
+Health factors:
+
+- Latency > 100ms = warning
+- CPU > 90% = warning
+- Memory > 85% = warning
+- Disk > 85% = warning
+- WAL lag > 5000 entries = unhealthy
+
+## Remove Unhealthy Node
+
+Gracefully remove a failed node:
+
+```sql
+REMOVE NODE 3;
+```
+
+Steps:
+
+1. Drain shards from node 3 (5-30 minutes depending on data)
+2. Remove node from Raft group
+3. Mark data_dir as safe to delete
+4. Node transitions to "removed" status
+
+Monitor removal:
+
+```sql
+SHOW MIGRATIONS;
+```
+
+Example output:
+
+```
+migration_id | source_node | target_node | status     | progress_pct | eta_secs
+-------------|-------------|-------------|------------|--------------|--------
+42           | 3           | 1           | running    | 45.2         | 320
+43           | 3           | 2           | running    | 67.8         | 200
+```
+
+Wait for completion:
+
+```bash
+psql -h localhost -c "SELECT COUNT(*) FROM sys.migrations WHERE status != 'complete';"
+# When count is 0, removal is done
+```
+
+## Replace Failed Node
+
+Replace node 3 with new hardware:
+
+1. **Remove old node:**
+
+```sql
+REMOVE NODE 3;
+```
+
+2. **Wait for migration to complete:**
+
+```sql
+SHOW MIGRATIONS;
+-- When all migrations complete
+```
+
+3. **Shutdown node 3:**
+
+```bash
+systemctl stop nodedb@3
+rm -rf /var/lib/nodedb/*
+```
+
+4. **Configure new node with same node_id:**
+
+```toml
+[cluster]
+node_id = 3  # Reuse same ID
+seed_nodes = ["nodedb-1:9400", "nodedb-2:9400", "nodedb-3:9400"]
+```
+
+5. **Start new node:**
+
+```bash
+systemctl start nodedb@3
+```
+
+6. **Verify it joined:**
+
+```sql
+SHOW NODES;  -- node 3 should be 'healthy'
+```
+
+## Node Isolation
+
+Simulate node failure (test failover):
+
+```bash
+# On node to isolate
+iptables -I INPUT -j DROP
+# Stops all network traffic
+
+# Wait for cluster to detect failure
+# Other nodes promote new leader
+# Verify cluster functions without this node
+
+# Restore connectivity
+iptables -D INPUT -j DROP
+```
+
+## Shard Distribution
+
+View shard distribution:
+
+```sql
+SHOW SHARDS;
+```
+
+Example:
+
+```
+shard_id | primary_node | replica_nodes | status   | leader_lag_entries
+---------|--------------|---------------|----------|------------------
+0        | 1            | [1, 2, 3]     | healthy  | 0
+1        | 2            | [2, 3, 1]     | healthy  | 0
+2        | 3            | [3, 1, 2]     | healthy  | 0
+```
+
+Check shard for specific collection:
+
+```sql
+SELECT
+  shard_id,
+  collection_name,
+  primary_node,
+  replica_nodes
+FROM sys.shard_placement
+WHERE collection_name = 'customers';
+```
+
+## Promote Replica to Primary
+
+Manually promote replica if primary is permanently down:
+
+```sql
+-- Promote node 2 replica of shard 0 to primary
+ALTER SHARD 0 PROMOTE NODE 2;
+```
+
+The replica becomes primary immediately (may lose in-flight commits).
+
+## Leader Election
+
+Current leader:
+
+```sql
+SHOW CLUSTER STATUS;
+-- Shows leader_node_id
+```
+
+Force new election (useful after heavy load):
+
+```sql
+ALTER SYSTEM SET force_raft_election = true;
+```
+
+Triggers new election within 1 second.
+
+Monitor election:
+
+```sql
+SELECT
+  node_id,
+  raft_role,
+  term,
+  voted_for
+FROM sys.raft_state
+ORDER BY node_id;
+```
+
+Roles: leader, follower, candidate
+
+## Capacity Planning
+
+Check node capacity:
+
+```sql
+SELECT
+  node_id,
+  ROUND(100.0 * shards_count / max_shards, 1) as shard_utilization_pct,
+  ROUND(100.0 * memory_used_mb / memory_limit_mb, 1) as memory_utilization_pct,
+  ROUND(100.0 * disk_used_bytes / disk_capacity_bytes, 1) as disk_utilization_pct
+FROM sys.node_capacity
+ORDER BY shard_utilization_pct DESC;
+```
+
+When to add nodes:
+
+- Shard utilization > 85%
+- Memory utilization > 80%
+- Disk utilization > 85%
+
+## Maintenance Mode
+
+Put node in maintenance (drain traffic):
+
+```sql
+ALTER NODE 3 SET maintenance_mode = true;
+```
+
+Effects:
+
+- No new shards assigned to node
+- Existing shards drained to other nodes
+- Queries still work but new connections routed elsewhere
+
+Return to normal:
+
+```sql
+ALTER NODE 3 SET maintenance_mode = false;
+```
+
+## Monitoring Node Health
+
+Prometheus metrics:
+
+```promql
+# Node availability
+nodedb_raft_node_healthy{node_id="1"}
+
+# Replication lag per node
+nodedb_raft_replication_lag_entries{node_id="1"}
+
+# Shard count per node
+nodedb_shard_count{node_id="1"}
+```
+
+Alert on node issues:
+
+```yaml
+- alert: NodeDown
+  expr: nodedb_raft_node_healthy == 0
+  for: 1m
+
+- alert: HighReplicationLag
+  expr: nodedb_raft_replication_lag_entries > 10000
+
+- alert: NodeDiskFull
+  expr: nodedb_node_disk_utilization_pct > 90
+```
+
+## Multi-Node Query Routing
+
+By default, queries route to any healthy node:
+
+```bash
+# Query can go to any node
+psql -h nodedb-1 -c "SELECT COUNT(*) FROM customers;"
+psql -h nodedb-2 -c "SELECT COUNT(*) FROM customers;"
+psql -h nodedb-3 -c "SELECT COUNT(*) FROM customers;"
+# All return same result
+```
+
+Pin to specific node (advanced):
+
+```sql
+SELECT * FROM customers WHERE __nodedb_node_id = 1;
+-- Executes on node 1 only
+```
+
+## Node Metrics Export
+
+Export node metrics for monitoring:
+
+```sql
+SELECT
+  node_id,
+  node_name,
+  status,
+  uptime_secs,
+  cpu_percent,
+  memory_used_mb,
+  memory_limit_mb,
+  disk_used_bytes,
+  disk_capacity_bytes
+FROM sys.node_metrics;
+```
+
+Feed to Prometheus:
+
+```bash
+nodedb-exporter --clusters nodedb-1:6480,nodedb-2:6480,nodedb-3:6480
+```
+
+## Best Practices
+
+- Monitor all node health metrics
+- Remove unhealthy nodes within 1 hour
+- Use maintenance mode before planned maintenance
+- Test node failure scenarios quarterly
+- Plan capacity before hitting limits
+- Keep replication_factor >= 3
+- Monitor leader election frequency (< 1/day normal)
+- Avoid removing more than 1 node at a time

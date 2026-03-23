@@ -1,8 +1,383 @@
 ---
 title: Change Streams
-description: SUBSCRIBE for real-time change notifications.
+description: Real-time subscriptions to document and collection changes.
 ---
 
 # Change Streams
 
-TODO
+Change Streams provide real-time notifications of data modifications via WebSocket. Subscribe to collection changes and receive events instantly.
+
+## Basic Subscription
+
+Subscribe to all changes in a collection:
+
+```bash
+# WebSocket endpoint
+ws://127.0.0.1:6481/subscribe
+
+# Request
+{
+  "action": "subscribe",
+  "collection": "documents",
+  "filter": {}
+}
+
+# Response (on each change)
+{
+  "event_type": "insert",
+  "document": {"id": 1, "title": "New Doc"},
+  "timestamp": 1711280000,
+  "source": "client-123"
+}
+```
+
+## Event Types
+
+| Event | Trigger | Payload |
+|:------|:--------|:--------|
+| `insert` | INSERT statement | New document |
+| `update` | UPDATE statement | Changed fields + doc id |
+| `delete` | DELETE statement | Document id |
+| `crdt_apply` | CRDT delta applied | New CRDT state |
+| `collection_create` | CREATE COLLECTION | Collection metadata |
+| `collection_drop` | DROP COLLECTION | Collection name |
+
+## Filtered Subscriptions
+
+Subscribe to specific documents:
+
+```json
+{
+  "action": "subscribe",
+  "collection": "documents",
+  "filter": {
+    "id": 123
+  }
+}
+```
+
+Subscribe by metadata:
+
+```json
+{
+  "action": "subscribe",
+  "collection": "documents",
+  "filter": {
+    "status": "published",
+    "category": "AI"
+  }
+}
+```
+
+Subscribe by change type:
+
+```json
+{
+  "action": "subscribe",
+  "collection": "documents",
+  "event_types": ["insert", "update"]  -- ignore deletes
+}
+```
+
+## Multiple Subscriptions
+
+Subscribe to multiple collections:
+
+```json
+[
+  {
+    "action": "subscribe",
+    "collection": "documents",
+    "filter": {}
+  },
+  {
+    "action": "subscribe",
+    "collection": "edges",
+    "filter": {"relation_type": "cites"}
+  },
+  {
+    "action": "subscribe",
+    "collection": "metrics",
+    "filter": {}
+  }
+]
+```
+
+Receive events from all three.
+
+## Unsubscribe
+
+Stop receiving events:
+
+```json
+{
+  "action": "unsubscribe",
+  "subscription_id": "sub_123"
+}
+```
+
+Or close WebSocket connection.
+
+## Event Format
+
+Complete event structure:
+
+```json
+{
+  "event_id": "evt_abc123",
+  "timestamp": 1711280000000,
+  "event_type": "update",
+  "collection": "documents",
+  "document_id": "doc_123",
+  "changes": {
+    "title": {
+      "old": "AI Safety",
+      "new": "AI Alignment & Safety"
+    },
+    "views": {
+      "old": 100,
+      "new": 101
+    }
+  },
+  "source": {
+    "user": "alice@company.com",
+    "session": "sess_xyz",
+    "timestamp": 1711280000123
+  },
+  "version": 5  -- document version
+}
+```
+
+## Client Implementation
+
+### JavaScript (WebSocket)
+
+```javascript
+const ws = new WebSocket('ws://127.0.0.1:6481/subscribe');
+
+ws.onopen = () => {
+  // Subscribe to documents
+  ws.send(JSON.stringify({
+    action: 'subscribe',
+    collection: 'documents',
+    filter: { status: 'published' }
+  }));
+};
+
+ws.onmessage = (event) => {
+  const change = JSON.parse(event.data);
+  console.log(`${change.event_type}: ${change.document_id}`);
+
+  // Update UI
+  updateUI(change);
+};
+
+ws.onerror = (error) => {
+  console.error('WebSocket error:', error);
+};
+```
+
+### Python
+
+```python
+import asyncio
+import json
+import websockets
+
+async def subscribe():
+  uri = "ws://127.0.0.1:6481/subscribe"
+  async with websockets.connect(uri) as ws:
+    # Subscribe
+    await ws.send(json.dumps({
+      "action": "subscribe",
+      "collection": "documents",
+      "filter": {}
+    }))
+
+    # Listen for changes
+    async for message in ws:
+      change = json.loads(message)
+      print(f"Change: {change['event_type']} on {change['document_id']}")
+      handle_change(change)
+
+asyncio.run(subscribe())
+```
+
+### Rust
+
+```rust
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() {
+  let (ws_stream, _) = connect_async("ws://127.0.0.1:6481/subscribe")
+    .await
+    .expect("Failed to connect");
+
+  let (mut write, mut read) = ws_stream.split();
+
+  // Subscribe
+  let sub = json!({
+    "action": "subscribe",
+    "collection": "documents",
+    "filter": {}
+  });
+  write.send(Message::Text(sub.to_string())).await.unwrap();
+
+  // Listen
+  while let Some(msg) = read.next().await {
+    if let Ok(msg) = msg {
+      if let Message::Text(text) = msg {
+        let change: serde_json::Value = serde_json::from_str(&text).unwrap();
+        println!("Change: {:?}", change);
+      }
+    }
+  }
+}
+```
+
+## Backpressure & Throttling
+
+If server generates changes faster than client consumes:
+
+```json
+{
+  "action": "flow_control",
+  "batch_size": 100,
+  "max_buffered": 1000
+}
+```
+
+Server buffers up to 1000 events, delivers in batches of 100.
+
+## Reconnection & Resume
+
+Resume from last event:
+
+```json
+{
+  "action": "subscribe",
+  "collection": "documents",
+  "filter": {},
+  "resume_from": "evt_xyz123"  -- last event id received
+}
+```
+
+Server replays events since `evt_xyz123` (if still in buffer).
+
+## Durability & Ordering
+
+Events are:
+- **Durably logged**: Persisted to WAL
+- **Ordered**: Causally consistent within collection
+- **Exactly-once**: No duplicates (idempotent subscription IDs)
+
+Ordering is per-collection. Events across collections may be slightly out-of-order.
+
+## Use Cases
+
+### Real-Time UI Updates
+
+```javascript
+// Subscribe on page load
+ws.send(JSON.stringify({
+  action: 'subscribe',
+  collection: 'documents'
+}));
+
+ws.onmessage = (event) => {
+  const change = JSON.parse(event.data);
+  if (change.event_type === 'update') {
+    // Refresh document in UI
+    refreshDocument(change.document_id);
+  }
+};
+```
+
+### Cache Invalidation
+
+```javascript
+ws.onmessage = (event) => {
+  const change = JSON.parse(event.data);
+  // Invalidate cache entry
+  cache.delete(change.document_id);
+};
+```
+
+### Analytics/Audit Trail
+
+```javascript
+ws.onmessage = (event) => {
+  const change = JSON.parse(event.data);
+  // Log all changes
+  analyticsService.trackEvent('document_changed', {
+    doc_id: change.document_id,
+    event_type: change.event_type,
+    user: change.source.user
+  });
+};
+```
+
+### Replication
+
+```javascript
+// Secondary system subscribes to primary
+ws.onmessage = async (event) => {
+  const change = JSON.parse(event.data);
+  // Apply change to secondary
+  await secondaryDB.applyChange(change);
+};
+```
+
+## Connection Management
+
+### Heartbeat
+
+Server sends heartbeat every 30 seconds. If client detects no message for 60 seconds, reconnect.
+
+```javascript
+let lastMessageTime = Date.now();
+ws.onmessage = () => { lastMessageTime = Date.now(); };
+
+setInterval(() => {
+  if (Date.now() - lastMessageTime > 60000) {
+    ws.close();
+    // Reconnect...
+  }
+}, 30000);
+```
+
+### Explicit Keep-Alive
+
+```json
+{
+  "action": "ping"
+}
+```
+
+Server responds:
+
+```json
+{
+  "action": "pong"
+}
+```
+
+## Limitations
+
+| Constraint | Value | Notes |
+|:-----------|:------|:------|
+| Max subscriptions per connection | 100 | Per WebSocket |
+| Event buffer size | 10,000 events | Oldest pruned if full |
+| Max resume window | 5 minutes | Events older than 5m not available |
+| Event size | < 10 MB | Payload limit |
+| Concurrent connections | 10,000+ | Per server |
+
+## Next Steps
+
+- [SELECT](/query/select) — Query data before subscribing
+- [INSERT/UPDATE/DELETE](/query/update-delete) — Changes trigger events
+- [Transactions](/query/sql-overview#transaction-isolation) — Transaction isolation affects visibility
+- [HTTP API](/reference/http-api-spec) — REST alternative

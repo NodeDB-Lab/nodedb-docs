@@ -1,8 +1,335 @@
 ---
 title: SPSC Bridge
-description: Lock-free ring buffers connecting the two planes.
+description: Single-Producer, Single-Consumer lock-free ring buffers. The only cross-plane communication channel with deterministic backpressure.
 ---
 
 # SPSC Bridge
 
-TODO
+The SPSC bridge is the critical boundary between the Control Plane and Data Plane. It implements lock-free, bounded, single-direction communication via ring buffers. One Control Plane thread sends requests; one Data Plane core receives. One Data Plane core sends responses; the Control Plane thread receives.
+
+## Why SPSC?
+
+- **Lock-free**: No mutexes, no atomics in the hot path—only compare-and-swap for head/tail pointers
+- **Bounded**: Fixed capacity prevents unbounded memory growth; backpressure is built-in
+- **Single-direction**: One writer, one reader per direction eliminates race conditions
+- **Predictable**: No allocation during normal operation; latency is deterministic
+
+## Architecture
+
+Each vShard has two SPSC rings:
+
+```
+Control Plane → Request Ring → Data Plane Core
+(writer)       (buffer)         (reader)
+
+Data Plane Core → Response Ring → Control Plane
+(writer)         (buffer)         (reader)
+```
+
+With 1024 vShards and 16 CPU cores, the layout looks like:
+
+```
+┌─────────────────────────────────────────────┐
+│ Control Plane (Tokio)                       │
+│ ┌───────────────────────────────────────┐   │
+│ │ Request writer for vShard 0           │   │
+│ │ Request writer for vShard 1           │   │
+│ │ ...                                   │   │
+│ │ Request writer for vShard 1023        │   │
+│ │                                       │   │
+│ │ Response reader for vShard 0          │   │
+│ │ Response reader for vShard 1          │   │
+│ │ ...                                   │   │
+│ │ Response reader for vShard 1023       │   │
+│ └───────────────────────────────────────┘   │
+└─────────────────────────────────────────────┘
+                      ↓
+        [1024 x 2 SPSC Ring Buffers]
+                      ↓
+┌─────────────────────────────────────────────┐
+│ Data Plane                                  │
+│ ┌─────────────┐                             │
+│ │ Core 0      │                             │
+│ │ - Request   │ (reads from request ring 0)│
+│ │   readers   │ ...                        │
+│ │ - Response  │ (writes to response rings) │
+│ │   writers   │                             │
+│ └─────────────┘                             │
+│ ┌─────────────┐                             │
+│ │ Core 1      │                             │
+│ │ (similar)   │                             │
+│ └─────────────┘                             │
+│ ...                                         │
+│ ┌─────────────┐                             │
+│ │ Core 15     │                             │
+│ └─────────────┘                             │
+└─────────────────────────────────────────────┘
+```
+
+Each ring buffer is pre-allocated at startup. No dynamic allocation during normal operation.
+
+## Ring Buffer Internals
+
+A bounded SPSC ring with 64 slots:
+
+```
+Head → [Slot 0] [Slot 1] [Slot 2] ... [Slot 63] ← Tail (wrap)
+       (reader)                       (writer)
+```
+
+- **Write**: Writer appends to tail, advances tail
+- **Read**: Reader checks if head != tail, reads head, advances head
+- **Full**: If (tail + 1) % capacity == head, ring is full; writer must wait
+- **Empty**: If head == tail, ring is empty; reader must wait
+
+**Non-blocking variant:**
+- Write returns `Err(WouldBlock)` if full (no waiting)
+- Read returns `Ok(None)` if empty (no waiting)
+
+The Control Plane polls the SPSC for backpressure; the Data Plane polls for work.
+
+## Request Envelope
+
+```rust
+pub struct Request {
+    pub request_id: u64,           // Unique for 24h per connection
+    pub tenant_id: u32,            // Tenant scoping
+    pub vshard_id: u16,            // Target virtual shard
+    pub plan: Plan,                // Execution plan
+    pub deadline: Instant,         // Hard deadline
+    pub priority: Priority,        // Critical, Interactive, Background
+    pub trace_id: u64,             // Distributed trace ID
+}
+
+pub enum Plan {
+    Bytes(Arc<[u8]>),             // Serialized plan (zero-copy)
+    SlabHandle {
+        slab_id: u32,             // Slab allocator ID
+        offset: u32,              // Offset in slab
+        len: u32,                 // Length
+    },
+}
+
+pub enum Priority {
+    Critical = 0,   // Control signals, cancellations
+    Interactive = 1, // User queries
+    Background = 2,  // Compaction, background tasks
+}
+```
+
+**Field semantics:**
+
+- `request_id`: Matches response to request. Used for cancellation tracking.
+- `tenant_id`: Used for quota enforcement, isolation checks
+- `vshard_id`: Determines which Data Plane core processes this request
+- `plan`: Opaque bytes that the Data Plane deserializes and executes
+- `deadline`: Absolute time. Data Plane aborts after this instant.
+- `priority`: Data Plane may reorder requests within the same core by priority
+- `trace_id`: Propagated to all logs/metrics for observability
+
+## Response Envelope
+
+```rust
+pub struct Response {
+    pub request_id: u64,           // Matches Request::request_id
+    pub status: Status,            // Outcome
+    pub bytes_produced: u64,       // Size of payload (for backpressure)
+    pub watermark_lsn: u64,        // LSN at which results were computed
+    pub payload: Option<Arc<[u8]>>, // Result data (zero-copy)
+}
+
+pub enum Status {
+    Ok = 0,                        // Execution succeeded
+    Partial = 1,                   // Streaming response (more data coming)
+    Cancelled = 2,                 // Request was cancelled
+    DeadlineExceeded = 3,          // Deadline expired
+    Error(ErrorCode) = 4,          // Deterministic error
+}
+
+#[repr(u16)]
+pub enum ErrorCode {
+    Internal = 1,
+    VShardNotLocal = 2,
+    QuotaExceeded = 3,
+    DeadlineExceeded = 4,
+    ConstraintViolation = 5,
+    NotFound = 6,
+}
+```
+
+**Field semantics:**
+
+- `request_id`: Control Plane matches response to request using this ID
+- `status`: Enum indicating success, partial, cancelled, timeout, or error
+- `bytes_produced`: Used by backpressure controller. Control Plane sums this across all pending requests.
+- `watermark_lsn`: The log sequence number at which this result was computed. Multi-engine queries include watermarks from all engines (snapshot isolation).
+- `payload`: Result data as Arc<[u8]>. None if status is error/cancelled.
+
+## Memory Ownership
+
+### Zero-Copy via Arc
+
+Large payloads (Arrow batches, JSON documents) are wrapped in `Arc<[u8]>`:
+
+```
+Control Plane:
+  payload = Arc::new(serialized_bytes)
+  Send Arc to Data Plane via SPSC
+
+Data Plane:
+  Receive Arc (cloned, ref count incremented)
+  Process request
+  Create response with new Arc(result_bytes)
+  Send response via SPSC
+  Arc is dropped after sending (or Control Plane may keep ref)
+
+Control Plane:
+  Receive Arc in response
+  Stream to client
+  Drop Arc when done
+```
+
+Arc uses atomic ref counting, so cloning is a single atomic increment. No data is copied.
+
+### Slab Handles
+
+For very large plans (> 16 KB), use slab allocators to avoid huge inline buffers:
+
+```
+Allocator: Pre-allocated slab (e.g., 64 slots of 1 MB each)
+
+Request with slab handle:
+  plan: SlabHandle { slab_id: 0, offset: 0x1000, len: 0x10000 }
+
+Data Plane:
+  1. Look up slab[0]
+  2. Parse plan bytes at offset 0x1000
+  3. Execute
+  4. Free slab slot (send back to allocator via separate acknowledgment)
+```
+
+Slab IDs are 32-bit; offset/len are 32-bit. Supports multi-GB slabs with 64 KB granularity.
+
+## Backpressure
+
+The SPSC ring buffer is bounded. When it fills, backpressure kicks in automatically.
+
+### Queue Utilization States
+
+```
+0%          ╔════════════════════════════════╗
+            ║        Normal State             ║
+            ║   Data Plane reads at full      ║
+            ║   speed; new requests accepted  ║
+            ║ utilization < 85%               ║
+            ╚════════════════════════════════╝
+
+85%         ╔════════════════════════════════╗
+            ║      Throttled State            ║
+            ║   Reduce read depth: fewer      ║
+            ║   concurrent io_uring reads     ║
+            ║ 85% < utilization < 95%         ║
+            ╚════════════════════════════════╝
+
+95%         ╔════════════════════════════════╗
+            ║      Suspended State            ║
+            ║   Pause new read submissions    ║
+            ║   (only replay-critical I/O)    ║
+            ║ utilization > 95%               ║
+            ╚════════════════════════════════╝
+```
+
+**Hysteresis:** 10% gap prevents oscillation. Once in Throttled state at 85%, stay until < 75%.
+
+### Implementation
+
+```rust
+// Control Plane periodically checks queue depth
+let utilization = queue_depth as f64 / queue_capacity as f64;
+
+match current_state {
+    Normal if utilization > 0.85 => {
+        transition_to(Throttled);
+        emit_metric("backpressure_throttled");
+    }
+    Throttled if utilization > 0.95 => {
+        transition_to(Suspended);
+        emit_metric("backpressure_suspended");
+    }
+    Throttled if utilization < 0.75 => {
+        transition_to(Normal);
+    }
+    Suspended if utilization < 0.85 => {
+        transition_to(Throttled);
+    }
+    _ => {}
+}
+```
+
+**In Throttled state:**
+- Data Plane reduces concurrent io_uring reads: max 4 in-flight instead of 16
+- Control Plane may rate-limit new request submissions
+
+**In Suspended state:**
+- Data Plane stops submitting new reads (except WAL replay, which is critical)
+- Control Plane queues new requests locally (backlog grows, client may timeout)
+
+### Avoiding Queue Overflow
+
+Since the queue is bounded, if the Control Plane keeps writing and the Data Plane is suspended, the queue fills. Once full:
+
+```rust
+match spsc_send_nonblock(&request) {
+    Ok(()) => { /* success */ }
+    Err(WouldBlock) => {
+        // Queue is full
+        // Control Plane must either:
+        // 1. Buffer the request locally (backlog)
+        // 2. Fail the client with "service overloaded"
+        // 3. Apply adaptive timeout and retry
+    }
+}
+```
+
+## Cancellation
+
+Requests can be cancelled by the Control Plane:
+
+```
+Control Plane sends:
+  Message { request_id: 12345, op: Cancel }
+
+Data Plane receives cancel:
+  1. Check if request 12345 is still executing
+  2. If yes: abort at next safe point (end of current HNSW iteration, etc.)
+  3. Send response: Status::Cancelled
+  4. If no: ignore (already completed)
+```
+
+Cancellation is **cooperative**—the Data Plane doesn't forcibly kill work, it checks flags at safe points.
+
+## Observability
+
+Both planes emit metrics about the bridge:
+
+- **Queue depth**: Per vShard, per priority class
+- **Backpressure transitions**: When state changes (Normal→Throttled→Suspended)
+- **Message latency**: Round-trip time from Control Plane send to Data Plane receive
+- **Throughput**: Messages/second, bytes/second across the bridge
+- **Error rates**: Dropped messages, timeouts (rare but tracked)
+
+All metrics are per-vShard for debugging hot spots.
+
+## Bridge Variants
+
+### Single Ring per Core (Unified vShards)
+
+One SPSC ring buffers requests from multiple vShards. Pro: simpler. Con: priority inversion possible.
+
+### Priority Queues (Current)
+
+Three separate SPSC rings per core: Critical, Interactive, Background. Data Plane polls Critical first, then Interactive, then Background. Prevents background compaction from starving user queries.
+
+### Multi-Producer (Future)
+
+If multiple Control Plane threads dispatch to the same core, use a lock-free MPSC (multi-producer) queue. Trade-off: slightly higher overhead but scales to more producers.

@@ -1,8 +1,295 @@
 ---
-title: CRDT Policy
-description: ALTER COLLECTION SET ON CONFLICT — configuring merge policies.
+title: CRDT Conflict Policies
+description: Declarative conflict resolution policies for collaborative editing.
 ---
 
-# CRDT Policy
+# CRDT Conflict Policies
 
-TODO
+Configure how NodeDB resolves conflicting edits from multiple agents automatically. Policies are set per collection and apply to all deltas.
+
+## Policy Types
+
+### Last-Write-Wins (LWW)
+
+Latest timestamp wins. Deterministic, simple.
+
+```sql
+ALTER COLLECTION documents
+SET ON CONFLICT = 'LWW';
+```
+
+**Behavior**: When two agents edit the same field, the edit with the later timestamp becomes canonical.
+
+**Example**:
+```
+t=100: Agent A sets title = "Machine Learning"
+t=101: Agent B sets title = "AI Basics"
+Result: "AI Basics" wins (later timestamp)
+```
+
+**Use case**: Simple conflict avoidance; timestamp-based fairness.
+
+### RenameSuffix
+
+Preserve both values with suffix labels.
+
+```sql
+ALTER COLLECTION documents
+SET ON CONFLICT = 'RenameSuffix';
+```
+
+**Behavior**: Conflicting values coexist with suffixes.
+
+**Example**:
+```
+Agent A: tags = ["AI"]
+Agent B: tags = ["ML"]
+Result: tags = ["AI_agent_a", "ML_agent_b"]
+```
+
+**Use case**: Preserve all contributions; manual review.
+
+### CascadeDefer
+
+Defer resolution to application logic.
+
+```sql
+ALTER COLLECTION documents
+SET ON CONFLICT = 'CascadeDefer';
+```
+
+**Behavior**: Conflicting deltas are marked as pending. Application must resolve manually.
+
+**Example**:
+```sql
+-- Conflict detected
+SELECT crdt_state('documents', 'doc_123') as pending_conflict;
+
+-- Application reviews and chooses winner
+SELECT crdt_apply(
+  'documents', 'doc_123', X'...resolution_delta...'
+);
+```
+
+**Use case**: Complex conflicts requiring domain logic; audit trail.
+
+### Custom (User-Defined)
+
+Application-supplied resolution function.
+
+```sql
+ALTER COLLECTION documents
+SET ON CONFLICT = 'Custom'
+WITH CONFIG = '{"resolver": "resolve_title_conflict"}';
+```
+
+**Behavior**: Calls custom resolver function.
+
+**Implementation**:
+```sql
+CREATE FUNCTION resolve_title_conflict(
+  old_value TEXT,
+  new_value TEXT,
+  agent_id TEXT,
+  timestamp INT64
+) RETURNS TEXT AS
+BEGIN
+  -- Custom logic: prefer longer title
+  IF LENGTH(new_value) > LENGTH(old_value) THEN
+    RETURN new_value;
+  ELSE
+    RETURN old_value;
+  END IF;
+END;
+```
+
+**Use case**: Domain-specific resolution (e.g., prefer high-quality edits).
+
+### EscalateToDlq
+
+Route conflicts to dead-letter queue for operator review.
+
+```sql
+ALTER COLLECTION documents
+SET ON CONFLICT = 'EscalateToDlq'
+WITH CONFIG = '{"severity": "high"}';
+```
+
+**Behavior**: Conflicting deltas are logged for review; operation succeeds but marked.
+
+**Example**:
+```sql
+-- Operator investigates
+SELECT delta, agents, conflict_timestamp FROM dlq_conflicts
+WHERE document_id = 'doc_123'
+ORDER BY conflict_timestamp DESC;
+
+-- Operator applies corrected delta
+SELECT crdt_apply('documents', 'doc_123', X'...fixed...');
+```
+
+**Use case**: High-stakes documents (contracts, medical records); audit requirement.
+
+## Setting Collection Policy
+
+### At Creation
+
+```sql
+CREATE COLLECTION documents
+WITH ON_CONFLICT = 'LWW';
+```
+
+### Alter Existing Collection
+
+```sql
+ALTER COLLECTION documents
+SET ON CONFLICT = 'RenameSuffix';
+```
+
+### Per-Tenant Default
+
+```sql
+ALTER TENANT company_a
+SET DEFAULT_CRDT_POLICY = 'LWW';
+```
+
+All new collections inherit default policy.
+
+### Per-Document Override
+
+For specific documents, override collection policy:
+
+```sql
+BEGIN;
+  -- Use CascadeDefer for doc_123
+  SELECT crdt_apply(
+    'documents',
+    'doc_123',
+    X'0a1b2c3d',
+    'merge_policy' := 'CascadeDefer'
+  );
+COMMIT;
+```
+
+## Conflict Detection Examples
+
+### Text Conflict (LWW)
+
+```
+Agent A (t=100): body = "Hello World"
+Agent B (t=101): body = "Hi there"
+Policy: LWW
+Result: body = "Hi there" (later timestamp)
+```
+
+### Array Conflict (RenameSuffix)
+
+```
+Agent A: tags = ["urgent"]
+Agent B: tags = ["important"]
+Policy: RenameSuffix
+Result: tags = ["urgent_a", "important_b"]
+```
+
+### Nested Field Conflict (Custom)
+
+```
+Agent A: metadata.priority = "high"
+Agent B: metadata.priority = "low"
+Policy: Custom (prefer "high" if from admin, else LWW)
+Result: Apply custom resolver logic
+```
+
+## Querying Unresolved Conflicts
+
+For CascadeDefer and EscalateToDlq policies:
+
+```sql
+-- View pending conflicts
+SELECT document_id, agent_a, agent_b, field, timestamp
+FROM pending_conflicts
+WHERE resolved_at IS NULL;
+
+-- View DLQ conflicts
+SELECT * FROM dlq_conflicts
+WHERE severity = 'high'
+ORDER BY timestamp DESC;
+```
+
+## Policy Testing
+
+Create test collection to verify policy:
+
+```sql
+CREATE COLLECTION test_docs WITH ON_CONFLICT = 'RenameSuffix';
+
+-- Apply conflicting deltas
+BEGIN;
+  SELECT crdt_apply('test_docs', 'doc_1', X'0a1b');
+  SELECT crdt_apply('test_docs', 'doc_1', X'2c3d');
+COMMIT;
+
+-- Inspect result
+SELECT crdt_state('test_docs', 'doc_1') as merged_state;
+```
+
+## Policy Migration
+
+Change policy for existing collection:
+
+```sql
+-- Old policy: LWW
+ALTER COLLECTION documents SET ON CONFLICT = 'LWW';
+
+-- New policy: RenameSuffix
+ALTER COLLECTION documents SET ON CONFLICT = 'RenameSuffix';
+
+-- Existing conflicts re-resolved with new policy
+-- Pending deltas reapplied
+```
+
+Note: Re-application may change past results. Use with caution.
+
+## Monitoring Conflicts
+
+Track conflict frequency:
+
+```sql
+SELECT
+  document_id,
+  COUNT(*) as num_conflicts,
+  MAX(timestamp) as latest_conflict
+FROM pending_conflicts
+WHERE created_at >= NOW() - INTERVAL '24 hours'
+GROUP BY document_id
+ORDER BY num_conflicts DESC;
+```
+
+High conflict documents may need:
+- Different policy
+- Schema redesign (avoid frequently-conflicting fields)
+- Collaborative editing guidelines
+
+## Best Practices
+
+1. **LWW for most cases**: Simple, deterministic, easy to debug
+2. **RenameSuffix for values**: Preserve contributions; manual review
+3. **CascadeDefer for critical**: High-stakes documents require operator sign-off
+4. **Custom for domain logic**: Complex business rules (compliance, approval)
+5. **EscalateToDlq for audit**: Regulatory requirements
+
+## Limitations
+
+| Constraint | Behavior | Notes |
+|:-----------|:---------|:------|
+| Policy change | Re-resolve all conflicts | Can be expensive |
+| Custom resolver | Must be registered | Function availability required |
+| DLQ storage | Bounded by disk | Oldest entries pruned if full |
+| Conflict size | Max 10MB per conflict | Larger conflicts fail |
+
+## Next Steps
+
+- [CRDT Read](/query/crdt-read) — Reading state
+- [CRDT Apply](/query/crdt-apply) — Applying deltas
+- [Cross-Model Queries](/query/cross-model-queries) — CRDT in queries
+- [DDL](/query/ddl) — ALTER COLLECTION syntax

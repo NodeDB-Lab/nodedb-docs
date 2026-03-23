@@ -1,8 +1,297 @@
 ---
 title: Storage Tiers
-description: L0 (RAM), L1 (NVMe mmap), L2 (S3 Parquet).
+description: Four-tier hierarchy from hot RAM to cold cloud storage. Automatic tiering, pre-fetching, and cache protection.
 ---
 
 # Storage Tiers
 
-TODO
+NodeDB automatically tiers data across four storage levels as it cools from hot to cold. Data moves automatically without application involvement, optimizing for latency, capacity, and cost.
+
+## Tier Overview
+
+### L0: Hot (RAM)
+
+**Purpose:** Sub-microsecond access for active data.
+
+**Contents:**
+- HNSW routing layers (graph top levels)
+- CSR adjacency structures for hot graph traversal
+- Active CRDT documents (Loro state)
+- Query result caches
+- Memtables (incoming timeseries data)
+- Lock-free radix trees for index lookups
+
+**Memory:** Typically 10-30% of total system RAM (configurable per tenant).
+
+**Latency:** < 1 μs
+
+**Eviction:** Manual ejection via memory budgets; protected tiers never evict.
+
+### L1: Warm (NVMe with mmap)
+
+**Purpose:** High-throughput, relatively low-latency access to bulk data.
+
+**Contents:**
+- HNSW leaf vectors (full-precision storage)
+- Metadata B-Tree indexes (redb)
+- CSR edge properties
+- Document segment files (MessagePack-encoded)
+- Immutable segment snapshots
+
+**Medium:** NVMe, mapped into address space via `mmap`.
+
+**Latency:** 10-100 μs (kernel page cache + NVMe latency).
+
+**Access Pattern:** Kernel manages page cache; NodeDB uses `madvise(MADV_WILLNEED)` for sequential access and async `io_uring` pre-fetches for random access.
+
+**Protection:** Metadata indexes and HNSW routing layer caches remain protected; Data Plane cannot evict them.
+
+### L2: Cold (S3 Parquet)
+
+**Purpose:** Long-term, low-cost storage for infrequently accessed data.
+
+**Contents:**
+- Archived logs (> 90 days old)
+- Compressed historical timeseries (> 30 days old)
+- Parquet columnar snapshots
+- Old HNSW layer dumps (for bootstrapping replicas)
+
+**Medium:** S3 (or GCS, Azure Blob).
+
+**Latency:** 10-100 ms (network fetch + deserialization).
+
+**Retrieval:** On-demand DataFusion predicate pushdown; only required columns are fetched.
+
+**Cost:** ~$0.023 per GB/month (S3 Standard).
+
+### WAL: Durable (O_DIRECT)
+
+**Purpose:** Persistent, ordered write buffer ensuring durability before acknowledging to client.
+
+**Contents:** All mutations in LSN order (append-only).
+
+**Medium:** Local NVMe, O_DIRECT (bypasses page cache).
+
+**Latency:** 1-10 ms (NVMe write time + group commit).
+
+**Durability:** CRC32C checksum per record; crash recovery replays from last checkpoint.
+
+**Archival:** Older WAL segments are continuously archived to S3 for point-in-time recovery (PITR).
+
+## Tiering Flow
+
+```
+┌──────────────────────────────────────┐
+│ Insert a document                    │
+└────────────────┬─────────────────────┘
+                 │
+         ┌───────▼────────┐
+         │ Append to WAL  │
+         │ (O_DIRECT,     │
+         │ segmented,     │
+         │ CRC32C)        │
+         └───────┬────────┘
+                 │
+         ┌───────▼────────────┐
+         │ Apply to L0 RAM    │
+         │ (radix tree,       │
+         │ in-memory indexes)  │
+         └───────┬────────────┘
+                 │
+         ┌───────▼────────────┐
+         │ Response to client │
+         │ (linearizable)     │
+         └───────┬────────────┘
+                 │
+     ┌───────────────────────────┐
+     │  ~1 hour later (or on     │
+     │  memory budget pressure)  │
+     │                           │
+     │  Flush L0 → L1            │
+     │  (mmap segment files)     │
+     └───────────┬───────────────┘
+                 │
+     ┌───────────────────────────┐
+     │  ~30 days later           │
+     │  (or on storage quota)    │
+     │                           │
+     │  Compact L1 → L2          │
+     │  (Parquet to S3)          │
+     └───────────────────────────┘
+```
+
+### L0 → L1 Transition (Flush)
+
+When L0 memory pressure exceeds 80% of budget:
+
+1. Select immutable memtables and index snapshots
+2. Serialize to immutable segment files (redb format for metadata, MessagePack for documents, CSR binary for graph)
+3. Write to NVMe (file-backed, mmap'd)
+4. Register in segment manifest
+5. Update metadata: mark segment as L1
+6. Data Plane can now evict L0 copy (protected tier rules still apply)
+
+**Latency impact:** Flush uses async io_uring writes; Control Plane is not blocked.
+
+**Cost:** Minimal (local NVMe, no network).
+
+### L1 → L2 Transition (Compact)
+
+When L1 segment count exceeds threshold or storage quota approaches:
+
+1. Select oldest L1 segments or segments with < 50% live data (tombstone-filled)
+2. Merge and compact into Parquet format
+3. Compute Parquet statistics (min/max, null counts, CMS sketches)
+4. Upload to S3 with multipart upload
+5. Register in S3 manifest
+6. Mark L1 segments for deletion (after replication lag clears)
+
+**Latency impact:** Compaction happens on idle cores; doesn't block queries.
+
+**Cost:** Network egress to S3 + S3 storage (~$0.023/GB/month).
+
+## Page Faults & Pre-fetching
+
+The critical hazard: a Data Plane core faulting on an L1 mmap page stalls the entire reactor.
+
+### Page Fault Scenario (Bad)
+
+```
+Core 0 is executing HNSW traversal
+  ↓
+Accesses mmap'd HNSW graph region
+  ↓
+Page is not resident (kernel didn't prefetch)
+  ↓
+MAJOR PAGE FAULT: kernel blocks core 0 thread
+  ↓
+io_uring submissions queue up, unpopulated
+  ↓
+Control Plane sees queue stalled, backpressure occurs
+  ↓
+Latency spikes (worst case: 100+ ms)
+```
+
+### Pre-fetch Strategy (Good)
+
+Before a request accesses L1 mmap data, the Data Plane pre-fetches asynchronously:
+
+```
+Control Plane dispatches vector search request
+  ↓
+Data Plane receives request
+  ↓
+Check: Is HNSW graph resident?
+  NO → Submit io_uring READ to fetch pages
+       Submit io_uring IORING_OP_MADVISE(MADV_WILLNEED)
+       Yield this request (put back in queue)
+  ↓
+io_uring completion signals pages are resident
+  ↓
+Resume request from yield point
+  ↓
+Now access to mmap is resident (no page fault)
+  ↓
+Complete request
+```
+
+**Prefetcher metrics:**
+- Major faults per core per minute (target: 0)
+- Pre-fetch misses (requests that find pages not yet resident)
+- Pre-fetch latency (overhead of async reads)
+
+If major faults exceed threshold, shard is temporarily marked `DEGRADED`; new requests route to replicas.
+
+## Cache Protection Rules
+
+Certain data is never evicted from L0 (even under memory pressure):
+
+1. **HNSW routing layers** — Top 2-3 levels of hierarchy. Without these, traversal fans out too widely.
+2. **CSR adjacency for hot edges** — Enables graph traversal without random lookups into L1.
+3. **Metadata primary indexes** — B-Tree root and internal nodes (not leaf data, which can spill to L1).
+
+**Protection enforcement:**
+
+```rust
+// In memory governor
+if data_is_protected && memory_pressure > 80% {
+    // Throttle new allocations, don't evict protected data
+    return Err(BudgetExhausted);
+}
+
+// Caller must handle gracefully:
+//   - Spill to disk (temp mmap region)
+//   - Return partial results
+//   - Retry with lower result count
+```
+
+Without protection, a large timeseries flush could evict HNSW routing layers, crippling vector search.
+
+## Multi-Region & WAL Archival
+
+WAL segments are continuously archived to S3 for durability and multi-region replication:
+
+```
+┌─────────────────────────────┐
+│ Local O_DIRECT WAL          │
+│ (64 MiB segments)           │
+└────────────┬────────────────┘
+             │
+     ┌───────▼────────────┐
+     │ WAL Archiver       │
+     │ (background task)  │
+     │ Uploads segment    │
+     │ to S3 every hour   │
+     └───────┬────────────┘
+             │
+     ┌───────▼─────────────────────┐
+     │ S3 WAL Archive              │
+     │ s3://nodedb-backups/        │
+     │ - cluster-id/               │
+     │   - 2025-03-23-00.wal       │
+     │   - 2025-03-23-01.wal       │
+     │   - 2025-03-23-02.wal       │
+     └─────────────────────────────┘
+```
+
+On a data loss event, Recovery:
+
+1. Start new cluster
+2. Fetch WAL archive from S3
+3. Replay all WAL segments
+4. Recover to exact moment before crash
+
+## Storage Configuration
+
+Per-tenant storage tuning:
+
+```sql
+ALTER TENANT 'acme-corp' SET (
+    l0_memory_budget_mb = 1024,          -- Max L0 RAM
+    l1_target_size_gb = 50,              -- Compact L1 when > 50 GB
+    l2_archive_days = 30,                -- Move to S3 after 30 days
+    wal_segment_size_mb = 64,            -- Roll WAL every 64 MB
+    compaction_rate_mb_per_sec = 50      -- Max compact throughput
+);
+```
+
+## Query on Cold Data
+
+When a query touches L2 (S3) data, DataFusion uses predicate pushdown:
+
+```sql
+SELECT * FROM old_articles
+WHERE created_at > '2024-12-01';
+
+-- DataFusion recognizes:
+-- 1. old_articles data is in S3 Parquet
+-- 2. Predicate can be pushed to S3
+--
+-- S3 Parquet reader:
+-- - Reads only affected column partitions
+-- - Skips files with min_timestamp < '2024-12-01'
+-- - Returns Arrow batches to Control Plane
+-- - Control Plane filters, projects, streams to client
+```
+
+No full table scan; only required data is fetched from S3 (network-efficient).

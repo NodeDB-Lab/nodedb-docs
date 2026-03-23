@@ -1,8 +1,238 @@
 ---
 title: EXPLAIN
-description: EXPLAIN and EXPLAIN ANALYZE for query plan inspection.
+description: EXPLAIN syntax, query planning, understanding physical operations.
 ---
 
 # EXPLAIN
 
-TODO
+EXPLAIN shows the query execution plan. Use it to understand and optimize slow queries.
+
+## Basic EXPLAIN
+
+View the logical query plan:
+
+```sql
+EXPLAIN SELECT * FROM documents WHERE status = 'published' ORDER BY created_at LIMIT 10;
+```
+
+Output shows the plan tree:
+
+```
+Limit: 10
+  Sort: created_at ASC
+    Filter: status = 'published'
+      TableScan: documents
+```
+
+## EXPLAIN with ANALYZE
+
+Execute the query and measure actual performance:
+
+```sql
+EXPLAIN ANALYZE SELECT * FROM documents WHERE status = 'published' ORDER BY created_at LIMIT 10;
+```
+
+Output includes actual row counts and execution time:
+
+```
+Limit: 10 (actual rows: 10, time: 2.5ms)
+  Sort: created_at ASC (actual rows: 150, time: 1.8ms)
+    Filter: status = 'published' (actual rows: 150, time: 0.5ms)
+      TableScan: documents (actual rows: 10000, time: 0.2ms)
+```
+
+## Understanding the Plan
+
+### Operations
+
+**TableScan**: Fetch all rows from collection
+```
+TableScan: documents (10000 rows)
+```
+
+**Filter**: Apply WHERE clause
+```
+Filter: status = 'published' (reduces to 150 rows)
+```
+
+**Sort**: ORDER BY (expensive if not indexed)
+```
+Sort: created_at ASC (1.8ms)
+```
+
+**Limit**: Return top N rows
+```
+Limit: 10
+```
+
+**ProjectionPushdown**: Select only needed columns early (optimization)
+```
+ProjectionPushdown: [id, title] (saves bandwidth)
+```
+
+**HashJoin**: Combine rows from multiple collections
+```
+HashJoin: documents.id = users.doc_id
+```
+
+**VectorSearch**: HNSW index lookup
+```
+VectorSearch: idx_embeddings (10 rows, 0.3ms)
+```
+
+**FulltextSearch**: BM25 ranking
+```
+FulltextSearch: idx_content_bm25 (bm25_score > 0)
+```
+
+## Plan Optimization Tips
+
+### 1. Use Indexes
+
+**Bad plan** (TableScan):
+
+```
+Filter: status = 'published'
+  TableScan: documents (10000 rows, 5ms)
+```
+
+**After CREATE INDEX**:
+
+```
+Filter: status = 'published'
+  IndexScan: idx_status (150 rows, 0.1ms)
+```
+
+### 2. Reduce Join Cardinality
+
+**Bad plan** (cross join):
+
+```
+HashJoin: documents.user_id = users.id
+  TableScan: documents (10000 rows)
+  TableScan: users (100 rows)  -- full scan
+```
+
+**Better** (with filter):
+
+```
+HashJoin: documents.user_id = users.id
+  TableScan: documents (10000 rows)
+  Filter: users.active = true
+    TableScan: users (10 rows)  -- filtered first
+```
+
+### 3. Use Projection Pushdown
+
+**Bad**: Select all columns, filter later
+```
+SELECT * FROM documents WHERE status = 'published'  -- returns all fields
+```
+
+**Good**: Select needed columns
+```
+SELECT id, title FROM documents WHERE status = 'published'  -- less data
+```
+
+### 4. Vector Index Efficiency
+
+**Efficient** (index-ordered scan):
+
+```
+Limit: 10
+  VectorSearch: idx_embeddings (10 rows, 0.3ms)  -- HNSW traversal
+```
+
+**Inefficient** (brute force):
+
+```
+Limit: 10
+  Sort: vector_distance(...)
+    TableScan: documents (10000 rows, 50ms)  -- all rows scored
+```
+
+### 5. Early Filtering
+
+**Bad**:
+
+```
+Limit: 10
+  Sort: created_at
+    TableScan: documents (10000 rows)
+```
+
+**Good**:
+
+```
+Limit: 10
+  Sort: created_at
+    Filter: status = 'published'
+      TableScan: documents  -- filter first
+```
+
+## Common Performance Problems
+
+### Problem: Sequential Scan
+
+```
+TableScan: documents (1000000 rows, 500ms)
+```
+
+**Solution**: Create index on filtered columns
+```sql
+CREATE INDEX idx_status ON documents (status);
+```
+
+### Problem: Slow Sort
+
+```
+Sort: title (1000000 rows, 2000ms)
+```
+
+**Solution**: Limit result set before sorting
+```sql
+SELECT * FROM documents LIMIT 10 ORDER BY title;  -- Sort top 10 only
+```
+
+Or create index on sort column.
+
+### Problem: Full Text Scan
+
+```
+Filter: content LIKE '%text%'
+  TableScan: documents (1000000 rows, 500ms)
+```
+
+**Solution**: Create fulltext index
+```sql
+CREATE FULLTEXT INDEX idx_content ON documents (content);
+```
+
+Then use:
+```sql
+SELECT * FROM documents WHERE text_match(content, 'text') ORDER BY bm25_score(...);
+```
+
+## EXPLAIN Options
+
+**EXPLAIN** (logical plan only):
+```sql
+EXPLAIN <query>;
+```
+
+**EXPLAIN ANALYZE** (actual execution):
+```sql
+EXPLAIN ANALYZE <query>;
+```
+
+**EXPLAIN VERBOSE** (detailed output):
+```sql
+EXPLAIN VERBOSE <query>;
+```
+
+## Next Steps
+
+- [SELECT](/query/select) — Build queries to analyze
+- [DDL](/query/ddl) — Create indexes to optimize plans
+- [Vector Search](/query/vector-search) — Efficient semantic search
+- [Performance Tips](/query/sql-overview#performance-tips)

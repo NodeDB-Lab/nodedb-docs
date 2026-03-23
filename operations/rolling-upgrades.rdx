@@ -1,8 +1,330 @@
 ---
 title: Rolling Upgrades
-description: Zero-downtime upgrades across cluster nodes.
+description: Perform zero-downtime version upgrades across all nodes.
 ---
 
 # Rolling Upgrades
 
-TODO
+Upgrade NodeDB cluster nodes one at a time while maintaining availability.
+
+## Version Compatibility
+
+NodeDB supports **N-1 version compatibility** for cluster operations:
+
+| Version | Compatible With |
+|---------|-----------------|
+| 1.2.0 | 1.1.x (N-1) |
+| 1.1.0 | 1.0.x (N-1) |
+| 1.0.0 | 0.9.x (N-1) |
+
+Cluster can operate with mixed versions during upgrade window. Once all nodes are upgraded, features from new version become available.
+
+Wire format compatibility guarantees:
+
+- Write format: backward compatible (1.2 writes readable by 1.1)
+- Read format: forward compatible (1.1 reads data written by 1.2)
+- RPC protocol: compatible within N-1 versions
+
+## Pre-Upgrade Checklist
+
+Before starting upgrade:
+
+```bash
+# 1. Backup all tenants
+psql -c "SELECT tenant_id FROM sys.tenants;" -t | while read tenant; do
+  echo "Backing up $tenant..."
+  psql -c "BACKUP TENANT $tenant TO '/backups/$tenant-pre-upgrade.snap';"
+done
+
+# 2. Verify cluster health
+psql -c "SHOW CLUSTER STATUS;"
+psql -c "SHOW NODES;" | grep -q "unhealthy" && echo "ERROR: Unhealthy nodes" && exit 1
+
+# 3. Check disk space (needs 2x data size)
+df -h /var/lib/nodedb | awk '{print $5}' | grep -o '[0-9]*' | head -1
+
+# 4. Disable auto-rebalancing (optional)
+psql -c "ALTER SYSTEM SET auto_rebalance_enabled = false;"
+```
+
+## Download and Stage Binary
+
+Download new version on each node:
+
+```bash
+# Node 1
+ssh nodedb-1 "cd /tmp && wget https://releases.nodedb.io/nodedb-1.2.0-linux-x64.tar.gz"
+ssh nodedb-1 "cd /tmp && tar -xzf nodedb-1.2.0-linux-x64.tar.gz"
+ssh nodedb-1 "sudo install -o root -g root -m 0755 /tmp/nodedb /opt/nodedb-1.2.0"
+
+# Repeat for nodes 2 and 3...
+```
+
+## Rolling Upgrade Procedure
+
+Upgrade one node at a time:
+
+### Step 1: Upgrade First Node (Non-Leader)
+
+Identify current leader:
+
+```bash
+psql -h nodedb-1 -c "SELECT leader_node_id FROM sys.cluster_status;"
+# If leader is node 1, start with node 2
+```
+
+Drain node 2 of leadership:
+
+```bash
+ssh nodedb-2 "psql -c \"ALTER SYSTEM SET raft_election_timeout_ms = 3000;\""
+# Increases election timeout, increases chance other node becomes leader
+```
+
+Stop node 2:
+
+```bash
+ssh nodedb-2 "sudo systemctl stop nodedb.service"
+```
+
+Update binary and restart:
+
+```bash
+ssh nodedb-2 "sudo systemctl stop nodedb.service"
+ssh nodedb-2 "sudo cp /opt/nodedb-1.2.0 /usr/local/bin/nodedb"
+ssh nodedb-2 "sudo systemctl start nodedb.service"
+```
+
+Verify node 2 rejoined cluster:
+
+```bash
+psql -c "SHOW NODES;" | grep nodedb-2
+# Should show healthy status within 30 seconds
+```
+
+Verify cluster is healthy:
+
+```bash
+psql -c "SELECT COUNT(*) as healthy FROM sys.nodes WHERE status = 'healthy';"
+# Should be 3 if 3-node cluster
+```
+
+### Step 2: Upgrade Second Node (Optional Leader)
+
+Repeat for node 3:
+
+```bash
+ssh nodedb-3 "sudo systemctl stop nodedb.service"
+ssh nodedb-3 "sudo cp /opt/nodedb-1.2.0 /usr/local/bin/nodedb"
+ssh nodedb-3 "sudo systemctl start nodedb.service"
+
+# Verify
+psql -c "SHOW NODES;" | grep nodedb-3
+```
+
+### Step 3: Upgrade Leader Last
+
+Upgrade node 1 (leader):
+
+```bash
+# Leader will step down gracefully during shutdown
+ssh nodedb-1 "sudo systemctl stop nodedb.service"
+
+# Election happens automatically on other nodes
+# Wait 5 seconds for new leader election
+sleep 5
+
+# Upgrade binary
+ssh nodedb-1 "sudo cp /opt/nodedb-1.2.0 /usr/local/bin/nodedb"
+
+# Start updated node
+ssh nodedb-1 "sudo systemctl start nodedb.service"
+
+# Verify
+psql -c "SHOW NODES;" | grep nodedb-1
+psql -c "SELECT leader_node_id FROM sys.cluster_status;"
+```
+
+## Monitor Upgrade Progress
+
+During upgrade window:
+
+```bash
+watch -n 2 "psql -c 'SELECT node_id, version, status FROM sys.nodes ORDER BY node_id;'"
+```
+
+Example:
+
+```
+node_id | version | status
+--------|---------|--------
+1       | 1.1.0   | healthy
+2       | 1.2.0   | healthy
+3       | 1.1.0   | healthy
+```
+
+Check replication lag stays low:
+
+```bash
+watch -n 2 "psql -c 'SHOW PEER HEALTH;' | grep replication"
+```
+
+Monitor query latency:
+
+```bash
+watch -n 5 "curl -s localhost:6480/metrics | grep query_latency_p99"
+```
+
+## Handle Upgrade Failures
+
+If node fails to rejoin after upgrade:
+
+```bash
+# Check logs
+ssh nodedb-2 "tail -100 /var/log/nodedb/nodedb.log"
+
+# Common issues:
+# - Version mismatch: verify correct binary copied
+# - WAL corruption: delete data_dir, cluster will copy from replicas
+# - Port conflict: verify 6432, 6480, 9400 free
+
+# Restore backup if needed
+psql -c "RESTORE TENANT tenant-42 FROM '/backups/tenant-42-pre-upgrade.snap';"
+```
+
+If cluster loses quorum during upgrade (all nodes down):
+
+```bash
+# This is a disaster scenario, restore from backup
+# 1. Stop all nodedb processes
+# 2. Delete all data_dir
+# 3. Restore from backup on all nodes
+# 4. Restart cluster
+```
+
+## Rollback Procedure
+
+If upgrade causes issues:
+
+```bash
+# On upgraded node
+ssh nodedb-2 "sudo systemctl stop nodedb.service"
+ssh nodedb-2 "sudo cp /opt/nodedb-1.1.0 /usr/local/bin/nodedb"
+ssh nodedb-2 "sudo systemctl start nodedb.service"
+```
+
+NodeDB maintains backward compatibility, old binary works with mixed-version cluster.
+
+## Feature Enablement
+
+After all nodes upgraded, enable new features:
+
+```sql
+-- Features unavailable until all nodes upgraded
+SELECT * FROM sys.new_feature;
+-- Error: Feature requires version 1.2.0, cluster has [1.0.0, 1.2.0, 1.2.0]
+
+-- Once all nodes at 1.2.0:
+ALTER SYSTEM SET cluster_version = '1.2.0';
+
+-- Now feature available
+SELECT * FROM sys.new_feature;
+```
+
+## Large Cluster Upgrades
+
+For clusters with 10+ nodes, parallelize upgrades:
+
+```bash
+# Upgrade 3 non-leader nodes in parallel
+ssh nodedb-2 "sudo systemctl stop nodedb.service" &
+ssh nodedb-3 "sudo systemctl stop nodedb.service" &
+ssh nodedb-4 "sudo systemctl stop nodedb.service" &
+wait
+
+ssh nodedb-2 "sudo cp /opt/nodedb-1.2.0 /usr/local/bin/nodedb && sudo systemctl start nodedb.service" &
+ssh nodedb-3 "sudo cp /opt/nodedb-1.2.0 /usr/local/bin/nodedb && sudo systemctl start nodedb.service" &
+ssh nodedb-4 "sudo cp /opt/nodedb-1.2.0 /usr/local/bin/nodedb && sudo systemctl start nodedb.service" &
+wait
+
+# Verify all rejoined
+psql -c "SHOW NODES;" | grep healthy | wc -l
+# Should be 3
+
+# Proceed to upgrade node 5, 6, 7...
+# Finally upgrade leader node 1
+```
+
+## Automated Rolling Upgrade Script
+
+```bash
+#!/bin/bash
+set -e
+
+VERSION="1.2.0"
+NODES=("nodedb-1" "nodedb-2" "nodedb-3")
+LEADER_LAST=true
+
+echo "Starting rolling upgrade to $VERSION"
+
+# Find leader
+LEADER=$(psql -h ${NODES[0]} -c "SELECT node_name FROM sys.nodes WHERE is_leader = true;" -t)
+echo "Current leader: $LEADER"
+
+for NODE in "${NODES[@]}"; do
+  if [ "$LEADER_LAST" = true ] && [ "$NODE" = "$LEADER" ]; then
+    continue  # Upgrade leader last
+  fi
+
+  echo "Upgrading $NODE..."
+  ssh "$NODE" "sudo systemctl stop nodedb.service"
+  ssh "$NODE" "sudo cp /opt/nodedb-$VERSION /usr/local/bin/nodedb"
+  ssh "$NODE" "sudo systemctl start nodedb.service"
+
+  # Wait for rejoin
+  for i in {1..30}; do
+    STATUS=$(psql -h ${NODES[0]} -c "SELECT status FROM sys.nodes WHERE node_name = '$NODE';" -t 2>/dev/null || echo "offline")
+    [ "$STATUS" = "healthy" ] && break
+    sleep 1
+  done
+  echo "$NODE upgraded successfully"
+done
+
+# Upgrade leader last
+if [ "$LEADER_LAST" = true ]; then
+  echo "Upgrading leader $LEADER..."
+  ssh "$LEADER" "sudo systemctl stop nodedb.service"
+  ssh "$LEADER" "sudo cp /opt/nodedb-$VERSION /usr/local/bin/nodedb"
+  ssh "$LEADER" "sudo systemctl start nodedb.service"
+  sleep 5
+  echo "$LEADER upgraded successfully"
+fi
+
+echo "Rolling upgrade complete!"
+psql -c "SELECT node_id, version, status FROM sys.nodes ORDER BY node_id;"
+```
+
+## Upgrade Windows
+
+Plan upgrades during:
+
+- Low traffic periods (off-peak)
+- When team available for monitoring
+- Not during month-end reporting
+- Not during critical customer events
+
+Typical upgrade duration:
+
+- 3-node cluster: 15-30 minutes
+- 10-node cluster: 1-2 hours
+
+## Best Practices
+
+- Always backup before upgrade
+- Test upgrade in staging first
+- Upgrade non-leader nodes first
+- Monitor replication lag during upgrade
+- Have rollback plan ready
+- Communicate schedule to users
+- Verify cluster health after each node
+- Keep binary versions for quick rollback
+- Document any issues encountered

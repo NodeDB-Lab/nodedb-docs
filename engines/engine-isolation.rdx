@@ -1,8 +1,307 @@
 ---
-title: Engine Isolation
-description: How engines are isolated and why budget breach triggers throttling.
+title: Engine Isolation and Performance Guarantees
+description: Process isolation, CPU/memory/I/O separation, noisy neighbor prevention.
 ---
 
 # Engine Isolation
 
-TODO
+NodeDB isolates engines to prevent one from starving others. Each engine runs in isolated environment with guaranteed minimum resources and enforced maximum budgets.
+
+## Isolation Boundaries
+
+**Memory**: Each engine allocates from dedicated pool.
+
+```
+System RAM (16GB)
+├─ Vector (30%): 4.8GB
+│  ├─ HNSW indices: 3.0GB
+│  ├─ Quantized buffers: 1.0GB
+│  └─ Query temp: 0.8GB
+├─ Timeseries (15%): 2.4GB
+│  ├─ Metrics memtable: 1.2GB
+│  ├─ Log memtable: 0.8GB
+│  └─ Compression buffers: 0.4GB
+├─ Sparse (15%): 2.4GB
+├─ Document (15%): 2.4GB
+├─ Graph (10%): 1.6GB
+├─ CRDT (5%): 0.8GB
+└─ Control Plane (10%): 1.6GB
+```
+
+**Allocation violations**:
+
+```
+Vector trying to allocate 500MB (currently at 4.8GB):
+  Error: BUDGET_EXCEEDED
+  Action: Evict LRU data or reject allocation
+  Result: Vector operation delayed <100ms
+```
+
+**CPU**: Each engine gets dedicated threads.
+
+```
+System (8 cores)
+├─ Control Plane: 1 core (Tokio async)
+└─ Data Plane: 7 cores (thread-per-core)
+   ├─ Vector: 2 cores (16 threads)
+   ├─ Timeseries: 1 core (8 threads)
+   ├─ Sparse: 1 core (8 threads)
+   ├─ Graph: 0.8 cores (6 threads)
+   ├─ Document: 1 core (8 threads)
+   └─ CRDT: 0.4 cores (3 threads)
+```
+
+**CPU enforcement**:
+
+```
+Vector thread pool (16 threads) all busy:
+  New vector query arrives
+  Action: Queue in engine-specific queue (not global queue)
+  Other engines: Not affected, continue operating
+  Result: Vector query delayed, other engines maintain latency SLA
+```
+
+**I/O**: Bandwidth allocation per engine.
+
+```
+NVMe I/O capacity: 1GB/sec
+
+Vector:     300MB/s (30%)
+Timeseries: 200MB/s (20%)
+Sparse:     150MB/s (15%)
+Document:   150MB/s (15%)
+Graph:      100MB/s (10%)
+CRDT:       50MB/s (5%)
+```
+
+**I/O enforcement**:
+
+```
+Sparse compaction writing at 300MB/s (budget is 150MB/s):
+  I/O subsystem detects overage
+  Action: Throttle writes to 150MB/s
+  Result: Compaction slower but no I/O starvation
+```
+
+## Preventing Noisy Neighbor Problems
+
+**Problem**: One engine overloaded, impacts all others.
+
+```
+Before isolation:
+  Vector search expensive, uses all 8 cores
+  Timeseries compaction stalls
+  Sparse queries timeout
+  Result: System-wide performance degradation
+
+After isolation:
+  Vector search uses 2 cores max
+  Timeseries gets dedicated 1 core
+  Sparse gets dedicated 1 core
+  Result: Each engine maintains SLA
+```
+
+## Performance Guarantees
+
+**P95 latency guarantees** (with isolation):
+
+```
+Vector search:        <100ms (gets 2 cores)
+Timeseries query:     <500ms (gets 1 core)
+Sparse exact match:   <20ms (indexed, gets 1 core)
+Graph BFS:            <200ms (gets 0.8 cores)
+Document lookup:      <30ms (indexed, gets 1 core)
+```
+
+**Without isolation**, these degrade when any engine is overloaded:
+
+```
+Vector search:        <100ms (if system quiet)
+Vector search:        >2000ms (if system busy)  ← UNACCEPTABLE
+
+With isolation:
+Vector search:        <100ms (always, guaranteed by isolation)
+```
+
+## Monitoring Isolation
+
+**View per-engine latency**:
+
+```sql
+SELECT
+  engine_name,
+  PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY latency_ms) as p50,
+  PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms) as p95,
+  PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms) as p99
+FROM pg_query_latency
+WHERE operation_time > NOW() - INTERVAL '1 hour'
+GROUP BY engine_name;
+
+-- Expected output:
+-- vector     | 10ms | 45ms  | 90ms
+-- sparse     | 1ms  | 8ms   | 15ms
+-- timeseries | 30ms | 150ms | 300ms
+-- graph      | 20ms | 100ms | 250ms
+```
+
+**Isolation effectiveness**:
+
+```sql
+-- Check if queues are building up (sign of starvation)
+SELECT
+  engine_name,
+  queue_depth,
+  queue_wait_time_ms,
+  thread_utilization_pct
+FROM pg_engine_queues
+WHERE queue_depth > 10
+ORDER BY queue_depth DESC;
+
+-- Healthy:
+-- vector     | 2  | 5ms  | 75%   (queue small, good parallelism)
+-- sparse     | 0  | 0ms  | 20%   (no queue, low utilization)
+
+-- Unhealthy:
+-- vector     | 100 | 500ms | 100% (queue backed up, threads saturated)
+```
+
+## Handling Budget Breach
+
+**Scenario**: Vector engine exceeds memory budget.
+
+```
+Vector budget: 4.8GB
+Current: 4.7GB
+New query needs 200MB
+
+Options:
+1. Evict LRU index (oldest, unused)
+2. Reject query (return error)
+3. Defer query (queue and wait for space)
+
+NodeDB chooses: Option 1 (evict)
+Result:
+  - Old HNSW layer moved to disk
+  - New index loaded to RAM
+  - Subsequent searches on old layer slower
+  - Alert: "Vector memory eviction triggered"
+```
+
+**Scenario**: Vector CPU saturated.
+
+```
+Vector budget: 2 cores (16 threads)
+Current: 16 threads all busy
+New query arrives
+
+Options:
+1. Reject (return busy error)
+2. Queue (wait for slot)
+
+NodeDB chooses: Option 2 (queue)
+Result:
+  - Query added to vector queue
+  - Waits 5-50ms for thread
+  - Other engines unaffected
+```
+
+**Scenario**: Sparse I/O budget exceeded.
+
+```
+Sparse budget: 150MB/s
+Compaction rate: 300MB/s (overage = 150MB/s)
+
+Options:
+1. Throttle compaction (slower, longer running time)
+2. Drop writes (data loss)
+
+NodeDB chooses: Option 1 (throttle)
+Result:
+  - Compaction limited to 150MB/s
+  - Takes 2x longer
+  - Other engines maintain budget
+  - Alert: "Sparse compaction throttled"
+```
+
+## Query Routing
+
+**Control Plane routes queries to Data Plane engines**:
+
+```
+Query: "SELECT doc_id FROM documents WHERE ... ORDER BY vector_distance(...)"
+
+Control Plane:
+  1. Parse SQL
+  2. Identify engines needed: Document + Vector
+  3. Route to Document engine: WHERE clause → 1000 rows
+  4. Route to Vector engine: ORDER BY → top 20 rows (in vector thread pool)
+  5. Combine results
+
+Each engine queue:
+  - Document queue: query added → executes quickly (other documents unaffected)
+  - Vector queue: query added → executes quickly (other vectors unaffected)
+```
+
+## Trade-Offs
+
+**Isolation benefits**:
+- Predictable performance (SLAs met even under load)
+- Noisy neighbor prevention
+- Resource fairness
+
+**Isolation costs**:
+- Thread overhead (more context switches)
+- Memory overhead (per-engine buffers)
+- Less flexibility (can't dynamically allocate)
+
+**Right-sizing budgets**:
+
+```
+If vector gets 30% but only uses 10%:
+  - Waste 20% resources (bad)
+  - Other engines starved
+
+If vector gets 30% and uses 45%:
+  - Eviction pressure
+  - Performance degradation
+  - Solution: Increase budget or reduce data
+
+Solution: Monitor and tune quarterly.
+```
+
+## Examples
+
+**High-load scenario**:
+
+```
+Time: 10:00am
+Vector: 45K QPS (high traffic)
+Sparse: 10K QPS (moderate)
+Timeseries: 5M inserts/sec (high)
+Graph: 1K QPS (low)
+
+Isolation ensures:
+  - Vector: latency <100ms (2 cores handling 45K QPS = 22.5K QPS per core)
+  - Sparse: latency <20ms (not affected by vector load)
+  - Timeseries: throughput 1M/sec per core (not affected)
+  - Graph: latency <200ms (not affected)
+
+Without isolation:
+  - System would thrash, all engines slow
+```
+
+**Budget planning**:
+
+```
+Workload profile (from monitoring):
+  Vector peak memory: 4.2GB (of 4.8GB budget → 87%)
+  Sparse peak I/O: 120MB/s (of 150MB/s budget → 80%)
+  Timeseries peak CPU: 0.9 cores (of 1.2 cores → 75%)
+
+Action:
+  - All within 80% threshold
+  - No rebalancing needed
+  - System healthy
+```
+
+See [Engine Budgets](/engines/engine-budgets) for configuration and [Vector Engine](/engines/vector/overview) for example engine.

@@ -1,8 +1,366 @@
 ---
 title: Query Endpoint
-description: POST /query — execute SQL/DSL over HTTP.
+description: POST /query — execute SQL and DSL queries over HTTP.
 ---
 
 # Query Endpoint
 
-TODO
+The `/query` endpoint executes SQL queries and returns results in JSON format. It supports all standard SQL operations and NodeDB-specific DSLs.
+
+## Basic Query
+
+```
+POST /query
+Content-Type: application/json
+
+{
+  "sql": "SELECT id, name FROM documents LIMIT 10"
+}
+```
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "rows": [
+    {"id": "doc1", "name": "Alice"},
+    {"id": "doc2", "name": "Bob"}
+  ],
+  "columns": ["id", "name"],
+  "row_count": 2
+}
+```
+
+## Query with Parameters
+
+Use placeholders for safe parameterized queries:
+
+```python
+import requests
+
+response = requests.post(
+    "http://127.0.0.1:6480/query",
+    headers={"Authorization": "Bearer ndb_..."},
+    json={
+        "sql": "SELECT * FROM documents WHERE id = $1 AND status = $2",
+        "params": ["doc1", "active"]
+    }
+)
+print(response.json())
+```
+
+Placeholders:
+- `$1`, `$2`, ... for positional parameters
+- Values in `params` array in order
+
+## Query Types
+
+### SELECT
+
+```json
+{
+  "sql": "SELECT id, created_at, vector FROM embeddings WHERE topic = $1",
+  "params": ["machine-learning"]
+}
+```
+
+Returns:
+
+```json
+{
+  "status": "ok",
+  "rows": [...],
+  "columns": ["id", "created_at", "vector"],
+  "row_count": 42
+}
+```
+
+### INSERT
+
+```json
+{
+  "sql": "INSERT INTO documents (id, data) VALUES ($1, $2)",
+  "params": ["doc1", "{\"title\": \"NodeDB Guide\"}"]
+}
+```
+
+Returns:
+
+```json
+{
+  "status": "ok",
+  "row_count": 1,
+  "inserted_id": "doc1"
+}
+```
+
+### UPDATE
+
+```json
+{
+  "sql": "UPDATE documents SET status = $1 WHERE id = $2",
+  "params": ["archived", "doc1"]
+}
+```
+
+Returns:
+
+```json
+{
+  "status": "ok",
+  "row_count": 1
+}
+```
+
+### DELETE
+
+```json
+{
+  "sql": "DELETE FROM documents WHERE created_at < $1",
+  "params": ["2024-01-01"]
+}
+```
+
+Returns:
+
+```json
+{
+  "status": "ok",
+  "row_count": 15
+}
+```
+
+### Transactions
+
+Use transactions to group multiple operations:
+
+```json
+{
+  "sql": "BEGIN; INSERT INTO docs (id) VALUES ($1); INSERT INTO logs (msg) VALUES ($2); COMMIT;",
+  "params": ["doc1", "Created doc1"]
+}
+```
+
+Or execute statements separately:
+
+```python
+# Statement 1: Begin transaction
+requests.post(BASE_URL + "/query", json={"sql": "BEGIN"})
+
+# Statement 2: Insert
+requests.post(
+    BASE_URL + "/query",
+    json={"sql": "INSERT INTO docs (id) VALUES ($1)", "params": ["doc1"]}
+)
+
+# Statement 3: Commit
+requests.post(BASE_URL + "/query", json={"sql": "COMMIT"})
+```
+
+## Advanced Query Options
+
+### Consistency Control
+
+```json
+{
+  "sql": "SELECT * FROM documents",
+  "consistency": "strong"
+}
+```
+
+Options: `strong`, `eventual`, `bounded_staleness`
+
+### Timeout
+
+Abort queries taking longer than specified time:
+
+```json
+{
+  "sql": "SELECT * FROM large_table",
+  "timeout_ms": 5000
+}
+```
+
+### Explain Plan
+
+Get query plan without execution:
+
+```json
+{
+  "sql": "SELECT * FROM documents WHERE status = 'active'",
+  "explain": true
+}
+```
+
+Returns:
+
+```json
+{
+  "status": "ok",
+  "plan": {
+    "node_type": "Filter",
+    "condition": "status = 'active'",
+    "child": {
+      "node_type": "SeqScan",
+      "table": "documents"
+    }
+  }
+}
+```
+
+## Aggregation Queries
+
+```json
+{
+  "sql": "SELECT status, COUNT(*) as count, AVG(score) as avg_score FROM documents GROUP BY status"
+}
+```
+
+Returns:
+
+```json
+{
+  "status": "ok",
+  "rows": [
+    {"status": "active", "count": 100, "avg_score": 7.5},
+    {"status": "archived", "count": 25, "avg_score": 6.2}
+  ]
+}
+```
+
+## JOIN Queries
+
+```json
+{
+  "sql": "SELECT d.id, d.title, t.tag FROM documents d JOIN tags t ON d.id = t.doc_id WHERE d.topic = $1",
+  "params": ["ai"]
+}
+```
+
+## LIMIT and OFFSET
+
+Pagination with LIMIT and OFFSET:
+
+```json
+{
+  "sql": "SELECT * FROM documents ORDER BY created_at DESC LIMIT 20 OFFSET 40"
+}
+```
+
+## Null Handling
+
+Null values appear as JSON null:
+
+```json
+{
+  "rows": [
+    {"id": "doc1", "optional_field": null},
+    {"id": "doc2", "optional_field": "value"}
+  ]
+}
+```
+
+Check for nulls in SQL:
+
+```sql
+SELECT * FROM documents WHERE optional_field IS NULL
+SELECT * FROM documents WHERE optional_field IS NOT NULL
+```
+
+## Error Responses
+
+### Syntax Error
+
+```json
+{
+  "status": "error",
+  "error": "syntax_error",
+  "message": "Unexpected token at position 15",
+  "query": "SELECT * FORM documents"
+}
+```
+
+### Table Not Found
+
+```json
+{
+  "status": "error",
+  "error": "table_not_found",
+  "message": "Table 'nonexistent' does not exist"
+}
+```
+
+### Column Not Found
+
+```json
+{
+  "status": "error",
+  "error": "column_not_found",
+  "message": "Column 'unknown_col' not found in table 'documents'"
+}
+```
+
+### Type Mismatch
+
+```json
+{
+  "status": "error",
+  "error": "type_mismatch",
+  "message": "Cannot compare TEXT and INTEGER"
+}
+```
+
+## Large Result Sets
+
+For very large queries (millions of rows), consider:
+
+1. **Pagination** — Use LIMIT/OFFSET to fetch in batches
+2. **Streaming** — Use WebSocket subscriptions for continuous data
+3. **Aggregation** — Use GROUP BY to reduce result size
+4. **Filtering** — Add WHERE clauses to minimize rows returned
+
+Example pagination loop:
+
+```python
+BASE_URL = "http://127.0.0.1:6480"
+page_size = 1000
+page = 0
+
+while True:
+    response = requests.post(
+        f"{BASE_URL}/query",
+        json={
+            "sql": "SELECT * FROM documents ORDER BY id LIMIT $1 OFFSET $2",
+            "params": [page_size, page * page_size]
+        }
+    ).json()
+
+    if not response["rows"]:
+        break
+
+    process_rows(response["rows"])
+    page += 1
+```
+
+## Performance Tips
+
+1. **Use WHERE clauses** to filter early
+2. **Add indexes** on frequently queried columns
+3. **Use prepared statements** (parameters) to reuse plans
+4. **Avoid SELECT \*** — list needed columns only
+5. **Set reasonable timeouts** to catch runaway queries
+6. **Use EXPLAIN** to optimize slow queries
+7. **Aggregate on server** — GROUP BY before client-side processing
+
+## Batch Queries
+
+Execute multiple statements in one request:
+
+```json
+{
+  "sql": "INSERT INTO docs (id) VALUES ('doc1'); INSERT INTO docs (id) VALUES ('doc2'); SELECT COUNT(*) FROM docs;"
+}
+```
+
+Results combine all statement outputs. Best practice is to use transactions for atomicity.

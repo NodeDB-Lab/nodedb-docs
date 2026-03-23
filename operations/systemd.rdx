@@ -1,8 +1,260 @@
 ---
 title: systemd Service
-description: Running NodeDB as a systemd service on Linux.
+description: Run NodeDB as a systemd service with automatic restart and logging.
 ---
 
 # systemd Service
 
-TODO
+Run NodeDB as a managed systemd service on Linux with automatic startup and restart.
+
+## Create User and Directories
+
+```bash
+# Create nodedb user
+sudo useradd -r -s /bin/bash -d /var/lib/nodedb nodedb
+
+# Create directories
+sudo mkdir -p /var/lib/nodedb
+sudo mkdir -p /etc/nodedb
+sudo mkdir -p /var/log/nodedb
+
+# Set ownership
+sudo chown -R nodedb:nodedb /var/lib/nodedb
+sudo chown -R nodedb:nodedb /var/log/nodedb
+sudo chown root:root /etc/nodedb
+sudo chmod 755 /etc/nodedb
+
+# Copy configuration
+sudo cp server.toml /etc/nodedb/
+sudo chown root:root /etc/nodedb/server.toml
+sudo chmod 644 /etc/nodedb/server.toml
+```
+
+## Create systemd Unit File
+
+Create `/etc/systemd/system/nodedb.service`:
+
+```ini
+[Unit]
+Description=NodeDB Distributed Hybrid Database
+Documentation=https://docs.nodedb.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=nodedb
+Group=nodedb
+WorkingDirectory=/var/lib/nodedb
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+
+# Security hardening
+PrivateTmp=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=32768
+MemoryLimit=8G
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nodedb
+
+# Service startup
+ExecStart=/usr/local/bin/nodedb --config /etc/nodedb/server.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5s
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Environment
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## Copy Binary
+
+```bash
+# Install nodedb binary
+sudo install -o root -g root -m 0755 /path/to/nodedb /usr/local/bin/nodedb
+
+# Verify installation
+/usr/local/bin/nodedb --version
+```
+
+## Enable and Start Service
+
+```bash
+# Reload systemd daemon
+sudo systemctl daemon-reload
+
+# Enable service to start on boot
+sudo systemctl enable nodedb.service
+
+# Start the service
+sudo systemctl start nodedb.service
+
+# Check status
+sudo systemctl status nodedb.service
+
+# View logs
+journalctl -u nodedb.service -f
+
+# View recent logs
+journalctl -u nodedb.service -n 100
+```
+
+## Server Configuration
+
+Create `/etc/nodedb/server.toml`:
+
+```toml
+[server]
+listen_pgwire = "0.0.0.0:6432"
+listen_http = "0.0.0.0:6480"
+listen_native = "0.0.0.0:6433"
+listen_sync_ws = "0.0.0.0:9090"
+data_dir = "/var/lib/nodedb"
+max_connections = 1000
+idle_timeout_secs = 3600
+
+[engines]
+crdt_budget_mb = 512
+vector_budget_mb = 1024
+sparse_budget_mb = 256
+timeseries_budget_mb = 512
+
+[auth]
+mode = "password"
+scram_iterations = 4096
+
+[checkpoint]
+interval_secs = 300
+
+[tls]
+cert_path = "/etc/nodedb/server.crt"
+key_path = "/etc/nodedb/server.key"
+```
+
+## Log Rotation
+
+Create `/etc/logrotate.d/nodedb` for systemd journald (optional, if using file logging):
+
+```
+/var/log/nodedb/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    create 0640 nodedb nodedb
+    sharedscripts
+    postrotate
+        systemctl reload nodedb.service > /dev/null 2>&1 || true
+    endscript
+}
+```
+
+## Common Operations
+
+Stop the service:
+```bash
+sudo systemctl stop nodedb.service
+```
+
+Restart the service:
+```bash
+sudo systemctl restart nodedb.service
+```
+
+Reload configuration (if supported):
+```bash
+sudo systemctl reload nodedb.service
+```
+
+Check if service is enabled:
+```bash
+sudo systemctl is-enabled nodedb.service
+```
+
+View service environment:
+```bash
+systemctl show -p Environment nodedb.service
+```
+
+## Troubleshooting
+
+Service fails to start:
+```bash
+journalctl -u nodedb.service -n 50 --no-pager
+```
+
+Check systemd configuration:
+```bash
+systemd-analyze verify /etc/systemd/system/nodedb.service
+```
+
+View all service properties:
+```bash
+systemctl show nodedb.service
+```
+
+Monitor resource usage:
+```bash
+systemctl status nodedb.service
+ps aux | grep nodedb
+```
+
+## Socket Activation (Advanced)
+
+For environments requiring multiple instances, create socket units:
+
+```ini
+[Unit]
+Description=NodeDB Socket
+Before=nodedb.service
+
+[Socket]
+ListenStream=6432
+Accept=no
+
+[Install]
+WantedBy=sockets.target
+```
+
+Then modify `nodedb.service` to use `Requires=nodedb.socket`.
+
+## Multi-Instance Services
+
+Run multiple NodeDB instances with different configs:
+
+```bash
+sudo systemctl enable nodedb@node1.service
+sudo systemctl enable nodedb@node2.service
+```
+
+Update unit file with `%i` template variable:
+
+```ini
+ExecStart=/usr/local/bin/nodedb --config /etc/nodedb/server-%i.toml
+```

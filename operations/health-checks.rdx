@@ -1,8 +1,252 @@
 ---
 title: Health Checks
-description: Liveness and readiness probes for load balancers and orchestrators.
+description: Liveness and readiness probes for orchestration and monitoring.
 ---
 
 # Health Checks
 
-TODO
+NodeDB exposes health endpoints for load balancers, Kubernetes, and monitoring systems.
+
+## Liveness Probe
+
+```
+GET /health
+```
+
+Returns 200 OK if the database process is running and responding.
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "uptime_secs": 3600,
+  "version": "1.2.3",
+  "timestamp": "2025-03-23T10:45:30.123Z"
+}
+```
+
+Use for load balancer health checks and Kubernetes liveness probes. If this returns non-200, the node is unreachable or crashed.
+
+## Readiness Probe
+
+```
+GET /health/ready
+```
+
+Returns 200 OK only when the data plane is fully initialized and ready for queries.
+
+Response (ready):
+
+```json
+{
+  "ready": true,
+  "components": {
+    "control_plane": "ready",
+    "data_plane": "ready",
+    "engines": {
+      "crdt": "ready",
+      "vector": "ready",
+      "sparse": "ready",
+      "timeseries": "ready"
+    }
+  },
+  "timestamp": "2025-03-23T10:45:30.123Z"
+}
+```
+
+Response (not ready):
+
+```json
+{
+  "ready": false,
+  "components": {
+    "control_plane": "ready",
+    "data_plane": "initializing",
+    "engines": {
+      "crdt": "ready",
+      "vector": "loading_indexes",
+      "sparse": "ready",
+      "timeseries": "ready"
+    }
+  },
+  "timestamp": "2025-03-23T10:45:30.123Z"
+}
+```
+
+Use for load balancer routing and Kubernetes readiness probes. Returns 503 Service Unavailable during startup.
+
+## Kubernetes Configuration
+
+Liveness probe (detects crashes):
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 6480
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+```
+
+Readiness probe (detects slow startup):
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: 6480
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 5
+  failureThreshold: 2
+```
+
+## Load Balancer Configuration
+
+NGINX upstream health checks:
+
+```nginx
+upstream nodedb {
+    server nodedb-1:6480 max_fails=3 fail_timeout=30s;
+    server nodedb-2:6480 max_fails=3 fail_timeout=30s;
+    server nodedb-3:6480 max_fails=3 fail_timeout=30s;
+}
+```
+
+HAProxy health checks:
+
+```
+backend nodedb
+    balance roundrobin
+    option httpchk GET /health/ready
+    server nodedb-1 nodedb-1:6480 check inter 10s fall 3 rise 2
+    server nodedb-2 nodedb-2:6480 check inter 10s fall 3 rise 2
+    server nodedb-3 nodedb-3:6480 check inter 10s fall 3 rise 2
+```
+
+## Health Watchdog
+
+NodeDB includes a **CoreHealthWatchdog** that monitors data plane worker threads:
+
+- Detects thread panics
+- Triggers degraded mode after 3 panics in 60 seconds
+- Logs health events for alerting
+
+Degraded mode behavior:
+
+- Liveness: still returns 200 OK
+- Readiness: returns 503 Service Unavailable
+- Queries: may return errors due to missing worker threads
+- Load balancer: removes node from rotation via readiness probe
+
+View watchdog status:
+
+```sql
+SHOW CLUSTER STATUS;
+```
+
+Check logs:
+
+```bash
+journalctl -u nodedb.service | grep watchdog
+```
+
+## Health Check from Command Line
+
+Quick health check:
+
+```bash
+curl -i http://localhost:6480/health
+```
+
+With timeout:
+
+```bash
+curl -i --max-time 5 http://localhost:6480/health/ready
+```
+
+Continuous monitoring:
+
+```bash
+watch -n 5 'curl -s http://localhost:6480/health/ready | jq .'
+```
+
+## Monitoring Metrics
+
+Use Prometheus metrics to complement health checks:
+
+```promql
+# Alert if any node unhealthy for > 1 minute
+count(nodedb_health_status{status="unhealthy"}) > 0
+
+# Monitor readiness transitions
+increase(nodedb_readiness_transitions[5m])
+
+# Panic rate
+rate(nodedb_watchdog_panics[5m])
+```
+
+## Alerting Strategy
+
+| Scenario | Metric | Action |
+|----------|--------|--------|
+| Liveness fails | /health returns non-200 | Page on-call, restart instance |
+| Readiness fails | /health/ready returns 503 | Remove from LB, investigate startup |
+| Watchdog panics | 3+ panics in 60s | Page on-call, automatic failover in cluster |
+| Health flapping | Rapid on/off cycles | Check network, logs, check configuration |
+
+## Distributed Health Checks
+
+For multi-node clusters, check health of all peers:
+
+```bash
+for node in nodedb-{1,2,3}; do
+  echo "Checking $node..."
+  curl -s http://$node:6480/health/ready | jq .ready
+done
+```
+
+Or query cluster status directly:
+
+```sql
+SHOW NODES;
+```
+
+Shows node_id, status (healthy/unhealthy), last_heartbeat.
+
+## Debugging Startup Issues
+
+If `/health/ready` returns false during startup:
+
+1. Check individual components:
+
+```json
+{
+  "components": {
+    "data_plane": "initializing"
+  }
+}
+```
+
+2. Check logs for errors:
+
+```bash
+journalctl -u nodedb -n 100
+```
+
+3. Verify data directory:
+
+```bash
+ls -lah /var/lib/nodedb/
+```
+
+4. Check WAL recovery:
+
+```
+WAL recovery: segment 5, LSN 0x123456 / 0x789abc
+```
+
+Startup is complete when all components show "ready".

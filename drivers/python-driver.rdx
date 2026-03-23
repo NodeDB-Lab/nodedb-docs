@@ -1,8 +1,513 @@
 ---
 title: Python Driver
-description: Python client with NumPy/pandas integration.
+description: Python client with psycopg2, asyncpg, and HTTP integration.
 ---
 
 # Python Driver
 
-TODO
+NodeDB integrates seamlessly with Python's existing PostgreSQL ecosystem. Use psycopg2 for sync, asyncpg for async, or the HTTP API directly.
+
+## Installation
+
+### psycopg2 (Synchronous)
+
+Standard PostgreSQL driver for Python:
+
+```bash
+pip install psycopg2-binary
+```
+
+Or with package manager:
+
+```bash
+# Ubuntu/Debian
+apt-get install python3-psycopg2
+
+# macOS
+brew install psycopg2
+```
+
+### asyncpg (Asynchronous)
+
+High-performance async driver:
+
+```bash
+pip install asyncpg
+```
+
+### HTTP Client (Optional)
+
+For REST API access:
+
+```bash
+pip install requests
+```
+
+## psycopg2 (Synchronous)
+
+### Basic Connection
+
+```python
+import psycopg2
+
+conn = psycopg2.connect(
+    host="127.0.0.1",
+    port=6432,
+    user="postgres",
+    password="password",
+    database="nodedb"
+)
+
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM documents LIMIT 5")
+rows = cursor.fetchall()
+
+for row in rows:
+    print(row)
+
+cursor.close()
+conn.close()
+```
+
+### Connection String
+
+Use libpq connection strings:
+
+```python
+conn = psycopg2.connect(
+    "dbname=nodedb user=postgres host=127.0.0.1 port=6432 password=password"
+)
+
+# Or via URL
+conn = psycopg2.connect(
+    "postgresql://postgres:password@127.0.0.1:6432/nodedb"
+)
+```
+
+### Parameterized Queries
+
+Prevent SQL injection with parameter binding:
+
+```python
+cursor = conn.cursor()
+
+# Single query with parameters
+cursor.execute(
+    "SELECT * FROM documents WHERE id = %s AND status = %s",
+    ("doc1", "active")
+)
+result = cursor.fetchone()
+
+# Multiple queries (executemany)
+data = [
+    ("doc1", "active"),
+    ("doc2", "archived"),
+    ("doc3", "active")
+]
+cursor.executemany(
+    "INSERT INTO documents (id, status) VALUES (%s, %s)",
+    data
+)
+conn.commit()
+```
+
+### Connection Pooling
+
+Use connection pool for better performance:
+
+```python
+from psycopg2 import pool
+
+# Create pool
+connection_pool = pool.SimpleConnectionPool(
+    1, 10,  # min, max connections
+    host="127.0.0.1",
+    port=6432,
+    user="postgres",
+    password="password",
+    database="nodedb"
+)
+
+# Get connection
+conn = connection_pool.getconn()
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM documents")
+result = cursor.fetchall()
+cursor.close()
+
+# Return connection to pool
+connection_pool.putconn(conn)
+
+# Close pool when done
+connection_pool.closeall()
+```
+
+### Transactions
+
+Use transactions for ACID guarantees:
+
+```python
+import psycopg2
+
+try:
+    conn = psycopg2.connect("postgresql://postgres@127.0.0.1:6432/nodedb")
+    cursor = conn.cursor()
+
+    # Begin transaction
+    cursor.execute("BEGIN")
+
+    # Execute operations
+    cursor.execute("INSERT INTO docs (id) VALUES (%s)", ("doc1",))
+    cursor.execute("INSERT INTO docs (id) VALUES (%s)", ("doc2",))
+
+    # Commit or rollback
+    conn.commit()  # or conn.rollback()
+    print("Transaction committed")
+
+except Exception as e:
+    conn.rollback()
+    print(f"Error: {e}")
+
+finally:
+    cursor.close()
+    conn.close()
+```
+
+### Session Variables
+
+Set NodeDB session variables:
+
+```python
+cursor = conn.cursor()
+
+# Set consistency level
+cursor.execute("SET nodedb.consistency = 'strong'")
+
+# Set tenant
+cursor.execute("SET nodedb.tenant_id = 'acme-corp'")
+
+# Verify settings
+cursor.execute("SHOW nodedb.consistency")
+print(cursor.fetchone())  # ('strong',)
+```
+
+## asyncpg (Asynchronous)
+
+### Basic Connection
+
+```python
+import asyncpg
+
+async def main():
+    conn = await asyncpg.connect(
+        host="127.0.0.1",
+        port=6432,
+        user="postgres",
+        password="password",
+        database="nodedb"
+    )
+
+    rows = await conn.fetch("SELECT * FROM documents LIMIT 5")
+    for row in rows:
+        print(dict(row))
+
+    await conn.close()
+
+import asyncio
+asyncio.run(main())
+```
+
+### Connection String
+
+```python
+conn = await asyncpg.connect(
+    "postgresql://postgres:password@127.0.0.1:6432/nodedb"
+)
+```
+
+### Parameterized Queries
+
+```python
+async def search_docs(conn, doc_id, status):
+    row = await conn.fetchrow(
+        "SELECT * FROM documents WHERE id = $1 AND status = $2",
+        doc_id, status
+    )
+    return row
+```
+
+### Connection Pool
+
+```python
+import asyncpg
+
+async def main():
+    # Create pool
+    pool = await asyncpg.create_pool(
+        "postgresql://postgres@127.0.0.1:6432/nodedb",
+        min_size=10,
+        max_size=20
+    )
+
+    # Use connection from pool
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM documents")
+        print(rows)
+
+    # Close pool
+    await pool.close()
+
+import asyncio
+asyncio.run(main())
+```
+
+### Transactions
+
+```python
+async def transfer(pool, from_id, to_id, amount):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE accounts SET balance = balance - $1 WHERE id = $2",
+                amount, from_id
+            )
+            await conn.execute(
+                "UPDATE accounts SET balance = balance + $1 WHERE id = $2",
+                amount, to_id
+            )
+```
+
+### Streaming Results
+
+Process large result sets efficiently:
+
+```python
+async def stream_documents(pool):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            async for row in conn.cursor(
+                "SELECT * FROM documents WHERE status = $1",
+                "active"
+            ):
+                print(dict(row))
+```
+
+### Session Variables
+
+```python
+async def connect_with_settings():
+    conn = await asyncpg.connect(
+        "postgresql://postgres@127.0.0.1:6432/nodedb",
+        init="""
+            SET nodedb.consistency = 'strong';
+            SET nodedb.tenant_id = 'acme-corp';
+        """
+    )
+    return conn
+```
+
+## HTTP API (requests)
+
+Use the HTTP REST API directly:
+
+```python
+import requests
+import json
+
+BASE_URL = "http://127.0.0.1:6480"
+HEADERS = {
+    "Authorization": "Bearer ndb_api_key_...",
+    "Content-Type": "application/json"
+}
+
+# Execute query
+response = requests.post(
+    f"{BASE_URL}/query",
+    headers=HEADERS,
+    json={"sql": "SELECT * FROM documents LIMIT 10"}
+)
+print(response.json())
+```
+
+### Health Check
+
+```python
+response = requests.get(
+    f"{BASE_URL}/health",
+    headers=HEADERS
+)
+print(response.json())  # {"status": "ok", "node_id": 1}
+```
+
+### Create Document
+
+```python
+response = requests.post(
+    f"{BASE_URL}/collections/articles/documents",
+    headers=HEADERS,
+    json={
+        "id": "article-1",
+        "data": {"title": "NodeDB Guide", "author": "Alice"}
+    }
+)
+print(response.status_code)  # 201
+```
+
+### Vector Search
+
+```python
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer('all-MiniLM-L6-v2')
+embedding = model.encode("machine learning")
+
+response = requests.post(
+    f"{BASE_URL}/collections/articles/search",
+    headers=HEADERS,
+    json={
+        "vector": embedding.tolist(),
+        "top_k": 10
+    }
+)
+results = response.json()["results"]
+for result in results:
+    print(f"{result['id']}: {result['similarity']:.3f}")
+```
+
+## ORM Integration
+
+### SQLAlchemy
+
+```python
+from sqlalchemy import create_engine, text
+
+engine = create_engine(
+    "postgresql+psycopg2://postgres@127.0.0.1:6432/nodedb"
+)
+
+with engine.connect() as conn:
+    # Set consistency
+    conn.execute(text("SET nodedb.consistency = 'strong'"))
+
+    # Query
+    result = conn.execute(text("SELECT * FROM documents"))
+    for row in result:
+        print(row)
+```
+
+### Async SQLAlchemy
+
+```python
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy import text
+
+engine = create_async_engine(
+    "postgresql+asyncpg://postgres@127.0.0.1:6432/nodedb"
+)
+
+async def get_documents():
+    async with AsyncSession(engine) as session:
+        result = await session.execute(text("SELECT * FROM documents"))
+        return result.fetchall()
+```
+
+## Type Conversion
+
+Python types are automatically converted:
+
+```python
+import json
+from datetime import datetime, timezone
+
+cursor.execute("INSERT INTO docs (int_col, float_col, bool_col, json_col, ts_col) VALUES (%s, %s, %s, %s, %s)",
+    (42, 3.14, True, json.dumps({"key": "value"}), datetime.now(timezone.utc))
+)
+```
+
+Retrieving typed values:
+
+```python
+cursor.execute("SELECT int_col, float_col, bool_col, json_col FROM docs")
+int_val, float_val, bool_val, json_val = cursor.fetchone()
+print(f"{int_val} ({type(int_val).__name__})")  # 42 (int)
+print(f"{bool_val} ({type(bool_val).__name__})")  # True (bool)
+```
+
+## Error Handling
+
+```python
+import psycopg2
+from psycopg2 import Error, sql
+
+try:
+    cursor.execute("SELECT * FROM nonexistent_table")
+except Error as e:
+    print(f"Error code: {e.pgcode}")  # e.g., '42P01'
+    print(f"Error message: {e.pgerror}")
+```
+
+Common error codes:
+
+- `42P01` — UndefinedTable
+- `42703` — UndefinedColumn
+- `23505` — UniqueViolation
+- `23503` — ForeignKeyViolation
+- `08006` — ConnectionFailure
+
+## Performance Tips
+
+1. **Use connection pooling** for concurrent access
+2. **Batch operations** with executemany
+3. **Use parameterized queries** to reuse plans
+4. **Set consistency to 'eventual'** for non-critical reads
+5. **Create indexes** on frequently queried columns
+6. **Use async (asyncpg)** for high-concurrency workloads
+7. **Close connections** properly to free resources
+
+## Example Application
+
+```python
+import asyncpg
+from typing import List, Dict
+
+class DocumentStore:
+    def __init__(self, pool: asyncpg.Pool):
+        self.pool = pool
+
+    async def create(self, doc_id: str, data: Dict) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO docs (id, data) VALUES ($1, $2)",
+                doc_id, json.dumps(data)
+            )
+
+    async def read(self, doc_id: str) -> Dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT data FROM docs WHERE id = $1",
+                doc_id
+            )
+            return json.loads(row['data']) if row else None
+
+    async def update(self, doc_id: str, data: Dict) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE docs SET data = $1 WHERE id = $2",
+                json.dumps(data), doc_id
+            )
+
+    async def delete(self, doc_id: str) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM docs WHERE id = $1", doc_id)
+
+# Usage
+pool = await asyncpg.create_pool("postgresql://postgres@127.0.0.1:6432/nodedb")
+store = DocumentStore(pool)
+await store.create("doc1", {"title": "Hello"})
+```
+
+## Next Steps
+
+- Explore [pgwire features](../pgwire/supported-features.md) for advanced SQL
+- Learn about [session variables](../pgwire/session-variables.md) for consistency control
+- Review [type mapping](../pgwire/type-mapping.md) for data conversions

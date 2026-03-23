@@ -1,8 +1,132 @@
 ---
-title: Quantization
-description: FP8, NF4, and binary quantization for cache-efficient traversal.
+title: Vector Quantization
+description: SQ8, Product Quantization, IVF-PQ for memory efficiency.
 ---
 
-# Quantization
+# Vector Quantization
 
-TODO
+Quantization reduces memory usage and speeds up computation by representing embeddings in compressed form. NodeDB supports three quantization schemes with different tradeoffs between accuracy, speed, and memory.
+
+## Scalar Quantization (SQ8)
+
+**Mechanism**: Map each vector component from float32 to uint8 (0-255).
+
+**Memory**: 12x reduction (4 bytes → 1 byte per component)
+
+**Process**:
+1. Find min/max across all vectors per dimension
+2. Map range [min, max] to [0, 255]
+3. Store uint8 values on disk
+4. Decompress during search (SIMD-vectorized)
+
+**Accuracy impact**: Minimal (1-2% recall loss on large datasets)
+
+**When to use**: Default choice for most deployments, especially with L2 metric.
+
+**Configuration**:
+```sql
+-- Enable SQ8 quantization
+CREATE VECTOR INDEX idx_sq8 ON vectors METRIC cosine QUANTIZATION sq8;
+
+-- Query performance: same as unquantized
+SELECT vec_id FROM vectors
+ORDER BY vector_distance(vec, ARRAY[...]) LIMIT 100;
+```
+
+## Product Quantization (PQ)
+
+**Mechanism**: Split vectors into segments, quantize each segment independently using learned codebooks.
+
+**Memory**: Configurable (typically 2-4x reduction)
+
+**Parameters**:
+- `pq_m`: Number of segments (default 8). Larger → better accuracy, slower search.
+- Codebook size: 256 (8-bit) fixed per segment
+
+**Process**:
+1. Split vector into m segments
+2. Cluster each segment to 256 centroids (training phase)
+3. Encode each segment as cluster ID (8 bits)
+4. Store m bytes per vector on disk
+
+**Accuracy impact**: 3-5% recall loss depending on m
+
+**When to use**: Large datasets (10M+ vectors), aggressive memory constraints.
+
+**Configuration**:
+```sql
+-- PQ with 8 segments (8 bytes per vector)
+CREATE VECTOR INDEX idx_pq ON vectors METRIC cosine QUANTIZATION pq PARAMS pq_m=8;
+
+-- Fine-grained segments for higher accuracy
+CREATE VECTOR INDEX idx_pq_fine ON vectors METRIC cosine QUANTIZATION pq PARAMS pq_m=16;
+```
+
+## Inverted File + PQ (IVF-PQ)
+
+**Mechanism**: Two-stage search—coarse clusters (IVF) then fine search within selected clusters (PQ).
+
+**Memory**: 1-2x reduction (coarse IVF overhead, PQ savings)
+
+**Parameters**:
+- `ivf_cells`: Number of coarse clusters (default 1000)
+- `ivf_nprobe`: Clusters to search during query (default 10). Larger → higher recall, slower.
+- `pq_m`: PQ segments (same as above)
+
+**Process**:
+1. Cluster all vectors into K coarse clusters
+2. For each query: find nprobe nearest coarse clusters
+3. Within those clusters, search with PQ
+4. Return top k results
+
+**Accuracy impact**: 5-10% recall loss (tunable with nprobe)
+
+**When to use**: Billion-scale datasets, extreme memory constraints.
+
+**Configuration**:
+```sql
+-- IVF with 1000 clusters, search 20 at query time
+CREATE VECTOR INDEX idx_ivf ON vectors METRIC cosine
+  QUANTIZATION ivf_pq PARAMS ivf_cells=1000 ivf_nprobe=20 pq_m=8;
+
+-- Adjust nprobe at query time for speed/accuracy tradeoff
+SELECT vec_id FROM vectors
+ORDER BY vector_distance(vec, ARRAY[...], ef_search=50, nprobe=30) LIMIT 100;
+```
+
+## Quantization Comparison
+
+| Scheme | Memory | Speed | Recall | Use Case |
+|--------|--------|-------|--------|----------|
+| Unquantized | 1x | Baseline | 100% | <5M vectors, budget available |
+| SQ8 | 0.08x | 2-3x | 98-99% | General purpose |
+| PQ (m=8) | 0.13x | 3-5x | 95-97% | Large datasets |
+| IVF-PQ | 0.15x | 5-10x | 90-95% | 100M+ vectors |
+
+## Guidelines
+
+**Start with SQ8**: Minimal accuracy loss, best CPU cache behavior, standard choice.
+
+**Switch to PQ** if:
+- Dataset > 10M vectors
+- Memory budget critical (<1 byte/vector)
+- Latency budget allows slower search
+
+**Use IVF-PQ** if:
+- Dataset > 100M vectors
+- Extreme memory constraints
+- Can tune nprobe at query time
+
+**Hybrid approach**: Index with PQ, pre-filter to candidate clusters, then re-rank with unquantized neighbors.
+
+## Retraining
+
+Quantization codebooks are built once during index creation and remain fixed. If vectors drift significantly over time, retraining may improve accuracy:
+
+```sql
+-- Rebuild index with new quantization parameters
+DROP INDEX idx_sq8;
+CREATE VECTOR INDEX idx_sq8 ON vectors METRIC cosine QUANTIZATION sq8;
+```
+
+See [Indexing Parameters](/engines/vector/indexing-params) for complete tuning reference.

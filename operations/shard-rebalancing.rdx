@@ -1,8 +1,320 @@
 ---
 title: Shard Rebalancing
-description: Triggering and monitoring vShard rebalancing.
+description: Trigger and monitor automated shard migration and rebalancing.
 ---
 
 # Shard Rebalancing
 
-TODO
+NodeDB automatically rebalances shards across nodes during topology changes or manual triggers.
+
+## Auto Rebalancing
+
+NodeDB automatically rebalances when:
+
+- Node joins: data redistributed to utilize new capacity
+- Node fails: data redistribacted to remaining nodes
+- Imbalance detected: shards moved to equalize load
+
+View auto-rebalance settings:
+
+```sql
+SHOW SYSTEM SETTINGS;
+```
+
+Key settings:
+
+```
+auto_rebalance_enabled: true
+rebalance_threshold_pct: 10  -- Trigger if imbalance > 10%
+rebalance_interval_secs: 300 -- Check every 5 minutes
+rebalance_concurrency: 2     -- Concurrent migrations
+```
+
+## Manual Rebalancing
+
+Trigger rebalancing immediately:
+
+```sql
+REBALANCE;
+```
+
+Rebalance with options:
+
+```sql
+REBALANCE WITH
+  STRATEGY = 'balanced',  -- Options: balanced, locality, spread
+  CONCURRENCY = 4,
+  TIMEOUT_SECS = 3600;
+```
+
+Strategies:
+
+- `balanced` - Even shard distribution
+- `locality` - Group shards by node location/rack
+- `spread` - Maximize replica spread
+
+## Three-Phase Migration
+
+Each shard migrates through three phases:
+
+**Phase 1: Replica Addition (5-10 min)**
+```
+Shard 0: [node-1, node-2] → [node-1, node-2, node-3]
+         Primary copy on node-1, new replica added to node-3
+```
+
+**Phase 2: Data Sync (10-60 min)**
+```
+Replicating data from node-1 to node-3
+Sync lag: initial 100%, decreases over time
+```
+
+**Phase 3: Primary Switch (< 1 min)**
+```
+Shard 0: [node-1, node-2, node-3]
+         Switch primary node-1 → node-3 (if rebalancing)
+         Replica on node-2 stays, replica on node-1 removes
+```
+
+Monitor phases:
+
+```sql
+SHOW MIGRATIONS;
+```
+
+Example:
+
+```
+migration_id | shard_id | phase | source_node | target_node | status   | progress_pct | eta_secs
+-------------|----------|-------|-------------|-------------|----------|--------------|--------
+1            | 0        | 1     | 1           | 3           | complete | 100          | 0
+2            | 0        | 2     | 1           | 3           | running  | 45.2         | 320
+3            | 0        | 3     | 1           | 3           | pending  | 0            | 360
+```
+
+## Monitor Rebalancing Progress
+
+View current balance:
+
+```sql
+SELECT
+  node_id,
+  shard_count,
+  ROUND(100.0 * data_bytes / sum_all_bytes, 1) as data_pct,
+  ROUND(100.0 * qps / sum_all_qps, 1) as qps_pct
+FROM sys.node_load
+ORDER BY node_id;
+```
+
+Example (unbalanced):
+
+```
+node_id | shard_count | data_pct | qps_pct
+--------|-------------|----------|--------
+1       | 10          | 55       | 52
+2       | 8           | 30       | 35
+3       | 4           | 15       | 13
+```
+
+Real-time migration status:
+
+```sql
+SELECT
+  COUNT(*) as total_migrations,
+  SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) as complete,
+  SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running,
+  SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+  ROUND(100.0 * SUM(progress_pct) / COUNT(*), 1) as avg_progress_pct,
+  SUM(CASE WHEN estimated_remaining_secs > 0 THEN estimated_remaining_secs ELSE 0 END) as total_remaining_secs
+FROM sys.migrations;
+```
+
+Example:
+
+```
+total | complete | running | pending | progress_pct | remaining_secs
+------|----------|---------|---------|--------------|---------------
+15    | 5        | 8       | 2       | 62.3         | 1800
+```
+
+Estimated completion:
+
+```bash
+psql -c "SELECT SUM(estimated_remaining_secs) / 3600.0 as hours_remaining FROM sys.migrations WHERE status != 'complete';"
+```
+
+## Cancel Rebalancing
+
+Stop ongoing rebalancing:
+
+```sql
+CANCEL REBALANCING;
+```
+
+This stops new migrations but allows in-flight to complete.
+
+Cancel specific migration:
+
+```sql
+CANCEL MIGRATION 5;
+```
+
+Effects:
+
+- In-progress migration completes
+- Pending migrations cancelled
+- Cluster continues operating with current distribution
+
+## Rebalancing Policies
+
+Override default strategy:
+
+```sql
+ALTER SYSTEM SET rebalance_strategy = 'locality';
+```
+
+Locality strategy (for multi-AZ):
+
+```
+Zone A: [node-1, node-2]
+Zone B: [node-3, node-4]
+Zone C: [node-5]
+
+Shard replicas spread across zones
+Example shard: [node-1 (Zone A), node-3 (Zone B), node-5 (Zone C)]
+```
+
+Spread strategy (maximize distances):
+
+```
+Node 1: [shard-0, shard-5, shard-10]
+Node 2: [shard-1, shard-6, shard-11]
+Node 3: [shard-2, shard-7, shard-12]
+        (evenly distributed)
+```
+
+## Rebalancing with Constraints
+
+Exclude node from receiving shards:
+
+```sql
+ALTER NODE 2 SET can_receive_shards = false;
+```
+
+Node 2 drains: shards migrate away, no new shards assigned.
+
+Resume accepting shards:
+
+```sql
+ALTER NODE 2 SET can_receive_shards = true;
+```
+
+Pin shard to node:
+
+```sql
+ALTER SHARD 0 SET primary_node = 1;
+```
+
+Shard 0 primary stays on node 1, replicas on other nodes.
+
+## Bandwidth Throttling
+
+Limit rebalancing network bandwidth:
+
+```sql
+ALTER SYSTEM SET rebalance_bandwidth_limit_mb = 100;
+```
+
+Slows migrations to 100 MB/s to reduce impact on normal traffic.
+
+## Cost Metrics
+
+Understand rebalancing cost:
+
+```sql
+SELECT
+  COUNT(*) as total_shards,
+  SUM(shard_size_bytes) / 1024.0^3 as total_data_gb,
+  SUM(shard_size_bytes) / 1024.0^3 / avg_rebalance_bandwidth_mb * 3600 as est_hours
+FROM sys.shards;
+```
+
+Example:
+
+```
+Rebalancing 1000 shards (500 GB) at 100 MB/s = ~1.4 hours
+```
+
+Concurrent migrations reduce time:
+
+```
+2 concurrent: ~0.7 hours
+4 concurrent: ~0.35 hours
+8 concurrent: ~0.18 hours (but may impact query latency)
+```
+
+## Monitoring Rebalancing
+
+Prometheus metrics:
+
+```promql
+# Rebalancing progress
+nodedb_rebalance_progress_percent
+
+# Migration lag
+nodedb_migration_lag_bytes
+
+# Rebalancing impact on latency
+histogram_quantile(0.99, rate(nodedb_query_latency_us[5m]))
+```
+
+Alert on long rebalancing:
+
+```yaml
+- alert: LongRebalancing
+  expr: |
+    rate(nodedb_rebalance_active[5m]) > 0 AND
+    changes(nodedb_rebalance_progress_percent[1h]) < 1
+  annotations:
+    summary: "Rebalancing stuck, no progress in 1 hour"
+```
+
+## Rebalancing Best Practices
+
+- Rebalance off-peak if possible (or use bandwidth throttling)
+- Monitor query latency during rebalancing
+- Use `CONCURRENCY = 2-4` for production
+- Set bandwidth limits to avoid query impact
+- Test rebalancing in staging first
+- Document expected duration
+- Have runbook for stuck migrations
+- Verify shard distribution after completion
+
+Example rebalancing workflow:
+
+```bash
+#!/bin/bash
+echo "Starting rebalancing..."
+
+psql -c "REBALANCE WITH STRATEGY = 'balanced', CONCURRENCY = 2;"
+
+# Monitor progress every 30 seconds
+while true; do
+  COMPLETE=$(psql -c "SELECT COUNT(*) FROM sys.migrations WHERE status = 'complete';" -t)
+  RUNNING=$(psql -c "SELECT COUNT(*) FROM sys.migrations WHERE status = 'running';" -t)
+  PENDING=$(psql -c "SELECT COUNT(*) FROM sys.migrations WHERE status = 'pending';" -t)
+  REMAINING=$(psql -c "SELECT COALESCE(SUM(estimated_remaining_secs), 0) FROM sys.migrations WHERE status != 'complete';" -t)
+
+  echo "Status: $COMPLETE complete, $RUNNING running, $PENDING pending | ETA: $((REMAINING / 60)) minutes"
+
+  # Exit when done
+  [ "$RUNNING" -eq 0 ] && [ "$PENDING" -eq 0 ] && break
+
+  sleep 30
+done
+
+echo "Rebalancing complete!"
+
+# Verify final distribution
+psql -c "SELECT node_id, shard_count FROM sys.nodes ORDER BY shard_count;"
+```

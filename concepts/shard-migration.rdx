@@ -1,8 +1,377 @@
 ---
 title: Shard Migration
-description: 3-phase RDMA migration: base copy, WAL catch-up, atomic cut-over.
+description: 3-phase migration protocol. Base copy (coarse), WAL catch-up (fine), atomic cut-over. Zero-downtime rebalancing.
 ---
 
 # Shard Migration
 
-TODO
+When vShards are rebalanced (e.g., adding a node), data must migrate from source to destination nodes. NodeDB uses a **3-phase migration** protocol that minimizes downtime, reduces network traffic, and maintains consistency.
+
+## Why 3-Phase?
+
+**Goal:** Move a vShard from node A (source) to node B (destination) with minimal impact.
+
+**Challenges:**
+1. Can't stop writes during migration (downtime unacceptable)
+2. Can't copy 1 GB in one go (network takes time)
+3. Must not lose in-flight writes
+4. Must not have two leaders for the same shard simultaneously
+
+**Solution:** 3 phases gradually move data while accepting writes.
+
+## Phase 1: Base Copy
+
+Copy the bulk of data (L1 segments, memtables) from source to destination.
+
+```
+Source (node A):
+  vShard 42 state at LSN=1000
+  L1 segments: 512 MB
+  Memtable: 10 MB
+  Total: 522 MB
+
+Destination (node B):
+  (empty at start)
+
+Timeline:
+
+T=0: Start migration
+  Control Plane marks vShard 42 as "MIGRATING"
+  Writes are still accepted on node A (leader)
+  node B starts reading
+
+T=1-5s: Network copy
+  node B reads L1 segment files from node A
+  (via nexar QUIC transport or RDMA for speed)
+  Copies 512 MB @ ~100 MB/sec = ~5 seconds
+
+  While copying:
+  - New writes arrive at node A (LSN=1001, 1002, ...)
+  - These writes are NOT yet on node B
+  - node B only has data up to LSN=1000
+
+T=5s: Base copy complete
+  node B has L1 data (LSN=1000)
+  node B enters phase 2 (WAL catch-up)
+```
+
+**Optimization:** Use RDMA (Remote Direct Memory Access) for faster zero-copy transfer.
+
+## Phase 2: WAL Catch-Up
+
+After base copy, the destination node "catches up" by replaying WAL entries.
+
+```
+Source (node A):
+  vShard 42 at LSN=1000 (base copy done)
+  New writes arrive: LSN=1001, 1002, 1003, ...
+  Current LSN: 1050
+
+Destination (node B):
+  Has base copy at LSN=1000
+  Needs to catch up to LSN=1050
+
+Timeline:
+
+T=5-10s: WAL catch-up
+  node B reads WAL entries from node A
+  (WAL is append-only, can read while writing)
+
+  Entries 1001-1050 (50 records, ~1 MB)
+  Received and applied to node B's copy
+
+T=10s: catch-up complete
+  node B is at LSN=1050 (same as node A leader)
+  But: new writes at node A are LSN=1051, 1052, ...
+  node B must continue catching up
+
+(Catch-up phase may last 1-30 seconds depending on write rate)
+```
+
+**Challenge:** Node B's copy keeps falling behind because writes are happening on node A.
+
+**Solution:** Write pause (brief).
+
+## Phase 3: Atomic Cut-Over
+
+Brief pause on writes, final WAL catch-up, switch leader.
+
+```
+Before cut-over:
+  node A is leader for vShard 42 (source)
+  node B has catch-up replica (destination)
+  Writes are being applied to node A
+
+Timeline:
+
+T=30s: Begin cut-over
+  Write-pause signal: Pause new writes to vShard 42
+  (Clients get "write unavailable" briefly, < 100 ms typically)
+
+T=30s-30.05s: Final catch-up
+  Last WAL entries from node A reach node B
+  node A LSN=2000, node B LSN=1999
+  node B reads final 1 entry
+  node B is now at LSN=2000 (exactly in sync)
+
+T=30.05s: Atomic switch
+  Raft group [A, B, C] updates configuration:
+    Old: vShard 42 → leader=A, replicas=[B, C]
+    New: vShard 42 → leader=B, replicas=[A, C]
+
+  Voting change:
+    node A: loses vote for vShard 42
+    node B: gains vote for vShard 42
+
+T=30.1s: Re-enable writes
+  Writes are un-paused
+  New writes go to node B (new leader)
+
+T=31s: node A snapshot
+  node A drops its copy of vShard 42 (no longer needed)
+  node A deletes WAL entries for vShard 42
+  Cleanup complete
+```
+
+**Total time:** ~30 seconds for 512 MB shard (depends on network speed and write rate during catch-up).
+
+## Write Pause Budget
+
+The write pause is tunable:
+
+```sql
+ALTER CLUSTER SET (
+  shard_migration_pause_budget_ms = 100  -- Max 100 ms pause allowed
+);
+```
+
+If cut-over takes > 100 ms:
+- Pause is aborted
+- Migration restarts (phase 2 catch-up resumes)
+- Retry later (e.g., during low-traffic period)
+
+**Trade-off:**
+- Small pause budget (50 ms): faster resume, but may need retries
+- Large pause budget (500 ms): higher chance of success, longer downtime
+
+Typical: 100-200 ms.
+
+## Failure Handling
+
+If migration fails (network interruption, node crash):
+
+```
+During phase 1: Network error
+  → Restart phase 1 (base copy)
+  → node B deletes partial copy, starts fresh
+
+During phase 2: node B crashes
+  → Pause migration
+  → Restart node B
+  → Resume phase 2 from where it left off
+
+During phase 3: node A crashes during cut-over
+  → Cut-over aborts
+  → node B stays replica (not promoted to leader)
+  → Migration restarts once node A recovers
+```
+
+**Invariant:** If cut-over fails, vShard remains on source (no orphaned data).
+
+## Anti-Entropy Sweeper
+
+After migration, verify destination has exact copy:
+
+```
+Post-migration (T=60s):
+  Anti-entropy sweeper runs on node B
+  Compares vShard 42 on node B vs node A
+  - Check all documents present
+  - Verify hashes match
+  - Flag mismatches (corruption check)
+
+If mismatch:
+  Re-copy affected documents (small region, ~100 MB)
+  Verify again
+
+If all match:
+  Migration confirmed complete
+  node A can be decommissioned (if rebalancing finished)
+```
+
+## Parallel Migrations
+
+Multiple vShards can migrate in parallel:
+
+```
+Rebalance plan: move 128 vShards from node A → node B
+
+Parallel migrations:
+  Shard 0: phase 1 (base copy)
+  Shard 1: phase 2 (WAL catch-up)
+  Shard 2: phase 3 (cut-over)
+  Shard 3: phase 1
+  ...
+
+Throughput: ~400 MB/sec total (4 parallel x 100 MB/sec each)
+
+Time to complete: 128 shards * 512 MB / 400 MB/sec = 164 seconds = ~2.7 minutes
+
+(Achievable in maintenance window)
+```
+
+## Ghost Edges (Graph Migration)
+
+When a graph node migrates, edges pointing to it must be updated:
+
+```
+vShard 42 (contains node X):
+  Node X → [edges from other nodes]
+
+Migration: vShard 42 → node A to node B
+
+Problem: Other vShards may have edges pointing to X
+Example:
+  vShard 50 has: Y → (edge_label) → X (now on node B!)
+
+Solution: Ghost edge protocol
+
+During phase 2:
+  Original shard 50 (still on node A): X is "ghost" entry
+    Ghost(X) = { new_home: vShard_42@node_B, ttl: 60s }
+
+When traversing in vShard 50:
+  Reach edge to X
+  See it's ghost → ask node B for the real node
+  node B responds with X's properties
+
+After phase 3:
+  Update all edges in other shards pointing to X
+  (Background edge-redirect task)
+
+After ttl expires:
+  Delete ghost stubs (safe, all edges redirected)
+```
+
+## Metrics
+
+Monitor migration progress:
+
+```
+nodedb-cli migration status
+
+Migration[vShard_42]: A → B
+  Phase: 2 (WAL catch-up)
+  Progress: 45% (900/2000 WAL entries)
+  Data copied: 512 MB
+  Elapsed: 5.2 seconds
+  Estimated remaining: 3 seconds
+  Network bandwidth: 98 MB/sec
+  Write pause budget: 100 ms (not yet used)
+```
+
+## Failure Scenarios
+
+### Network Partition During Phase 1
+
+```
+node A and node B disconnect
+
+Result:
+  Base copy stalls (no data arriving)
+  node B waits with partial copy
+
+Recovery:
+  When network heals:
+  Resume phase 1 from where it stopped
+  (node B has checksum of copied segments, skips re-copy)
+```
+
+### source Node Fails During Phase 2
+
+```
+node A crashes while node B is in catch-up
+
+Result:
+  Raft group elects new leader from [B, C]
+  vShard 42 stays on source (A offline)
+  node B is not yet promoted
+
+When node A recovers:
+  Rejoins cluster
+  Raft consensus catches it up
+  Migration can be retried
+```
+
+### Destination Full During Phase 1
+
+```
+node B runs out of disk space mid-copy
+
+Result:
+  Pause migration
+  node B: clean up partial data
+  Operator: Increase node B capacity
+  Resume migration
+
+(Graceful degradation, no data loss)
+```
+
+## Migration Tuning
+
+Control migration speed and impact:
+
+```sql
+ALTER CLUSTER SET (
+  shard_migration_parallelism = 4,  -- Max 4 concurrent migrations
+  shard_migration_rate_mb_per_sec = 100,  -- Network throttle
+  shard_migration_pause_budget_ms = 100,  -- Max write pause
+  shard_migration_priority = 'LOW'  -- Low priority (don't starve queries)
+);
+```
+
+**Conservative (production):**
+```sql
+parallelism=2, rate=50MB/s, pause=100ms, priority=VERY_LOW
+-- Slower migration, minimal impact on users
+-- Takes longer (hours for large rebalance)
+```
+
+**Aggressive (maintenance window):**
+```sql
+parallelism=8, rate=500MB/s, pause=1000ms, priority=HIGH
+-- Fast migration, larger pause
+-- Takes minutes
+```
+
+## Rebalancing Workflow
+
+Typical rebalancing (adding node 4 to 3-node cluster):
+
+```
+$ nodedb-cli cluster add-node --node-id 4 --bind node4:5433
+
+Control Plane:
+  1. node4 joins as learner (no voting)
+  2. Compute new shard assignment (256 shards per node, 4 nodes)
+  3. Identify vShards to move:
+     node1: [0, 127] → [0, 85]    (move 86-127 to other nodes)
+     node2: [128, 255] → [86, 171] (similar)
+     node3: [256, 383] → [172, 257]
+     node4: [] → [258, 383] (new)
+  4. Queue migrations: [86-127] to node2, [128-171] to node3, [172-257] to node4
+  5. Start parallel migrations
+
+Phase 1-3 for all shards (30-120 seconds)
+
+Once all shards migrated:
+  node4 promoted from learner → voter
+  Quorum changed from 2/3 to 3/4
+  Rebalancing complete
+
+$ nodedb-cli cluster status
+
+Cluster: [node1, node2, node3, node4]
+Quorum: 3/4 ✓
+All vShards: ACTIVE
+```

@@ -1,8 +1,258 @@
 ---
 title: Docker Deployment
-description: Running NodeDB in Docker with persistent volumes.
+description: Run NodeDB in Docker containers with volume mounts and port mapping.
 ---
 
 # Docker Deployment
 
-TODO
+Deploy NodeDB in Docker for development, testing, and production environments.
+
+## Dockerfile
+
+Create a `Dockerfile` in the project root:
+
+```dockerfile
+FROM rust:1.75-slim as builder
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY nodedb ./nodedb
+COPY nodedb-bridge ./nodedb-bridge
+COPY nodedb-wal ./nodedb-wal
+COPY nodedb-mem ./nodedb-mem
+COPY nodedb-crdt ./nodedb-crdt
+COPY nodedb-raft ./nodedb-raft
+COPY nodedb-cluster ./nodedb-cluster
+
+RUN apt-get update && apt-get install -y \
+    pkg-config libssl-dev clang \
+    && cargo build --release -p nodedb
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/nodedb /usr/local/bin/nodedb
+
+EXPOSE 6432 6480 6433 9090 9400
+
+ENTRYPOINT ["nodedb"]
+CMD ["--config", "/etc/nodedb/server.toml"]
+```
+
+## Basic Docker Run
+
+Start a single-node NodeDB container:
+
+```bash
+# Create data directory
+mkdir -p /var/lib/nodedb
+
+# Run container
+docker run -d \
+  --name nodedb \
+  --restart unless-stopped \
+  -p 6432:6432 \
+  -p 6480:6480 \
+  -p 6433:6433 \
+  -v /var/lib/nodedb:/var/lib/nodedb \
+  -v /etc/nodedb:/etc/nodedb \
+  nodedb:latest \
+  --config /etc/nodedb/server.toml
+```
+
+## Configuration Volume Mount
+
+Create `server.toml` on the host:
+
+```toml
+[server]
+listen_pgwire = "0.0.0.0:6432"
+listen_http = "0.0.0.0:6480"
+listen_native = "0.0.0.0:6433"
+listen_sync_ws = "0.0.0.0:9090"
+data_dir = "/var/lib/nodedb"
+max_connections = 1000
+idle_timeout_secs = 3600
+
+[engines]
+crdt_budget_mb = 512
+vector_budget_mb = 1024
+sparse_budget_mb = 256
+timeseries_budget_mb = 512
+
+[auth]
+mode = "password"
+scram_iterations = 4096
+
+[tls]
+cert_path = "/etc/nodedb/server.crt"
+key_path = "/etc/nodedb/server.key"
+```
+
+Mount it with `-v`:
+
+```bash
+docker run -d \
+  --name nodedb \
+  -p 6432:6432 \
+  -p 6480:6480 \
+  -v /var/lib/nodedb:/var/lib/nodedb \
+  -v /etc/nodedb/server.toml:/etc/nodedb/server.toml \
+  nodedb:latest
+```
+
+## TLS Certificates
+
+Mount TLS certificates as read-only volumes:
+
+```bash
+docker run -d \
+  --name nodedb \
+  -p 6432:6432 \
+  -p 6480:6480 \
+  -p 6433:6433 \
+  -v /var/lib/nodedb:/var/lib/nodedb \
+  -v /etc/nodedb/server.toml:/etc/nodedb/server.toml:ro \
+  -v /etc/nodedb/server.crt:/etc/nodedb/server.crt:ro \
+  -v /etc/nodedb/server.key:/etc/nodedb/server.key:ro \
+  nodedb:latest
+```
+
+## Docker Compose
+
+Create `docker-compose.yml` for local development:
+
+```yaml
+version: '3.9'
+
+services:
+  nodedb:
+    build: .
+    container_name: nodedb-dev
+    restart: unless-stopped
+    ports:
+      - "6432:6432"    # pgwire
+      - "6480:6480"    # HTTP
+      - "6433:6433"    # native
+      - "9090:9090"    # sync WebSocket
+    volumes:
+      - nodedb-data:/var/lib/nodedb
+      - ./server.toml:/etc/nodedb/server.toml:ro
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6480/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  nodedb-data:
+    driver: local
+```
+
+Start with:
+
+```bash
+docker-compose up -d
+```
+
+## Multi-Node Cluster in Docker
+
+Create a cluster network and run multiple containers:
+
+```yaml
+version: '3.9'
+
+services:
+  nodedb-1:
+    build: .
+    container_name: nodedb-1
+    restart: unless-stopped
+    networks:
+      - nodedb-net
+    ports:
+      - "6432:6432"
+      - "6480:6480"
+    volumes:
+      - nodedb-1-data:/var/lib/nodedb
+      - ./node1.toml:/etc/nodedb/server.toml:ro
+    environment:
+      - RUST_LOG=info
+
+  nodedb-2:
+    build: .
+    container_name: nodedb-2
+    restart: unless-stopped
+    networks:
+      - nodedb-net
+    ports:
+      - "6433:6432"
+      - "6481:6480"
+    volumes:
+      - nodedb-2-data:/var/lib/nodedb
+      - ./node2.toml:/etc/nodedb/server.toml:ro
+    environment:
+      - RUST_LOG=info
+
+  nodedb-3:
+    build: .
+    container_name: nodedb-3
+    restart: unless-stopped
+    networks:
+      - nodedb-net
+    ports:
+      - "6434:6432"
+      - "6482:6480"
+    volumes:
+      - nodedb-3-data:/var/lib/nodedb
+      - ./node3.toml:/etc/nodedb/server.toml:ro
+    environment:
+      - RUST_LOG=info
+
+networks:
+  nodedb-net:
+    driver: bridge
+
+volumes:
+  nodedb-1-data:
+  nodedb-2-data:
+  nodedb-3-data:
+```
+
+Each node config references others via `seed_nodes`:
+
+```toml
+[cluster]
+node_id = 1
+seed_nodes = ["nodedb-1:9400", "nodedb-2:9400", "nodedb-3:9400"]
+replication_factor = 3
+```
+
+## Logs and Debugging
+
+View container logs:
+
+```bash
+docker logs -f nodedb
+```
+
+Execute commands inside container:
+
+```bash
+docker exec -it nodedb psql -h localhost -U postgres -d nodedb
+```
+
+## Production Considerations
+
+- Use a container registry (Docker Hub, ECR, GCR) to version images
+- Pin specific version tags: `nodedb:v1.2.3` not `nodedb:latest`
+- Use health checks to enable Docker's automatic restart on failure
+- Mount data directory on a persistent volume (EBS, NFS, local path)
+- Set resource limits: `--memory 4g --cpus 4`
+- Use secrets management for TLS keys and passwords (Docker Secrets or external vault)
+- Run as non-root user: add `USER nodedb` to Dockerfile
+- Set appropriate ulimits for file descriptors and memory

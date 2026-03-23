@@ -1,8 +1,273 @@
 ---
-title: Quickstart
-description: Get NodeDB running and execute your first queries.
+title: Quick Start
+description: Launch NodeDB and run your first queries in under 5 minutes.
 ---
 
-# Quickstart
+# Quick Start
 
-TODO
+This guide takes you from zero to running multi-modal queries in under 5 minutes.
+
+## 1. Start NodeDB
+
+NodeDB works without a configuration file. Start it with defaults:
+
+```bash
+# From the repository root
+./target/release/nodedb
+```
+
+You should see output like:
+
+```
+2026-03-23T10:00:00Z INFO nodedb: Starting NodeDB 0.1.0
+2026-03-23T10:00:00Z INFO nodedb: Listening on 127.0.0.1:6433 (native)
+2026-03-23T10:00:00Z INFO nodedb: Listening on 127.0.0.1:6432 (PostgreSQL)
+2026-03-23T10:00:00Z INFO nodedb: Listening on 127.0.0.1:6480 (HTTP)
+2026-03-23T10:00:00Z INFO nodedb: Data directory: ~/.local/share/nodedb/
+2026-03-23T10:00:00Z INFO nodedb: Data Plane cores: 7
+2026-03-23T10:00:00Z INFO nodedb: Memory limit: 8 GB
+```
+
+The server is now ready. Leave this terminal running and open another.
+
+## 2. Connect via PostgreSQL
+
+In another terminal, connect using `psql` (the PostgreSQL command-line client):
+
+```bash
+psql -h 127.0.0.1 -p 6432
+```
+
+Or if you prefer to skip entering a password:
+
+```bash
+psql -h 127.0.0.1 -p 6432 --no-password
+```
+
+You'll see the NodeDB prompt:
+
+```
+psql (15.0, server NodeDB/0.1.0)
+Type "help" for help.
+
+nodedb=#
+```
+
+## 3. Create a Collection
+
+Collections are NodeDB's flexible schema containers. Create one:
+
+```sql
+nodedb=# CREATE COLLECTION documents;
+CREATE COLLECTION
+```
+
+## 4. Insert Documents
+
+Insert documents with mixed field types:
+
+```sql
+nodedb=# INSERT INTO documents (id, title, content)
+VALUES
+  (1, 'AI Safety', 'Alignment research for AGI systems'),
+  (2, 'Vector DBs', 'Semantic search using embeddings');
+INSERT 2
+```
+
+Query back:
+
+```sql
+nodedb=# SELECT id, title FROM documents;
+ id |    title
+----+-------------
+  1 | AI Safety
+  2 | Vector DBs
+(2 rows)
+```
+
+## 5. Insert Vectors
+
+Add an embedding field and search by vector similarity:
+
+```sql
+-- Insert a document with an embedding (384-dimensional vector)
+nodedb=# INSERT INTO documents (id, title, embedding)
+VALUES (3, 'Machine Learning',
+  ARRAY[0.1, 0.2, 0.3, /* ... 381 more values ... */]);
+INSERT 1
+```
+
+Search for similar documents:
+
+```sql
+nodedb=# SELECT id, title,
+  vector_distance(embedding, ARRAY[0.09, 0.21, 0.29, /* ... */]) as distance
+FROM documents
+WHERE embedding IS NOT NULL
+ORDER BY distance
+LIMIT 5;
+
+ id |       title        | distance
+----+--------------------+----------
+  3 | Machine Learning   |     0.02
+(1 row)
+```
+
+## 6. Create a Vector Index
+
+For fast similarity search, create an HNSW index:
+
+```sql
+nodedb=# CREATE VECTOR INDEX idx_embeddings
+  ON documents (embedding)
+  METRIC cosine
+  M 16
+  EF_CONSTRUCTION 200;
+CREATE VECTOR INDEX
+```
+
+Now vector searches automatically use the index. You can search with 10M-scale embeddings in milliseconds.
+
+## 7. Insert Graph Edges
+
+NodeDB has a native Graph engine. Insert nodes and edges:
+
+```sql
+-- Create edges (node_id, related_id, edge_type, weight)
+nodedb=# INSERT INTO edges (source, target, relation_type, weight)
+VALUES
+  (1, 2, 'related', 0.8),
+  (2, 3, 'related', 0.9),
+  (1, 3, 'derived', 0.6);
+INSERT 3
+```
+
+Traverse the graph:
+
+```sql
+nodedb=# SELECT * FROM graph_traverse(1, 'relation_type', 2);
+ node_id | hop | distance
+---------+-----+----------
+       1 |   0 |        0
+       2 |   1 |     0.80
+       3 |   2 |     0.71
+(3 rows)
+```
+
+## 8. Add CRDT State
+
+NodeDB's CRDT engine powers collaborative editing and offline sync:
+
+```sql
+-- Insert collaborative state (version, actor_id, data)
+nodedb=# INSERT INTO collaborative_state (doc_id, actor_id, vector_clock, data)
+VALUES (1, 'client-1', '{"actor-1": 5}',
+  '{"title": "Updated AI Safety", "edits": 5}');
+INSERT 1
+```
+
+## 9. Insert Timeseries Data
+
+Log metrics and events:
+
+```sql
+nodedb=# INSERT INTO metrics (timestamp, metric_name, value, labels)
+VALUES
+  ('2026-03-23T10:00:00Z', 'query_latency_ms', 42, '{"endpoint": "/vector-search"}'),
+  ('2026-03-23T10:00:01Z', 'query_latency_ms', 38, '{"endpoint": "/vector-search"}');
+INSERT 2
+```
+
+Query with time range:
+
+```sql
+nodedb=# SELECT metric_name, AVG(value) as avg_latency, COUNT(*) as count
+FROM metrics
+WHERE timestamp >= '2026-03-23T10:00:00Z'
+  AND metric_name = 'query_latency_ms'
+GROUP BY metric_name;
+
+  metric_name      | avg_latency | count
+-------------------+-------------+-------
+ query_latency_ms  |          40 |     2
+(1 row)
+```
+
+## 10. Use the HTTP API
+
+NodeDB also exposes a REST API on port 6480. In another terminal:
+
+```bash
+# Execute a SQL query
+curl -X POST http://127.0.0.1:6480/query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT id, title FROM documents LIMIT 5"}'
+```
+
+Response:
+
+```json
+{
+  "columns": ["id", "title"],
+  "rows": [
+    [1, "AI Safety"],
+    [2, "Vector DBs"],
+    [3, "Machine Learning"]
+  ],
+  "latency_ms": 2.5
+}
+```
+
+## 11. Check Collections and Schemas
+
+View your collections and their schemas:
+
+```sql
+nodedb=# SHOW COLLECTIONS;
+    collection
+-----------------
+ documents
+ edges
+ collaborative_state
+ metrics
+(4 rows)
+
+nodedb=# DESCRIBE documents;
+    name    |  type   | indexed
+-------------+---------+---------
+ id          | integer | yes
+ title       | text    | no
+ content     | text    | no
+ embedding   | vector  | yes
+(4 rows)
+```
+
+## 12. Clean Up
+
+When done, exit psql:
+
+```sql
+nodedb=# \q
+```
+
+Stop the server with Ctrl+C in the terminal where you started it.
+
+## What's Next?
+
+You've now seen NodeDB's six engines in action: vector search, graph traversal, documents, metadata queries, collaborative state, and timeseries.
+
+- [Insert Data](/getting-started/insert-data) — Learn bulk insert, transactions, and batch operations
+- [Query Data](/getting-started/query-data) — Complex queries, joins, aggregations, window functions
+- [Vector Search](/getting-started/vector-search-intro) — Optimize vector search, filtering, and ranking
+- [Server Configuration](/getting-started/server-config) — Tune ports, memory budgets, and authentication
+- [Docker](/getting-started/docker) — Run NodeDB in containers
+
+## Troubleshooting
+
+**psql: connection refused**: Make sure NodeDB is running and listening on 127.0.0.1:6432.
+
+**Collection not found**: Use `SHOW COLLECTIONS` to see what exists. Collections are created automatically on first INSERT or explicit CREATE COLLECTION.
+
+**Vector search is slow**: Create a vector index with `CREATE VECTOR INDEX`. Without an index, search is O(n) brute force.
+
+**Out of memory**: Reduce the `memory_limit` in server.toml or tune engine budget fractions in `[engines]`.

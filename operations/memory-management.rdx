@@ -1,8 +1,421 @@
 ---
 title: Memory Management
-description: jemalloc arenas, per-engine budgets, OOM prevention.
+description: Allocate and manage memory across engines using jemalloc.
 ---
 
 # Memory Management
 
-TODO
+NodeDB uses jemalloc with per-core arenas and per-engine budgets to prevent OOM and optimize performance.
+
+## Memory Architecture
+
+```
+Total System Memory (32 GB)
+├─ Kernel/OS (2 GB)
+├─ NodeDB Process (28 GB)
+│  ├─ CRDT Engine (512 MB budget)
+│  │  ├─ Core 0 Arena (64 MB)
+│  │  ├─ Core 1 Arena (64 MB)
+│  │  └─ ...
+│  ├─ Vector Engine (1024 MB budget)
+│  │  ├─ Core 0 Arena (128 MB)
+│  │  ├─ Core 1 Arena (128 MB)
+│  │  └─ ...
+│  ├─ Sparse Engine (512 MB budget)
+│  ├─ Timeseries Engine (512 MB budget)
+│  ├─ DataFusion Query Buffer (1 GB)
+│  └─ System/Cache (5 GB)
+```
+
+## jemalloc Configuration
+
+NodeDB uses jemalloc with per-core arenas:
+
+```bash
+# Check jemalloc status
+nodedb --version
+# Output includes "jemalloc enabled: yes"
+
+# View arena count
+nodedb-admin stats | grep "arenas:"
+```
+
+Per-core arenas reduce lock contention:
+
+```
+16 cores = 16 arenas
+Each core allocates from its own arena
+Minimal cross-core locking
+```
+
+## Engine Budgets
+
+Configure memory allocation per engine:
+
+```toml
+[engines]
+crdt_budget_mb = 512
+vector_budget_mb = 1024
+sparse_budget_mb = 512
+timeseries_budget_mb = 512
+```
+
+Total budget: 2.5 GB
+
+System automatically reserves:
+
+- DataFusion spill buffer: 1 GB
+- Query execution buffer: 2 GB
+- Index cache: 512 MB
+- Connection buffers: 256 MB
+- Miscellaneous: 1.2 GB
+
+Total: ~4.5 GB for 32 GB system
+
+Calculate budgets based on workload:
+
+**Vector-heavy (80% vector queries):**
+
+```toml
+[engines]
+vector_budget_mb = 4096    # 50% of 8 GB available
+crdt_budget_mb = 512       # 6%
+sparse_budget_mb = 256     # 3%
+timeseries_budget_mb = 256 # 3%
+# Reserve 38% for system
+```
+
+**Balanced:**
+
+```toml
+[engines]
+vector_budget_mb = 1024
+crdt_budget_mb = 1024
+sparse_budget_mb = 512
+timeseries_budget_mb = 512
+```
+
+## Monitor Memory Usage
+
+Per-engine memory:
+
+```sql
+SELECT
+  engine,
+  ROUND(memory_used_mb / 1024.0, 1) as used_gb,
+  ROUND(memory_limit_mb / 1024.0, 1) as limit_gb,
+  ROUND(100.0 * memory_used_mb / memory_limit_mb, 1) as utilization_pct
+FROM sys.engine_memory;
+```
+
+Example:
+
+```
+engine      | used_gb | limit_gb | utilization_pct
+------------|---------|----------|----------------
+vector      | 850     | 1024     | 83.0
+crdt        | 420     | 512      | 82.0
+sparse      | 310     | 512      | 60.5
+timeseries  | 45      | 512      | 8.8
+```
+
+Real-time memory monitoring:
+
+```bash
+watch -n 1 "psql -c 'SELECT engine, ROUND(memory_used_mb / 1024.0, 1) FROM sys.engine_memory;'"
+```
+
+System memory:
+
+```bash
+free -h
+# Identify swapping, cache status
+
+# Check for page faults
+grep "pgfault\|pgmajfault" /proc/<nodedb_pid>/stat
+```
+
+## Memory Pressure Prevention
+
+### Soft Limits
+
+Enable memory pressure alerts:
+
+```toml
+[memory]
+alert_threshold_pct = 80  -- Alert when engine > 80% full
+```
+
+When threshold reached:
+
+```sql
+SELECT * FROM sys.memory_warnings;
+-- Engine vector approaching limit, consider increasing budget or reducing dataset
+```
+
+Response:
+
+1. Check slow_query_log for expensive operations
+2. Increase budget: `ALTER SYSTEM SET vector_budget_mb = 2048`
+3. Add node to cluster (scale horizontally)
+4. Reduce dataset size or partition
+
+### Hard Limits
+
+When engine reaches budget:
+
+```sql
+INSERT INTO vectors (embedding) VALUES (...)
+-- Error: Vector engine memory limit exceeded
+```
+
+Allocation fails, operation rejected. Database remains stable (no crash).
+
+### OOM Prevention
+
+If system memory pressure detected:
+
+```toml
+[memory]
+oom_prevention = true
+oom_prevention_threshold_pct = 95
+```
+
+When system memory > 95%:
+
+1. Reduce cache sizes
+2. Compact L1 indexes
+3. Spill large queries to disk
+4. Reject new connections
+
+## Per-Core Arena Tuning
+
+View per-core allocation:
+
+```bash
+nodedb-admin stats --arena 0  # Core 0
+nodedb-admin stats --arena 1  # Core 1
+```
+
+Output shows:
+
+```
+Arena 0:
+  Allocated: 256 MB
+  Allocated %: 40%
+  Fragmentation: 8%
+
+Arena 1:
+  Allocated: 128 MB
+  Allocated %: 20%
+  Fragmentation: 5%
+```
+
+If one core allocates much more than others:
+
+- Possible hot core (uneven load)
+- May need CPU affinity adjustment
+- Or rebalance query distribution
+
+## Compaction and Reclamation
+
+Force memory compaction:
+
+```sql
+COMPACT DATABASE;
+```
+
+This triggers:
+
+- Merge of small allocations
+- Flushing of unused memory to OS
+- Takes 5-60 seconds
+
+Monitor compaction impact:
+
+```bash
+# Before compaction
+free -h
+# Mem used: 28 GB
+
+# Run compaction
+psql -c "COMPACT DATABASE;"
+
+# After compaction
+free -h
+# Mem used: 24 GB (freed 4 GB)
+```
+
+Schedule nightly compaction:
+
+```toml
+[memory]
+auto_compact = true
+auto_compact_schedule = "02:00"  # 2 AM
+```
+
+## DataFusion Spill
+
+For large analytical queries:
+
+```toml
+[datafusion]
+spill_enabled = true
+spill_directory = "/var/lib/nodedb/spill"
+spill_threshold_rows = 50000
+spill_partition_size_mb = 256
+```
+
+Query execution:
+
+1. Start with in-memory buffer
+2. If > 50k rows: spill to disk
+3. Continue processing
+4. Merge results
+
+Spill impact:
+
+- Memory: bounded at threshold
+- Latency: +50-200% (disk slower than RAM)
+- IO: disk bandwidth used
+
+Monitor spill:
+
+```sql
+SELECT
+  query_id,
+  spill_events,
+  spill_bytes,
+  latency_increase_pct
+FROM sys.query_spill_stats
+WHERE spill_events > 0;
+```
+
+Tune spill threshold:
+
+- Too low: excessive spilling
+- Too high: risk of OOM
+
+## Memory Warnings and Alerts
+
+Alert when memory approaching limits:
+
+```yaml
+- alert: EngineMemoryHigh
+  expr: |
+    (nodedb_engine_memory_used_bytes / nodedb_engine_memory_limit_bytes) > 0.85
+  for: 5m
+  labels:
+    severity: warning
+
+- alert: EngineMemoryCritical
+  expr: |
+    (nodedb_engine_memory_used_bytes / nodedb_engine_memory_limit_bytes) > 0.95
+  for: 1m
+  labels:
+    severity: critical
+
+- alert: SystemMemoryPressure
+  expr: |
+    node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.1
+  for: 1m
+  labels:
+    severity: critical
+```
+
+Response to alerts:
+
+| Alert | Action |
+|-------|--------|
+| Engine 85% | Monitor, plan upgrade |
+| Engine 95% | Immediate response, increase budget or scale |
+| System 10% free | Risk of OOM, reduce workload immediately |
+
+## Memory Leak Detection
+
+Monitor memory growth over time:
+
+```bash
+# Collect baseline (1 hour)
+for i in {1..60}; do
+  date >> memory.log
+  ps aux | grep nodedb | grep -v grep | awk '{print $6}' >> memory.log
+  sleep 60
+done
+
+# Analyze trend
+tail -30 memory.log | awk '{print $1}' | sort -n | tail -5
+# Should be relatively stable +/- 100 MB
+
+# If continuously increasing: possible leak
+```
+
+Debug memory leak:
+
+```bash
+# Use jemalloc profiling
+export MALLOC_CONF="prof:true,lg_prof_interval:30"
+nodedb --config server.toml
+
+# Generates heap dumps
+# Analyze with jeprof tool
+jeprof --show_bytes --pdf ./nodedb dump.0.0.gz > heap.pdf
+```
+
+## Swap Configuration
+
+Disable swap for predictable latency:
+
+```bash
+sudo swapoff -a
+```
+
+Swap impacts:
+
+- If system swaps: p99 latency increases 100x
+- Hard to detect (small amount looks OK)
+- Disabling swap forces OOM (can be recovered from)
+
+Check if swapping:
+
+```bash
+vmstat 1 5 | grep -v "si\|so"
+# si/so should be 0 (swap in/out)
+```
+
+## Allocation Patterns
+
+**Good allocation pattern:**
+
+```
+Memory usage steady: ▁▂▂▃▂▂▂▃▂
+Spikes during checkpoints: ▁▂▇▂▂▇▂▂
+Returns to normal: ▁▂▂▃▂▂▂▃▂
+```
+
+**Bad allocation pattern:**
+
+```
+Continuous growth: ▁▂▃▄▅▆▇█
+Indicates memory leak
+```
+
+**Thrashing pattern:**
+
+```
+Rapid oscillation: ▂█▂█▂█▂█
+Indicates budget too small, constant spilling
+Solution: increase budget or scale
+```
+
+## Best Practices
+
+- Allocate 50-70% of system memory to NodeDB
+- Reserve 30-50% for OS and system
+- Monitor per-engine utilization
+- Alert at 80%, respond at 85%
+- Use per-core arenas (automatic)
+- Enable spill for large queries
+- Compact nightly
+- Disable swap
+- Test under peak load before production

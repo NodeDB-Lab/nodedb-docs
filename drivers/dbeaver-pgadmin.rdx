@@ -5,4 +5,401 @@ description: Using GUI database tools with NodeDB.
 
 # DBeaver & pgAdmin
 
-TODO
+GUI database tools like DBeaver and pgAdmin connect to NodeDB via the PostgreSQL wire protocol. Both provide schema browsing, query editors, and data visualization.
+
+## DBeaver
+
+### Installation
+
+Download from [dbeaver.io](https://dbeaver.io/download/):
+
+- **DBeaver Community** — Free, open-source (recommended)
+- **DBeaver Pro** — Commercial, additional features
+
+### First Connection
+
+1. Open DBeaver
+2. Click **Database** → **New Database Connection**
+3. Select **PostgreSQL**
+4. Click **Next**
+
+### Connection Settings
+
+Configure with NodeDB details:
+
+| Setting | Value |
+|---|---|
+| Server Host | 127.0.0.1 |
+| Port | 6432 |
+| Database | nodedb |
+| Username | postgres |
+| Password | (your password) |
+
+### Test Connection
+
+1. Click **Test Connection**
+2. If prompted, click **Download** to get PostgreSQL drivers
+3. Connection should succeed
+
+### Browsing Database
+
+Once connected, explore the database tree:
+
+```
+PostgreSQL - nodedb
+├── Schemas
+│   └── public
+│       ├── Tables
+│       │   ├── documents
+│       │   ├── articles
+│       │   └── ...
+│       ├── Views
+│       └── Indexes
+├── System (pg_catalog, etc.)
+└── ...
+```
+
+Right-click on tables to:
+
+- **View Data** — Browse table contents
+- **Edit Data** — Modify rows in-place
+- **Show Definition** — View table schema
+- **New Column** — Add columns
+- **Create Index** — Add indexes
+
+### Query Editor
+
+Write and execute SQL queries:
+
+1. Click **File** → **New** → **SQL Script** (or press Ctrl+Alt+N)
+2. Write your query:
+
+```sql
+SET nodedb.consistency = 'strong';
+SELECT id, title FROM documents WHERE status = 'published' LIMIT 10;
+```
+
+3. Press Ctrl+Enter to execute
+
+Results display in a table below the editor.
+
+### Execution Plans
+
+Analyze slow queries:
+
+1. Select your query
+2. Click **Query** → **Explain Query Plan** (or Ctrl+Shift+E)
+3. View the execution plan tree
+
+Example:
+
+```
+Seq Scan on documents  (cost=0.00..10.00 rows=100)
+  Filter: (status = 'published')
+```
+
+### Data Export
+
+Export table data in various formats:
+
+1. Right-click table → **Export Data**
+2. Choose format: CSV, JSON, XML, SQL INSERT
+3. Configure export options
+4. Save file
+
+### Data Import
+
+Import data from files:
+
+1. Right-click table → **Import Data**
+2. Select CSV, JSON, or other format
+3. Map columns to table fields
+4. Preview and import
+
+### Saved Connections
+
+DBeaver stores connections for quick access:
+
+1. Connections appear in left panel under **Database**
+2. Double-click to connect
+3. Right-click to edit/delete/duplicate connection
+
+Export connections (Ctrl+Shift+E) to share with team.
+
+## pgAdmin
+
+### Installation
+
+Docker (recommended):
+
+```bash
+docker run \
+  --name pgadmin \
+  -e PGADMIN_DEFAULT_EMAIL=admin@example.com \
+  -e PGADMIN_DEFAULT_PASSWORD=password \
+  -p 5050:80 \
+  dpage/pgadmin4:latest
+```
+
+Standalone installation available at [pgadmin.org](https://www.pgadmin.org/download/)
+
+### First Connection
+
+1. Open pgAdmin in browser: http://localhost:5050
+2. Log in with email/password you set
+3. Click **Add New Server**
+
+### Server Registration
+
+Configure connection:
+
+1. **General tab:**
+   - Name: `NodeDB Local` (or similar)
+
+2. **Connection tab:**
+   - Host name: `127.0.0.1`
+   - Port: `6432`
+   - Maintenance database: `nodedb`
+   - Username: `postgres`
+   - Password: (your password)
+
+3. Click **Save**
+
+### Browsing Database
+
+Once registered, server appears in left panel:
+
+```
+Servers
+└── NodeDB Local
+    ├── Databases
+    │   └── nodedb
+    │       ├── Schemas
+    │       │   └── public
+    │       │       ├── Tables
+    │       │       ├── Views
+    │       │       └── Indexes
+    │       ├── Roles
+    │       └── Tablespaces
+```
+
+Click items to view properties and data.
+
+### Query Tool
+
+Execute SQL queries:
+
+1. Right-click server → **Query Tool** (or press Alt+Shift+Q)
+2. Write query in editor
+3. Press F5 (or click **Execute** button)
+
+Example:
+
+```sql
+SET nodedb.consistency = 'strong';
+SELECT COUNT(*) as document_count FROM documents;
+```
+
+### Data Viewer
+
+View and edit table data:
+
+1. Right-click table → **View/Edit Data** → **All Rows**
+2. Table opens in grid view
+3. Edit cells directly and save
+4. Or right-click → **Properties** for table info
+
+### Explain Plan
+
+Analyze query performance:
+
+1. Write query in Query Tool
+2. Click **Explain** button (or press Shift+Ctrl+E)
+3. View plan in **Explain** tab
+
+### Backup & Restore
+
+#### Backup
+
+1. Right-click database → **Backup**
+2. Choose format: Custom (recommended for large DBs) or Plain
+3. Backup downloads
+4. Schedule backups: **Tools** → **Backup (Scheduled)**
+
+#### Restore
+
+1. Right-click database → **Restore**
+2. Select backup file
+3. Configure restore options
+4. Click **Restore**
+
+### Role Management
+
+Create and manage database users:
+
+1. Expand server → **Login/Group Roles**
+2. Right-click → **Create** → **Login/Group Role**
+3. Set username, password, and permissions
+
+Example:
+
+```sql
+CREATE USER app_user WITH PASSWORD 'secure_password';
+GRANT CONNECT ON DATABASE nodedb TO app_user;
+GRANT USAGE ON SCHEMA public TO app_user;
+```
+
+## Common Tasks
+
+### View Table Statistics
+
+DBeaver:
+1. Right-click table → **Show in Navigator**
+2. View statistics in properties panel
+
+pgAdmin:
+1. Click table → **Statistics** tab
+2. View size, row count, etc.
+
+### Create Index
+
+DBeaver:
+1. Expand table → Right-click **Indexes**
+2. **New Index**
+3. Select columns and configure
+4. Save
+
+pgAdmin:
+1. Right-click table → **Create** → **Index**
+2. Name, columns, and options
+3. Save
+
+### View Dependencies
+
+pgAdmin:
+1. Right-click table → **Dependencies**
+2. See other objects that depend on this table
+
+### Monitor Connections
+
+pgAdmin:
+1. **Tools** → **Server** → **Properties**
+2. **Statistics** tab shows active connections
+
+DBeaver:
+1. **Database** → **Show Database Objects**
+2. Filter by connections
+
+## Session Variables
+
+Set NodeDB session variables in query editors:
+
+### DBeaver
+
+```sql
+-- At top of query before other statements
+SET nodedb.consistency = 'strong';
+SET nodedb.tenant_id = 'acme-corp';
+
+-- Your queries follow
+SELECT * FROM documents;
+```
+
+### pgAdmin
+
+Same approach in Query Tool:
+
+```sql
+SET nodedb.consistency = 'strong';
+SELECT * FROM documents;
+```
+
+## Known Limitations
+
+Both tools work well with NodeDB, but some features depend on PostgreSQL system views:
+
+| Feature | Status | Notes |
+|---|---|---|
+| Schema browsing | Full | Works perfectly |
+| Data viewing/editing | Full | All data types supported |
+| SQL queries | Full | All standard SQL works |
+| Indexes | Full | Can create, view, drop |
+| Functions/Procedures | Limited | Not supported by NodeDB |
+| Triggers | Limited | Not supported by NodeDB |
+| Extensions | Limited | Limited extension support |
+| Custom types | Limited | CREATE TYPE not supported |
+| Partitioning | Limited | No partition support |
+
+## Performance Tips
+
+1. **Limit result sets** — Use LIMIT in queries to avoid loading millions of rows
+2. **Use indexes** — Create indexes on frequently queried columns
+3. **Set consistency appropriately** — Use 'eventual' for non-critical reads
+4. **Close unused connections** — pgAdmin may hold many open connections
+5. **Configure connection pool** — For production pgAdmin deployments
+
+## Troubleshooting
+
+### Connection Refused
+
+- Verify NodeDB is running on 127.0.0.1:6432
+- Check firewall allows port 6432
+- Verify credentials
+
+### Password Authentication Failed
+
+- Confirm username/password
+- Check user exists: `psql -U postgres -d nodedb -c "SELECT usename FROM pg_user;"`
+
+### Slow Query Execution
+
+- Use **Explain Plan** to analyze
+- Check if indexes exist on WHERE columns
+- Set consistency to 'eventual' if appropriate
+
+### Out of Memory
+
+pgAdmin can consume memory with large result sets:
+
+- Limit queries with LIMIT clause
+- Close unused connections
+- Restart pgAdmin if memory grows
+
+## Docker Deployment
+
+### DBeaver + NodeDB (Docker Compose)
+
+```yaml
+version: '3'
+services:
+  nodedb:
+    image: nodedb:latest
+    ports:
+      - "6432:6432"
+      - "6480:6480"
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - nodedb
+```
+
+Run:
+
+```bash
+docker-compose up
+```
+
+Access pgAdmin at http://localhost:5050
+
+## Next Steps
+
+- Learn [pgwire features](../pgwire/supported-features.md)
+- Explore [session variables](../pgwire/session-variables.md) for consistency control
+- Review [type mapping](../pgwire/type-mapping.md)
+- Check [psql command-line tool](./psql.md) for scripting

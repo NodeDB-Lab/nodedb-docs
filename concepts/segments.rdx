@@ -1,8 +1,344 @@
 ---
 title: Segments
-description: Immutable segment files with footer checksums and LSN tracking.
+description: Immutable segment files storing HNSW graphs, document collections, and metadata. Footer format with LSN ranges and checksums.
 ---
 
 # Segments
 
-TODO
+Segments are immutable, self-contained files that store data from a logical region. They are created during compaction (L0 → L1) and merged during further compaction (L1 → L2). Segments enable efficient tiering, replication, and crash recovery.
+
+## Segment Structure
+
+Each segment is a binary file with header, content, and footer:
+
+```
+┌────────────────────────────────────────────┐
+│ Segment Header                             │
+│ - Magic number (0xFEEDABCD)               │
+│ - Version (1)                              │
+│ - Engine type (VECTOR, RELATIONAL, etc)   │
+└────────────────────────────────────────────┘
+│                                            │
+│ Content (variable length)                  │
+│ - Data pages (engine-specific format)     │
+│ - Index structures (B-Tree, HNSW, etc)    │
+│                                            │
+└────────────────────────────────────────────┘
+│                                            │
+│ Segment Footer                             │
+│ - format_version: u16 (1)                 │
+│ - created_by: u32 (node ID)               │
+│ - created_at: u64 (unix timestamp)        │
+│ - min_lsn: u64                            │
+│ - max_lsn: u64                            │
+│ - content_checksum: u64 (xxh3)            │
+│ - reserved: 32 B (future use)             │
+│ - footer_length: u32 (96 B)               │
+│ - magic: 0x1122AABB                       │
+└────────────────────────────────────────────┘
+```
+
+### Footer Details
+
+The footer (fixed 96 bytes) is placed at the end and contains metadata:
+
+```rust
+pub struct SegmentFooter {
+    pub format_version: u16,      // Currently 1
+    pub created_by: u32,          // Node ID that created segment
+    pub created_at: u64,          // unix timestamp (ms)
+    pub min_lsn: u64,             // Lowest LSN in segment
+    pub max_lsn: u64,             // Highest LSN in segment
+    pub row_count: u64,           // Total rows/documents
+    pub content_checksum: u64,    // xxHash3 of content
+    pub reserved: [u8; 32],       // Future extensions
+    pub footer_length: u32,       // Always 96 (enables forward compat)
+    pub magic: u32,               // 0x1122AABB (footer marker)
+}
+```
+
+### Magic Numbers
+
+- **Header magic**: `0xFEEDABCD` — Marks start of segment
+- **Footer magic**: `0x1122AABB` — Marks end of segment (enables recovery if file is corrupted mid-read)
+
+### Checksums
+
+- **Content checksum**: xxHash3 of entire content section (fast, not cryptographic)
+- **LSN range**: Enable segment validation without reading entire file
+
+## Segment Types
+
+Different engines produce segments with different internal formats:
+
+### Vector Segments
+
+Contains HNSW graph data:
+
+```
+Header
+├─ HNSW metadata
+│  └─ num_vectors: u64
+│     num_layers: u32
+│     m: u16 (neighbor count)
+│
+├─ Layer 0 (full connectivity)
+│  ├─ Node 0: [neighbor_id, neighbor_id, ...]
+│  ├─ Node 1: [...]
+│  └─ ...
+│
+├─ Layer 1 (sparser)
+│  ├─ Node 0: [neighbor_id, ...]
+│  └─ ...
+│
+├─ Layer N (top level, single entry point)
+│  └─ Node X: []
+│
+└─ Vector payloads (mmap-friendly, page-aligned)
+   ├─ Vector 0: [f32; 1536]
+   ├─ Vector 1: [f32; 1536]
+   └─ ...
+
+Footer
+```
+
+### Relational Segments
+
+Contains redb B-Tree data:
+
+```
+Header
+├─ Table metadata (name, column info)
+│
+├─ B-Tree root + internal nodes
+│
+├─ B-Tree leaf nodes (sorted by key)
+│
+├─ Document payloads (MessagePack blobs)
+│
+└─ Index data (if secondary indexes included)
+
+Footer
+```
+
+### Graph Segments
+
+Contains CSR (Compressed Sparse Row) adjacency data:
+
+```
+Header
+├─ CSR metadata
+│  └─ num_nodes: u64
+│     num_edges: u64
+│
+├─ Offset array (row indices)
+│  └─ [0, 5, 12, 18, ..., num_edges]
+│
+├─ Edge data (src, dst, label, properties)
+│  └─ [(src0, dst0, label0, props0), ...]
+│
+└─ Edge properties (if any)
+
+Footer
+```
+
+## Segment Naming
+
+Segments are named by their LSN range:
+
+```
+segment_{min_lsn:020d}_{max_lsn:020d}.{engine}.seg
+
+Examples:
+- segment_0000000000000000_0000000000001000.vector.seg
+- segment_0000000000001000_0000000000002000.relational.seg
+- segment_0000000000002000_0000000000003000.graph.seg
+```
+
+## Segment Lifecycle
+
+### 1. Creation (Compaction)
+
+During L0 → L1 flush or L1 merge:
+
+```
+Select immutable memtable or segments to merge
+  ↓
+Read data and rebuild indexes (if needed)
+  ↓
+Write content to temp file
+  ↓
+Compute footer
+  ↓
+Append footer to temp file
+  ↓
+Fsync and rename to final name: segment_...seg
+  ↓
+Register in segment manifest
+```
+
+### 2. Active Use
+
+```
+Segment is registered in manifest
+Data Plane can read it via mmap (L1) or S3 fetch (L2)
+For queries, Data Plane:
+  1. Load segment footer (first read: 96 B, gets min/max LSN)
+  2. Validate checksum
+  3. If valid: mmap or fetch content
+  4. Execute query
+```
+
+### 3. Archival (L1 → L2)
+
+Old segments are compacted to Parquet and uploaded to S3:
+
+```
+Select L1 segments to compact
+  ↓
+Read content, deserialize to columnar format
+  ↓
+Write Parquet to temp S3 object
+  ↓
+Update S3 manifest
+  ↓
+Local segment can be deleted
+```
+
+### 4. Deletion
+
+After archival and replication lag clears:
+
+```
+WAL segment: Delete local file (after S3 archived)
+L1 segment: Delete local file (after Parquet uploaded)
+L2 segment: Maintain in S3 (retention policy-based)
+```
+
+## Crash-Safe Validation
+
+On startup, Node DB validates segments:
+
+```rust
+fn validate_segment(path: &Path) -> Result<SegmentMetadata> {
+    let file = File::open(path)?;
+
+    // Read footer (seek to end - 96 bytes)
+    let footer = read_footer(&file)?;
+
+    // Validate footer magic
+    if footer.magic != 0x1122AABB {
+        return Err("Invalid footer magic");
+    }
+
+    // Validate content checksum
+    let content_hash = xxh3_hash(read_content(&file)?);
+    if content_hash != footer.content_checksum {
+        return Err("Checksum mismatch (file corruption)");
+    }
+
+    Ok(SegmentMetadata {
+        min_lsn: footer.min_lsn,
+        max_lsn: footer.max_lsn,
+        row_count: footer.row_count,
+        ...
+    })
+}
+```
+
+If a segment fails validation:
+- Data Plane skips it (won't query it)
+- Control Plane may mark shard `DEGRADED`
+- Request routed to replica
+
+## Segment Metadata
+
+Each segment's metadata is tracked in a manifest:
+
+```json
+{
+    "cluster_id": "abc123",
+    "node_id": 0,
+    "segments": [
+        {
+            "name": "segment_0000000000000000_0000000000001000.vector.seg",
+            "engine": "vector",
+            "min_lsn": 0,
+            "max_lsn": 4096,
+            "row_count": 1000,
+            "file_size_bytes": 1048576,
+            "created_at": "2025-03-23T10:30:00Z",
+            "created_by": 0,
+            "status": "active",
+            "checksum": "0xaabbccddeeff"
+        }
+    ]
+}
+```
+
+Status values: `active` (queryable), `archived` (moved to S3), `deleted` (gone).
+
+## Segment Compaction Strategy
+
+NodeDB uses a tiered compaction strategy (LSM-style):
+
+```
+Level 0: Recent segments (< 1 hour old)
+  Trigger compaction: 4+ segments
+
+Level 1: Warmer segments (1 hour - 1 day old)
+  Trigger compaction: 10+ segments
+  Output: Larger segments (multiple L0 merges)
+
+Level 2: Cold segments (1+ days old)
+  Trigger: Manual or threshold-based
+  Output: Parquet to S3
+
+Delete: Segments > retention policy
+```
+
+This keeps query performance stable (reasonable number of segments to check) while minimizing write amplification.
+
+## Mmap Safety with Segments
+
+L1 segments are mmap'd into the Data Plane address space:
+
+```
+Segment file on disk: 1 GB
+  ↓
+mmap(segment_fd, 0, 1GB, PROT_READ, MAP_SHARED)
+  ↓
+Virtual address: [seg_ptr, seg_ptr + 1GB)
+  ↓
+Access: uint64* value = *(seg_ptr + offset)
+  ↓
+Kernel handles page faults transparently
+  ↓
+If page not resident: fetch from disk, continue
+```
+
+Segment files are **immutable** after creation, so mmap safety is guaranteed (no concurrent writers can corrupt the mapping).
+
+## Segment Replication
+
+In a replicated cluster, segments are replicated across nodes:
+
+```
+Leader node:
+  - Creates segment locally
+  - Registers in manifest
+  - Broadcasts segment metadata to followers
+
+Follower nodes:
+  - Fetch segment content via QUIC
+  - mmap locally
+  - Register in manifest
+  - Can serve queries immediately
+
+Query routing:
+  - Control Plane reads segment metadata
+  - Segments are replicated; can query any replica
+  - Latency: Same (all have mmap'd segment)
+```
+
+If segment is corrupted on one replica, quorum-replicated reads fetch from another replica.

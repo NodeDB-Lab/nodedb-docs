@@ -1,8 +1,293 @@
 ---
-title: Fusion Search
-description: Reciprocal Rank Fusion across vector, sparse, and metadata engines.
+title: Hybrid Fusion Search
+description: Reciprocal Rank Fusion combining vector, text, and structured search.
 ---
 
-# Fusion Search
+# Hybrid Fusion Search
 
-TODO
+Fusion combines results from multiple engines (vector, text, structured) using Reciprocal Rank Fusion (RRF) to create rankings that leverage strengths of each approach.
+
+## RRF (Reciprocal Rank Fusion)
+
+**Formula**: Combine multiple rankings into unified score.
+
+```
+RRF_score(d) = Σ 1 / (rank_i(d) + k)
+
+Where:
+  d = document
+  rank_i(d) = rank of d in result set i
+  k = constant (usually 60 or 100)
+```
+
+**Intuition**: Documents ranked highly by multiple methods get highest combined scores.
+
+## Two-Engine Fusion: Vector + BM25
+
+**Pattern**: Semantic similarity + text relevance.
+
+```sql
+-- Find documents semantically similar AND text-relevant
+WITH vector_results AS (
+  SELECT id, vector_distance(embedding, query_vec) as vec_dist,
+         ROW_NUMBER() OVER (ORDER BY vec_dist) as vec_rank
+  FROM documents
+  ORDER BY vec_dist LIMIT 100
+),
+text_results AS (
+  SELECT id, bm25_score(content, 'query') as text_score,
+         ROW_NUMBER() OVER (ORDER BY text_score DESC) as text_rank
+  FROM documents
+  WHERE bm25_score(content, 'query') > 0
+  ORDER BY text_score DESC LIMIT 100
+),
+fused AS (
+  SELECT
+    COALESCE(v.id, t.id) as id,
+    1.0 / (COALESCE(v.vec_rank, 1000) + 60) as rrf_vector,
+    1.0 / (COALESCE(t.text_rank, 1000) + 60) as rrf_text,
+    (1.0 / (COALESCE(v.vec_rank, 1000) + 60) +
+     1.0 / (COALESCE(t.text_rank, 1000) + 60)) as rrf_score
+  FROM vector_results v
+  FULL OUTER JOIN text_results t ON v.id = t.id
+)
+SELECT id, rrf_score
+FROM fused
+ORDER BY rrf_score DESC
+LIMIT 20;
+```
+
+**Trade-off**: Balanced relevance from semantic + keyword perspectives.
+
+## Three-Engine Fusion: Vector + BM25 + Structured
+
+**Pattern**: Semantic + text + metadata.
+
+```sql
+-- Combine all three signals
+WITH semantic AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY vector_distance(...)) as rank
+  FROM documents
+  ORDER BY vector_distance(...) LIMIT 100
+),
+text AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY bm25_score(...) DESC) as rank
+  FROM documents
+  WHERE bm25_score(...) > 0
+  ORDER BY bm25_score(...) DESC LIMIT 100
+),
+metadata AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY created_date DESC) as rank
+  FROM documents
+  WHERE status = 'published'
+  ORDER BY created_date DESC LIMIT 100
+),
+fused AS (
+  SELECT
+    COALESCE(s.id, t.id, m.id) as id,
+    (1.0 / (COALESCE(s.rank, 200) + 60) +
+     1.0 / (COALESCE(t.rank, 200) + 60) +
+     1.0 / (COALESCE(m.rank, 200) + 60)) as rrf_score
+  FROM semantic s
+  FULL OUTER JOIN text t ON s.id = t.id
+  FULL OUTER JOIN metadata m ON s.id = m.id
+)
+SELECT id, rrf_score
+FROM fused
+ORDER BY rrf_score DESC
+LIMIT 20;
+```
+
+## Weighted RRF
+
+**Customize weights** to prioritize certain ranking signals:
+
+```
+Weighted_RRF = w_v / (vec_rank + 60) + w_t / (text_rank + 60)
+
+w_v = 1.0 (semantic importance)
+w_t = 2.0 (text importance, double weight)
+```
+
+```sql
+SELECT
+  id,
+  (1.0 * (1.0 / (COALESCE(v.rank, 200) + 60)) +
+   2.0 * (1.0 / (COALESCE(t.rank, 200) + 60))) as weighted_rrf
+FROM semantic v
+FULL OUTER JOIN text t ON v.id = t.id
+ORDER BY weighted_rrf DESC
+LIMIT 20;
+```
+
+**Use cases**:
+
+```
+-- Prefer exact text matches
+w_vector: 0.5, w_text: 2.0
+
+-- Prefer semantic relevance
+w_vector: 2.0, w_text: 0.5
+
+-- Balanced
+w_vector: 1.0, w_text: 1.0
+```
+
+## Vector + Graph Fusion
+
+**Pattern**: Semantic search + graph structure.
+
+```sql
+-- Find similar documents and related documents
+WITH similar_docs AS (
+  SELECT doc_id, vector_distance(embedding, query_vec) as vec_dist,
+         ROW_NUMBER() OVER (ORDER BY vec_dist) as vec_rank
+  FROM documents
+  ORDER BY vec_dist LIMIT 50
+),
+related_via_graph AS (
+  SELECT DISTINCT to_id as doc_id,
+         ROW_NUMBER() OVER (ORDER BY distance) as graph_rank
+  FROM graph_bfs(start_nodes => (SELECT ARRAY_AGG(doc_id) FROM similar_docs),
+                 depth => 2,
+                 direction => 'both')
+),
+fused AS (
+  SELECT
+    COALESCE(v.doc_id, g.doc_id) as doc_id,
+    1.0 / (COALESCE(v.vec_rank, 100) + 60) as rrf_vector,
+    1.0 / (COALESCE(g.graph_rank, 100) + 60) as rrf_graph,
+    (1.0 / (COALESCE(v.vec_rank, 100) + 60) +
+     1.0 / (COALESCE(g.graph_rank, 100) + 60)) as rrf_score
+  FROM similar_docs v
+  FULL OUTER JOIN related_via_graph g ON v.doc_id = g.doc_id
+)
+SELECT doc_id, rrf_score FROM fused
+ORDER BY rrf_score DESC LIMIT 20;
+```
+
+## Text + Metadata Fusion
+
+**Pattern**: BM25 + structured filters (no vector).
+
+```sql
+-- Combine full-text relevance + metadata filtering
+WITH text_results AS (
+  SELECT id, bm25_score(content, 'machine learning') as text_score,
+         ROW_NUMBER() OVER (ORDER BY text_score DESC) as text_rank
+  FROM documents
+  WHERE bm25_score(content, 'machine learning') > 0
+  ORDER BY text_score DESC LIMIT 100
+),
+metadata_results AS (
+  SELECT id, created_date,
+         ROW_NUMBER() OVER (ORDER BY created_date DESC) as date_rank
+  FROM documents
+  WHERE category = 'research'
+    AND language = 'english'
+  ORDER BY created_date DESC LIMIT 100
+),
+fused AS (
+  SELECT
+    COALESCE(t.id, m.id) as id,
+    (1.0 / (COALESCE(t.text_rank, 200) + 60) +
+     0.5 * (1.0 / (COALESCE(m.date_rank, 200) + 60))) as rrf_score
+  FROM text_results t
+  FULL OUTER JOIN metadata_results m ON t.id = m.id
+)
+SELECT id, rrf_score FROM fused
+ORDER BY rrf_score DESC LIMIT 20;
+```
+
+## Fusion with Explicit Scoring
+
+**Alternative to RRF**: Normalize and add scores directly.
+
+```sql
+-- Normalize each score to 0-1 range, then add
+WITH all_scores AS (
+  SELECT
+    v.id,
+    CASE WHEN v.vec_dist IS NOT NULL
+      THEN 1.0 - (v.vec_dist / (SELECT MAX(vector_distance(...)) FROM documents))
+      ELSE 0.0
+    END as norm_vector,
+    CASE WHEN t.text_score IS NOT NULL
+      THEN t.text_score / (SELECT MAX(bm25_score(...)) FROM documents)
+      ELSE 0.0
+    END as norm_text,
+    0.5 * norm_vector + 0.5 * norm_text as combined_score
+  FROM vector_results v
+  FULL OUTER JOIN text_results t ON v.id = t.id
+)
+SELECT id, combined_score FROM all_scores
+ORDER BY combined_score DESC LIMIT 20;
+```
+
+## Best Practices
+
+**Choose appropriate k constant**: Balances impact of rank position.
+
+```
+k = 60:  Steep falloff (rank 1 vs 2 matters a lot)
+k = 100: Gradual falloff (more documents contribute meaningfully)
+k = 200: Very gradual (almost all documents in top 200 matter equally)
+```
+
+**Use weights conservatively**: Avoid extreme weights (10:1 ratios).
+
+```
+Good:   [1.0, 1.5, 2.0] (vectors have 2x more impact than third signal)
+Bad:    [1.0, 10.0]     (second signal dominates completely, first ignored)
+```
+
+**Validate against baselines**: Ensure fusion outperforms single-method ranking.
+
+```
+Query: "machine learning for NLP"
+
+Single rankings:
+  Vector only: mean reciprocal rank = 0.23
+  BM25 only: mean reciprocal rank = 0.31
+
+Fusion:
+  Vector + BM25: mean reciprocal rank = 0.42 (better!)
+```
+
+## Examples
+
+**Research paper discovery (academic)**:
+
+```sql
+-- Combine semantic similarity, citation count, recency
+WITH semantic_papers AS (
+  SELECT paper_id, ROW_NUMBER() OVER (ORDER BY vector_distance(...) ASC) as sem_rank
+  FROM papers ORDER BY vector_distance(...) LIMIT 100
+),
+text_papers AS (
+  SELECT paper_id, ROW_NUMBER() OVER (ORDER BY bm25_score(...) DESC) as text_rank
+  FROM papers
+  WHERE bm25_score(abstract, 'neural networks') > 0.5
+  ORDER BY bm25_score(...) DESC LIMIT 100
+),
+citation_papers AS (
+  SELECT paper_id, ROW_NUMBER() OVER (ORDER BY citation_count DESC) as cite_rank
+  FROM papers WHERE citation_count > 10
+  ORDER BY citation_count DESC LIMIT 100
+),
+fused AS (
+  SELECT
+    COALESCE(s.paper_id, t.paper_id, c.paper_id) as paper_id,
+    (1.0 / (COALESCE(s.sem_rank, 200) + 60) +
+     1.5 / (COALESCE(t.text_rank, 200) + 60) +  -- boost text relevance
+     0.5 / (COALESCE(c.cite_rank, 200) + 60)) as rrf_score
+  FROM semantic_papers s
+  FULL OUTER JOIN text_papers t ON s.paper_id = t.paper_id
+  FULL OUTER JOIN citation_papers c ON s.paper_id = c.paper_id
+)
+SELECT paper_id, title, authors FROM fused
+JOIN papers ON fused.paper_id = papers.id
+ORDER BY rrf_score DESC LIMIT 20;
+```
+
+See [Vector Engine](/engines/vector/overview) for semantic search and [Full-Text Search](/engines/sparse/fulltext-bm25) for text ranking.

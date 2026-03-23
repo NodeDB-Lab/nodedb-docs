@@ -1,8 +1,301 @@
 ---
-title: Insert Data
-description: Insert documents, vectors, and CRDT state.
+title: Inserting Data
+description: Insert, upsert, and bulk load data into NodeDB.
 ---
 
-# Insert Data
+# Inserting Data
 
-TODO
+NodeDB supports standard SQL INSERT for single and batch operations, UPSERT for atomic updates, and bulk loading from CSV or JSON files.
+
+## Single Row Insert
+
+Insert a single record:
+
+```sql
+INSERT INTO documents (id, title, content)
+VALUES (1, 'Hello World', 'This is my first document');
+```
+
+NodeDB returns the number of rows inserted:
+
+```
+INSERT 1
+```
+
+## Multiple Rows (Batch Insert)
+
+Insert multiple rows in one statement:
+
+```sql
+INSERT INTO documents (id, title, content) VALUES
+  (1, 'First Post', 'Content of first'),
+  (2, 'Second Post', 'Content of second'),
+  (3, 'Third Post', 'Content of third');
+```
+
+Response:
+
+```
+INSERT 3
+```
+
+Batch inserts are atomic — either all rows succeed or all fail.
+
+## Insert with Vectors
+
+Insert documents with embeddings for semantic search:
+
+```sql
+INSERT INTO documents (id, title, embedding) VALUES
+  (1, 'Machine Learning',
+    ARRAY[0.1, 0.2, 0.3, /* ... 381 more values ... */]),
+  (2, 'Deep Learning',
+    ARRAY[0.15, 0.25, 0.35, /* ... 381 more values ... */]);
+```
+
+Vector dimensions must match the schema. If your embedding is a Python list, convert it to a SQL array:
+
+```python
+# Python code to generate SQL
+import json
+embedding = [0.1, 0.2, 0.3, ...]  # 384 dimensions
+sql = f"INSERT INTO docs (id, embedding) VALUES (1, ARRAY{embedding})"
+```
+
+## Insert with Graph Edges
+
+Add graph relationships:
+
+```sql
+INSERT INTO edges (source, target, relation_type, weight) VALUES
+  (1, 2, 'related', 0.8),
+  (2, 3, 'cites', 0.9),
+  (1, 3, 'derived_from', 0.6);
+```
+
+## UPSERT (Insert or Update)
+
+Insert a row, or update if it already exists:
+
+```sql
+INSERT INTO documents (id, title, content)
+VALUES (1, 'Updated Title', 'Updated content')
+ON CONFLICT (id) DO UPDATE SET
+  title = EXCLUDED.title,
+  content = EXCLUDED.content,
+  updated_at = CURRENT_TIMESTAMP;
+```
+
+This is equivalent to:
+- If `id=1` exists: update `title` and `content`
+- If `id=1` doesn't exist: insert a new row
+
+## Bulk Loading from CSV
+
+Create a CSV file `documents.csv`:
+
+```csv
+id,title,content
+1,First Post,Content goes here
+2,Second Post,More content
+3,Third Post,Even more
+```
+
+Load it:
+
+```sql
+\COPY documents (id, title, content) FROM 'documents.csv' WITH (FORMAT csv, HEADER);
+```
+
+Or from the HTTP API:
+
+```bash
+curl -X POST http://127.0.0.1:6480/bulk-load \
+  -F file=@documents.csv \
+  -F collection=documents
+```
+
+## Bulk Loading from JSON
+
+For JSON arrays (one row per line):
+
+Create `documents.jsonl`:
+
+```json
+{"id": 1, "title": "First", "content": "Content"}
+{"id": 2, "title": "Second", "content": "More"}
+{"id": 3, "title": "Third", "content": "Even more"}
+```
+
+Load:
+
+```bash
+curl -X POST http://127.0.0.1:6480/bulk-load \
+  -F file=@documents.jsonl \
+  -F collection=documents \
+  -F format=jsonl
+```
+
+## Bulk Vectors from CSV
+
+For embeddings, encode vectors as JSON arrays in CSV:
+
+```csv
+id,title,embedding
+1,Post A,"[0.1, 0.2, 0.3, ...]"
+2,Post B,"[0.15, 0.25, 0.35, ...]"
+```
+
+Load with:
+
+```bash
+curl -X POST http://127.0.0.1:6480/bulk-load \
+  -F file=@vectors.csv \
+  -F collection=documents
+```
+
+## Insert with Default Values
+
+Use default values if defined in the schema:
+
+```sql
+INSERT INTO users (email, username) VALUES ('alice@example.com', 'alice');
+```
+
+If the schema defines `created_at timestamp DEFAULT CURRENT_TIMESTAMP`, it will be filled automatically.
+
+Or explicitly set defaults:
+
+```sql
+INSERT INTO documents (id, title, created_at) VALUES
+  (1, 'A Document', DEFAULT);
+```
+
+## Insert with RETURNING Clause
+
+Get back the inserted rows:
+
+```sql
+INSERT INTO documents (id, title) VALUES (1, 'My Doc')
+RETURNING id, title, created_at;
+```
+
+Output:
+
+```
+ id |  title | created_at
+----+--------+------------------------
+  1 | My Doc | 2026-03-23T10:00:00Z
+```
+
+## Transactions
+
+Wrap multiple inserts in a transaction for atomicity:
+
+```sql
+BEGIN TRANSACTION;
+
+INSERT INTO documents (id, title) VALUES (1, 'Doc One');
+INSERT INTO documents (id, title) VALUES (2, 'Doc Two');
+
+COMMIT;
+```
+
+If any insert fails, roll back everything:
+
+```sql
+BEGIN TRANSACTION;
+
+INSERT INTO documents (id, title) VALUES (1, 'Doc One');
+INSERT INTO documents (id, title) VALUES (1, 'Duplicate!');  -- Error
+
+ROLLBACK;
+```
+
+Neither row was inserted.
+
+## Error Handling
+
+**Duplicate primary key:**
+
+```sql
+INSERT INTO documents (id, title) VALUES (1, 'First');
+INSERT INTO documents (id, title) VALUES (1, 'Duplicate');
+-- ERROR: duplicate key "id" (1)
+```
+
+Use UPSERT to handle duplicates gracefully.
+
+**Type mismatch:**
+
+```sql
+INSERT INTO documents (id, title) VALUES ('not-a-number', 'Title');
+-- ERROR: cannot cast 'not-a-number' to integer
+```
+
+**Missing NOT NULL field:**
+
+```sql
+INSERT INTO documents (id) VALUES (1);  -- title is NOT NULL
+-- ERROR: column "title" of relation "documents" does not allow null values
+```
+
+## Performance Tips
+
+1. **Batch inserts**: Insert 1000+ rows per statement for better throughput.
+
+2. **Disable indexes temporarily**: For very large bulk loads, temporarily disable indexes:
+   ```sql
+   ALTER COLLECTION documents DISABLE INDEX idx_embedding;
+   -- Load data
+   ALTER COLLECTION documents ENABLE INDEX idx_embedding;
+   ```
+
+3. **Use HTTP bulk-load API**: For CSV/JSON files, the HTTP endpoint is faster than SQL.
+
+4. **Parallel inserts**: Use multiple connections to insert into different partitions simultaneously.
+
+## Examples
+
+### Insert 1 Million Vectors
+
+```bash
+# Generate 1M vectors as JSONL
+python3 -c "
+import json
+for i in range(1000000):
+    embedding = [float(j) / 1000 for j in range(384)]
+    print(json.dumps({'id': i, 'title': f'Doc {i}', 'embedding': embedding}))
+" > vectors.jsonl
+
+# Load into NodeDB
+curl -X POST http://127.0.0.1:6480/bulk-load \
+  -F file=@vectors.jsonl \
+  -F collection=documents
+```
+
+### Transactional Graph Insert
+
+```sql
+BEGIN;
+
+-- Insert nodes
+INSERT INTO graph_nodes (node_id, label) VALUES
+  (1, 'Topic A'),
+  (2, 'Topic B'),
+  (3, 'Topic C');
+
+-- Insert edges connecting them
+INSERT INTO graph_edges (source, target, relation) VALUES
+  (1, 2, 'related'),
+  (2, 3, 'cites'),
+  (1, 3, 'derived');
+
+COMMIT;
+```
+
+## Next Steps
+
+- [Query Data](/getting-started/query-data) — Retrieve and filter your data
+- [Vector Search](/getting-started/vector-search-intro) — Semantic search on embeddings
+- [Server Configuration](/getting-started/server-config) — Tune bulk loading performance

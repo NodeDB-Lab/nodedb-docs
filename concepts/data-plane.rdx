@@ -1,8 +1,312 @@
 ---
 title: Data Plane
-description: Thread-per-Core + io_uring: physical execution, storage I/O.
+description: Thread-per-Core (TPC) architecture with io_uring I/O submission. Physical execution, SIMD math, storage access.
 ---
 
 # Data Plane
 
-TODO
+The Data Plane is where computation happens. It runs on dedicated CPU cores with io_uring for high-throughput, low-latency I/O submission. Every core is a shared-nothing shard that processes a strict FIFO queue of requests from the Control Plane and returns results via the SPSC bridge.
+
+## Thread-per-Core Model
+
+One isolated event loop per CPU core. No shared memory, no locks, deterministic execution.
+
+**Core Layout:**
+- Core 0: SPSC request queue → Process request → Submit io_uring → Poll completions → Return response
+- Core 1: (independent) Same pattern
+- Core 2: (independent) Same pattern
+- ...
+
+**Why this design?**
+- No lock contention (each core owns its memory)
+- No context switching (one task per core, no threads competing)
+- Deterministic latency (no GC pauses, no preemption)
+- Scales linearly with cores (no Amdahl's law ceiling)
+
+**Isolation Rules:**
+
+```
+CORE 0                          CORE 1
+┌──────────────┐               ┌──────────────┐
+│ Local memory │               │ Local memory │
+│ jemalloc     │               │ jemalloc     │
+│ arena 0      │               │ arena 1      │
+└──────────────┘               └──────────────┘
+        ↑                               ↑
+   NO SHARING                     NO SHARING
+   (except via SPSC)              (except via SPSC)
+```
+
+Each core has its own jemalloc arena. Cross-core allocation is forbidden; if Core 0 needs memory that Core 1 allocated, the value must be copied or referenced via Arc.
+
+## Core Loop
+
+Each Data Plane core runs an event loop similar to this:
+
+```rust
+loop {
+    // Process SPSC requests
+    while let Some(request) = spsc_receive_nonblock() {
+        // Deadline check
+        if Instant::now() > request.deadline {
+            respond(Status::DeadlineExceeded);
+            continue;
+        }
+
+        // Catch panics per-request
+        match catch_unwind(|| execute_plan(&request.plan)) {
+            Ok(result) => {
+                respond_with_result(result);
+            }
+            Err(_panic) => {
+                respond(Status::Error(Internal));
+                health_watchdog.record_panic();
+                // Shard marked degraded if 3 panics in 60s
+            }
+        }
+    }
+
+    // Poll io_uring completions
+    while let Some(completion) = uring.poll() {
+        // Handle read/write completion
+        handle_io_completion(completion);
+    }
+
+    // Pre-fetch pages for upcoming requests
+    prefetch_next_batch();
+
+    // Compact if idle and debt > threshold
+    if idle && compaction_debt > 20% {
+        run_compaction();
+    }
+}
+```
+
+### Deadline Enforcement
+
+Every request carries an absolute deadline (e.g., now + 5 seconds). The Data Plane MUST abandon work after the deadline:
+
+```rust
+if Instant::now() > request.deadline {
+    respond(Status::DeadlineExceeded);
+}
+```
+
+This is hard—no graceful shutdown, no best-effort completion. Deadline exceeded = immediate abort.
+
+### Panic Isolation (CoreHealthWatchdog)
+
+If a request panics, the core doesn't crash. Instead:
+
+```rust
+match catch_unwind(|| execute_request()) {
+    Ok(result) => respond_with_result(result),
+    Err(panic_value) => {
+        respond(Status::Error(Internal));
+        watchdog.record_panic();
+
+        if watchdog.panic_count_in_60s > 3 {
+            // This shard is unhealthy; mark degraded
+            // New requests routed to replicas
+        }
+    }
+}
+```
+
+Three panics in 60 seconds = shard marked `DEGRADED`. The router on Control Plane then directs new requests to replica shards, giving this shard time to recover (or be manually restarted).
+
+## Physical Execution
+
+The Data Plane executes serialized physical plans dispatched from the Control Plane. Plans are opaque at the bridge layer but contain concrete operators:
+
+### Vector Search Execution
+
+```
+Input: VectorSearchPlan {
+  collection_id: UUID,
+  embedding: Arc<[f32]>,  // query vector
+  k: usize,               // top-k results
+  filter_bitmap: Arc<RoaringBitmap>,  // pre-filter: only search these doc IDs
+  metric: Cosine,         // distance metric
+}
+
+Execution:
+1. Load HNSW graph from L1 mmap (routing layers already in L0 cache)
+2. Start at entry point
+3. For each candidate:
+   - Check bitmap: if bit=0, skip (SIMD)
+   - Compute distance via numr (AVX-512 cosine)
+   - Update top-k heap
+4. Continue traversal until no improvement
+5. Serialize top-k results as Arrow batch
+6. Return via SPSC response
+```
+
+### Graph Traversal Execution
+
+```
+Input: GraphTraversalPlan {
+  start_node_ids: Vec<DocumentId>,
+  edge_label: String,
+  direction: In | Out | Both,
+  depth: u32,
+  node_filter: Option<Predicate>,
+}
+
+Execution:
+1. Load CSR adjacency index from L0 (hot, protected)
+2. Initialize BFS queue with start nodes
+3. For each level:
+   - For each frontier node:
+     - Look up neighbors in CSR[node_id]
+     - Apply node filter (SIMD bitmap if available)
+     - Add non-visited neighbors to next level
+     - Check depth limit
+4. Collect all visited nodes
+5. Serialize as Arrow batch (node_id, distance_from_start, path)
+6. If traversal crosses shard boundary:
+   - Emit scatter request back through SPSC
+   - Await gather response from target shard
+   - Resume frontier expansion
+```
+
+### Join Execution
+
+**Co-located Join (same shard key):**
+
+```
+Shard owns rows from both tables filtered to join key range
+Hash table built from left table in L0
+Stream right table, probe hash table
+Emit join results
+(All in one core, no cross-shard communication)
+```
+
+**Broadcast Join (small side replicated):**
+
+```
+Control Plane broadcasts small table to all Data Plane cores
+Each core builds hash table in local arena
+Processes large table locally
+Each core returns partial results
+Control Plane merges
+```
+
+## io_uring Integration
+
+The Data Plane submits all I/O via io_uring, a kernel-level interface for asynchronous batch I/O.
+
+**I/O Operations:**
+
+1. **WAL Append** (write to O_DIRECT segment)
+   ```rust
+   let sqe = uring.prepare_write(
+       fd: wal_fd,
+       buf: &record_bytes,
+       offset: current_wal_offset
+   );
+   uring.submit();
+   ```
+
+2. **Read from L1 mmap** (pre-fetch pages before compute)
+   ```rust
+   let sqe = uring.prepare_read(
+       fd: segment_fd,
+       buf: &mut pre_fetch_buffer,
+       offset: page_aligned_offset
+   );
+   ```
+
+3. **Completion Polling**
+   ```rust
+   while let Some(cqe) = uring.poll() {
+       handle_completion(cqe);  // non-blocking
+   }
+   ```
+
+All I/O is submitted in batches, then polled. No blocking reads. When an io_uring read is waiting, the core processes other requests.
+
+### Page Fault Hazard & Pre-fetching
+
+**Problem:** A major page fault on an mmap'd region blocks the TPC reactor thread until the page is fetched from disk. This stalls all in-flight io_uring submissions on that core.
+
+**Solution:** Asynchronous pre-fetching.
+
+Before a request accesses an mmap region, the Data Plane **pre-fetches** the pages using:
+1. `io_uring IORING_OP_READ` to pull pages into page cache
+2. OR `madvise(MADV_WILLNEED)` for sequential access patterns
+
+```rust
+// Before HNSW traversal
+prefetch_hnsw_pages(segment_fd, start_offset, num_pages);
+
+// Data Plane polls io_uring completions
+// When complete, the pages are resident
+// Now access mmap'd HNSW graph without page faults
+```
+
+**Metrics:**
+- Major page faults per core per minute
+- Pre-fetch miss rate (requests that find pages not yet resident)
+- Pre-fetch efficiency (pages fetched that weren't used)
+
+If major faults exceed threshold, the shard is temporarily degraded.
+
+## Memory Budgeting
+
+Each core has per-engine memory budgets:
+
+| Engine | Budget | Example |
+|--------|--------|---------|
+| Vector | 256 MB | HNSW graphs, quantized payloads |
+| Graph | 128 MB | CSR adjacency, node properties |
+| CRDT | 64 MB | Loro documents, change sets |
+| Relational | 256 MB | redb B-Tree index cache, query result buffers |
+| Timeseries | 128 MB | Memtable, window aggregations |
+
+When a budget is exceeded, the engine throttles new operations (not evicts protected tiers). Query operators call `try_grow(bytes)` and handle `ResourcesExhausted` gracefully (spill to disk, or return partial results).
+
+## Compaction
+
+The Data Plane runs compaction asynchronously during idle periods.
+
+```rust
+if idle && compaction_debt_ratio > 20% && !is_during_gc_pause {
+    run_compaction();
+}
+```
+
+**Compaction Tasks:**
+1. **Vector tombstone cleanup**: Remove deleted documents from HNSW graph
+2. **Document collection merging**: Compact small segment files into larger ones
+3. **CSR rebuild**: Reconstruct graph adjacency after edge changes
+4. **Metadata index shrink**: Rebuild B-Tree indexes to reclaim fragmented space
+
+Compaction is rate-limited: max 50 MB/s write to L1 to avoid saturating the NVMe and evicting other data.
+
+## Error Handling
+
+Data Plane errors are deterministic and serializable:
+
+```rust
+pub enum ErrorCode {
+    Internal = 1,              // Panic or unexpected condition
+    VShardNotLocal = 2,        // Request routed to wrong shard
+    QuotaExceeded = 3,         // Memory/QPS quota exhausted
+    DeadlineExceeded = 4,      // Request timeout
+    ConstraintViolation = 5,   // UNIQUE/FK violation
+    NotFound = 6,              // Row not found (for point lookups)
+}
+```
+
+All errors are returned to the Control Plane via the Response envelope. The Control Plane decides whether to retry, fail the client query, or escalate.
+
+## Observability
+
+The Data Plane emits metrics without locking:
+
+- **Lock-free ring buffer**: Each core appends metrics to a thread-local `TelemetryRing`
+- **Control Plane reader**: Periodically reads all cores' rings
+- **Metrics emitted**: Latency histograms, queue depth, memory usage, compaction progress
+
+No sampling—all metrics are exact since there's no locking overhead.

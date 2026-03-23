@@ -1,8 +1,84 @@
 ---
-title: HNSW Index
-description: Hierarchical Navigable Small World graph structure and navigation.
+title: HNSW Algorithm
+description: Multi-layer proximity graphs, construction, and search mechanics.
 ---
 
-# HNSW Index
+# HNSW Algorithm
 
-TODO
+Hierarchical Navigable Small World (HNSW) is the core indexing structure for the Vector Engine. It organizes embeddings into a multi-layer graph where each layer is a navigable small-world network—enabling logarithmic-time search.
+
+## Graph Structure
+
+**Layers**: HNSW builds multiple layers of decreasing size:
+- Layer 0: Contains all vectors (dense layer)
+- Layer 1+: Progressively sparser subsets, selected randomly
+
+Entry point starts at the highest layer. Search traverses down to Layer 0.
+
+**Per-layer connectivity**: Each vector maintains out-edges to nearby neighbors. The parameter M controls max edges per node (default 16). Larger M → more connectivity → better quality, higher memory.
+
+**Bidirectional edges**: NodeDB stores both out_offsets/targets and in_offsets/targets for fast traversal in both directions and efficient graph updates.
+
+## Construction
+
+Construction uses greedy insertion with expansion heuristic:
+
+1. **Insert vector**: Determine its insertion layer (random, biased toward Layer 0)
+2. **Find neighbors**: Search down from entry point to find M nearest neighbors at insertion layer
+3. **Add edges**: Connect new vector to M nearest neighbors
+4. **Prune old edges**: Existing neighbors re-evaluate their M connections (may drop the new node if not in top M)
+
+**Parameters**:
+- `M`: Max edges per node. Default 16. Higher M (24-32) → better search quality, slower construction.
+- `ef_construction`: Size of dynamic neighbor list during construction. Default 200. Larger values find better neighbors, slower.
+
+Higher `ef_construction` produces better-connected graphs; use 200-400 for large datasets.
+
+## Search Mechanics
+
+**Greedy search**: Start at entry point, traverse toward query vector. At each node, explore neighbors in order of distance. Stop when no neighbor is closer than current node (local minimum).
+
+**Layer-by-layer descent**:
+1. Start at entry node in top layer
+2. Search (ef=1 during layer descent, ef=ef_search at Layer 0)
+3. Find closest node
+4. Move to Layer 0
+5. Search with ef=ef_search for final k nearest neighbors
+
+**ef_search**: Expansion factor at Layer 0. Default 100. Larger ef_search → higher recall, slower search. Range 50-500.
+
+## Memory Layout
+
+Graphs are stored in compressed format on disk:
+
+```
+Layer 0 (full):     [offsets | target_ids] → 4 + 4*M bytes per vector
+Layer 1:            [offsets | target_ids]
+...
+Entry point metadata: (node_id, layer, assigned_layer)
+```
+
+Compaction merges write buffers into the main graph index in batches. Single-threaded to avoid versioning complexity. Compaction is non-blocking—read queries continue on both old and new indices.
+
+## Theoretical Complexity
+
+- **Insert**: O(log N) layers, O(M^2 * ef_construction) neighbors evaluated
+- **Search**: O(log N) layers, O(M * log N) hops per layer
+- **Space**: O(N * M) edges, ~16-40 bytes per vector
+
+Logarithmic complexity makes HNSW practical for millions of vectors.
+
+## Configuration Example
+
+```sql
+-- Balance speed vs memory
+CREATE VECTOR INDEX idx_fast ON docs METRIC cosine M 16 EF_CONSTRUCTION 200;
+
+-- High-quality index for critical queries
+CREATE VECTOR INDEX idx_quality ON docs METRIC cosine M 32 EF_CONSTRUCTION 500;
+
+-- Memory-constrained deployment
+CREATE VECTOR INDEX idx_lean ON docs METRIC cosine M 8 EF_CONSTRUCTION 100;
+```
+
+See [Indexing Parameters](/engines/vector/indexing-params) for tuning guidance.

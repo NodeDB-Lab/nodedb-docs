@@ -1,8 +1,402 @@
 ---
 title: Authentication
-description: Username/password, SCRAM-SHA-256, mTLS client certs.
+description: Configure multiple auth modes including password and mTLS.
 ---
 
 # Authentication
 
-TODO
+NodeDB supports multiple authentication modes. Choose one based on your security requirements.
+
+## Authentication Modes
+
+Configure in `server.toml`:
+
+```toml
+[auth]
+mode = "password"  # Options: trust, password, md5password, certificate
+scram_iterations = 4096
+password_hash_algorithm = "scram_sha_256"
+max_login_attempts = 5
+lockout_duration_secs = 900
+```
+
+## Trust Mode (Development Only)
+
+Accepts all connections without authentication. Never use in production.
+
+```toml
+[auth]
+mode = "trust"
+```
+
+Connection succeeds regardless of password:
+
+```bash
+psql -h localhost -U anyone_works
+```
+
+## Password Mode (SCRAM-SHA-256)
+
+Recommended for production. Uses SCRAM-SHA-256 hashing with configurable iterations.
+
+```toml
+[auth]
+mode = "password"
+scram_iterations = 4096
+password_hash_algorithm = "scram_sha_256"
+```
+
+Create a user:
+
+```sql
+CREATE USER alice WITH PASSWORD 'secure_password_here';
+```
+
+Password requirements:
+
+- Minimum 12 characters
+- Must contain uppercase, lowercase, numbers, and symbols
+- Stored as salted SCRAM-SHA-256 hashes (not plaintext)
+
+Connect:
+
+```bash
+psql -h localhost -U alice -d nodedb
+```
+
+SCRAM negotiation:
+
+1. Client sends username
+2. Server responds with salt and iteration count
+3. Client hashes password with salt, iterations
+4. Server verifies hash matches stored value
+5. Connection established
+
+## MD5 Password Mode (Legacy)
+
+For PostgreSQL client compatibility. Less secure than SCRAM.
+
+```toml
+[auth]
+mode = "md5password"
+```
+
+Usage:
+
+```bash
+psql -h localhost -U alice -d nodedb
+```
+
+Hashing: MD5(password + username), sent over wire. Vulnerable to rainbow tables.
+
+Not recommended for new deployments.
+
+## Certificate Authentication (mTLS)
+
+For service-to-service communication. Requires TLS enabled.
+
+```toml
+[auth]
+mode = "certificate"
+
+[tls]
+enabled = true
+cert_path = "/etc/nodedb/server.crt"
+key_path = "/etc/nodedb/server.key"
+client_ca_path = "/etc/nodedb/client-ca.crt"
+client_auth = "require"  # require or optional
+```
+
+Generate client certificate:
+
+```bash
+# Create client key
+openssl genrsa -out client.key 2048
+
+# Create CSR
+openssl req -new -key client.key -out client.csr \
+  -subj "/CN=client-app/O=MyOrg/C=US"
+
+# Sign with CA
+openssl x509 -req -in client.csr \
+  -CA ca.crt -CAkey ca.key \
+  -CAcreateserial -out client.crt \
+  -days 365 -sha256
+
+# Verify
+openssl x509 -in client.crt -text -noout
+```
+
+Extract certificate CN as username:
+
+```bash
+openssl x509 -in client.crt -noout -subject
+# Subject: CN=client-app
+# Username: client-app
+```
+
+Connect with mTLS:
+
+```bash
+psql -h localhost \
+  -U client-app \
+  --sslmode require \
+  --sslcert client.crt \
+  --sslkey client.key \
+  --sslrootcert ca.crt
+```
+
+## User Management
+
+Create user:
+
+```sql
+CREATE USER alice WITH PASSWORD 'secure_password';
+```
+
+Alter user:
+
+```sql
+ALTER USER alice WITH PASSWORD 'new_password';
+ALTER USER alice SET search_path = public;
+```
+
+List users:
+
+```sql
+SHOW USERS;
+```
+
+Drop user:
+
+```sql
+DROP USER alice;
+```
+
+## Account Lockout
+
+Automatic lockout after failed attempts:
+
+```toml
+[auth]
+max_login_attempts = 5
+lockout_duration_secs = 900  # 15 minutes
+```
+
+After 5 failed attempts, account locks for 15 minutes. Subsequent attempts fail immediately.
+
+Unlock manually:
+
+```sql
+ALTER USER alice SET locked = false;
+```
+
+Monitor lockouts:
+
+```sql
+SELECT user_id, failed_attempts, last_failed_at, locked
+FROM auth_lockout_log
+WHERE locked = true;
+```
+
+## API Keys (Alternative Auth)
+
+For service accounts and API access:
+
+```sql
+CREATE API_KEY 'my-app' FOR USER service_account;
+```
+
+Returns: `ndb_abc123xyz789_secret`
+
+Store securely in vault or environment. Use in requests:
+
+```bash
+curl -H "Authorization: Bearer ndb_abc123xyz789_secret" \
+  http://localhost:6480/query
+```
+
+Rotate API key:
+
+```sql
+ROTATE API_KEY 'my-app';
+```
+
+Invalidate old keys after rotation grace period (default 24 hours).
+
+## JWT Authentication
+
+For OAuth 2.0 / OIDC integration:
+
+```toml
+[auth]
+mode = "jwt"
+jwt_algorithms = ["HS256", "RS256"]
+jwt_hs256_secret = "your-secret-key"
+jwt_rs256_public_key = """
+-----BEGIN PUBLIC KEY-----
+...
+-----END PUBLIC KEY-----
+"""
+```
+
+HS256 (shared secret):
+
+```toml
+jwt_hs256_secret = "shared_secret_key_min_32_chars"
+```
+
+RS256 (asymmetric):
+
+```toml
+jwt_rs256_public_key_url = "https://provider.com/.well-known/jwks.json"
+jwt_rs256_algorithms = ["RS256"]
+```
+
+Connect with JWT:
+
+```bash
+export JWT_TOKEN=$(curl -s https://provider/token | jq -r .access_token)
+
+psql -h localhost \
+  -U jwt \
+  -d nodedb \
+  -c "SET jwt_token = '$JWT_TOKEN'"
+```
+
+Claims mapping:
+
+```toml
+[auth]
+jwt_user_claim = "sub"      # Extract username from JWT
+jwt_tenant_claim = "tenant" # Extract tenant from JWT
+```
+
+## Password Policy
+
+Enforce password strength:
+
+```toml
+[auth]
+password_min_length = 12
+password_require_uppercase = true
+password_require_lowercase = true
+password_require_numbers = true
+password_require_symbols = true
+password_no_reuse = 5  # Prevent reusing last 5 passwords
+password_expiration_days = 90
+```
+
+Check password requirements:
+
+```sql
+SELECT check_password_strength('MyPassword123!');
+```
+
+## Session Management
+
+Control session timeout:
+
+```toml
+[server]
+idle_timeout_secs = 3600  # 1 hour
+```
+
+Session variables:
+
+```sql
+SET SESSION_USER = 'alice';
+SHOW SESSION_USER;
+```
+
+## Audit Logging
+
+Log all authentication attempts:
+
+```toml
+[audit]
+log_auth_attempts = true
+log_auth_failures = true
+```
+
+View auth audit log:
+
+```sql
+SELECT timestamp, user_id, result, client_ip, method
+FROM audit.auth_log
+ORDER BY timestamp DESC
+LIMIT 100;
+```
+
+## Multi-Auth Gateway Pattern
+
+Reverse proxy with authentication:
+
+```nginx
+upstream nodedb {
+    server localhost:6432;
+}
+
+server {
+    listen 5432;
+    ssl on;
+
+    # Validate JWT
+    location / {
+        auth_request /verify_jwt;
+        proxy_pass http://nodedb;
+        proxy_set_header X-User $jwt_claim_sub;
+    }
+
+    location /verify_jwt {
+        internal;
+        proxy_pass http://auth-service/verify;
+    }
+}
+```
+
+## Changing Auth Mode
+
+Changing modes requires database restart:
+
+```toml
+# Old
+[auth]
+mode = "trust"
+
+# New
+[auth]
+mode = "password"
+scram_iterations = 4096
+```
+
+Steps:
+
+1. Stop NodeDB
+2. Update server.toml
+3. Start NodeDB
+4. Test connection: `psql -U postgres`
+
+Existing users persist across mode changes. Passwords are pre-hashed.
+
+## Integration with External Identity
+
+Use JWT for enterprise SSO:
+
+```toml
+[auth]
+mode = "jwt"
+jwt_rs256_public_key_url = "https://okta.example.com/.well-known/oauth.json"
+```
+
+User authenticates via OAuth provider, receives JWT, presents to NodeDB.
+
+## Security Best Practices
+
+- Use SCRAM-SHA-256, never trust or md5password
+- Enable mTLS for inter-service communication
+- Rotate API keys quarterly
+- Implement password expiration (90 days)
+- Use lockout after 5 failed attempts
+- Audit all auth attempts
+- Never commit passwords to version control

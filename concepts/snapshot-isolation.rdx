@@ -1,8 +1,320 @@
 ---
 title: Snapshot Isolation
-description: Per-query snapshot watermarks and write skew detection.
+description: All queries execute at a single snapshot LSN. Prevents dirty reads, non-repeatable reads, phantoms. Write skew detection.
 ---
 
 # Snapshot Isolation
 
-TODO
+Snapshot Isolation (SI) is the default isolation level for all queries. Every query executes as if reading a frozen snapshot of the database at a single point in time (LSN). This prevents dirty reads, non-repeatable reads, and most phantom reads, while allowing better concurrency than serializable isolation.
+
+## The Snapshot Concept
+
+An LSN (Log Sequence Number) represents a point in time. Every committed write has an LSN:
+
+```
+LSN=0:     INSERT document_1
+LSN=1:     INSERT document_2
+LSN=2:     UPDATE document_1 (title)
+LSN=3:     DELETE document_2
+LSN=4:     INSERT document_3
+  ↑
+  Current state at LSN=4
+```
+
+A **snapshot at LSN=2** is the database state after writes LSN 0, 1, 2:
+```
+Snapshot@LSN=2:
+  - document_1 (updated)
+  - document_2 (exists)
+  - document_3 (doesn't exist yet)
+```
+
+A **query at snapshot LSN=2** sees only this state, ignoring writes LSN 3, 4.
+
+## How Snapshot Isolation Works
+
+### Single-Engine Query
+
+```
+Query: SELECT * FROM documents WHERE category='research'
+
+1. Control Plane determines snapshot LSN
+   - Default: snapshot_lsn = current_committed_lsn
+   - Example: current_committed_lsn = 5000
+   - snapshot_lsn = 5000
+
+2. Dispatch to Data Plane with snapshot_lsn=5000
+   Request {vshard_id, query_plan, snapshot_lsn=5000}
+
+3. Data Plane executes at snapshot LSN=5000
+   - Read from L0 only (up to LSN=5000)
+   - Skip L1 segments with min_lsn > 5000
+   - Return results consistent with snapshot
+
+4. Client sees: documents as of LSN=5000
+   Even if new inserts happened at LSN=5001, 5002, ...
+```
+
+### Multi-Engine Query
+
+```
+Query: SELECT articles.*,
+           (SELECT COUNT(*) FROM comments WHERE article_id=articles.id) as comment_count
+       FROM articles
+
+Involves two engines: relational (articles) + relational (comments)
+
+1. Control Plane determines snapshot LSN
+   - Read articles metadata: at LSN=5000
+   - Read comments metadata: at LSN=5000
+   - snapshot_lsn = MIN(5000, 5000) = 5000
+
+2. Dispatch to Data Plane with snapshot_lsn=5000
+   - Scan articles as of LSN=5000
+   - For each article, scan comments as of LSN=5000
+   - Results are consistent between articles and comments
+
+3. Response includes watermark_lsn=5000
+   Client knows: "results are from LSN=5000"
+```
+
+### Cross-Shard Query
+
+```
+Query: SELECT * FROM users WHERE age > 30
+
+Sharded by user_id, so query touches all 1024 vShards
+
+1. Control Plane determines snapshot LSN
+   - Query shard 0: latest LSN = 5000
+   - Query shard 1: latest LSN = 5010 (slightly ahead)
+   - Query shard 2: latest LSN = 4990 (slightly behind)
+   - snapshot_lsn = MIN(5000, 5010, 4990) = 4990
+
+2. Conservative approach: all shards read at LSN=4990
+   - Shard 0: has data up to 5000, reads as of 4990 (consistent)
+   - Shard 1: has data up to 5010, reads as of 4990 (skips 5000-5010)
+   - Shard 2: has data up to 4990, reads as of 4990 (fully consistent)
+
+3. Results: Consistent view across all shards at LSN=4990
+   (May miss writes at 4990+, but guarantee snapshot consistency)
+```
+
+## What Snapshot Isolation Prevents
+
+### Dirty Reads
+
+**Dirty read:** Reading uncommitted (failed) writes.
+
+```
+Transaction A:
+  INSERT INTO accounts (balance) VALUES (1000)
+  -- WAL not yet flushed
+
+Transaction B:
+  SELECT balance → ??? (depends on isolation level)
+```
+
+**With SI:** Transaction B's snapshot includes only committed writes.
+Result: If A hasn't committed, B doesn't see the write. ✓
+
+### Non-Repeatable Reads
+
+**Non-repeatable read:** Same query returns different results within a transaction.
+
+```
+Transaction T:
+  SELECT balance FROM accounts WHERE id='alice' → 1000
+    [Another transaction commits: -50]
+  SELECT balance FROM accounts WHERE id='alice' → 950 ???
+```
+
+**With SI:** Transaction T uses a single snapshot LSN.
+First SELECT at snapshot LSN=100 → balance is 1000
+Second SELECT at snapshot LSN=100 → balance is still 1000 ✓
+
+### Phantom Reads
+
+**Phantom read:** WHERE clause returns different rows within a transaction.
+
+```
+Transaction T:
+  SELECT * FROM accounts WHERE balance > 500 → 10 rows
+    [Another transaction commits: INSERT new account with balance=600]
+  SELECT * FROM accounts WHERE balance > 500 → 11 rows ???
+```
+
+**With SI:** Transaction T uses a single snapshot LSN.
+Both SELECTs execute at LSN=100 → same 10 rows ✓
+
+## What Snapshot Isolation Does NOT Prevent
+
+### Write Skew
+
+**Write skew:** Two transactions write to different rows but violate an application-level invariant.
+
+```
+Invariant: total_balance must be > 0
+
+Transaction T1:          Transaction T2:
+SELECT SUM(balance)      SELECT SUM(balance)
+  → 100                    → 100
+
+UPDATE account1          UPDATE account2
+  SET balance = -80        SET balance = -50
+  (sum now = 20)           (sum now = 50)
+
+COMMIT T1                COMMIT T2
+  (balance_total = -30) ✗
+```
+
+**With SI:** Both transactions read from snapshot (100), write to different rows, both commit.
+Invariant violated (total=-30).
+
+**Mitigation:** NodeDB detects write skew for queries with explicit constraints or `FOR UPDATE` locks.
+
+## Snapshot Watermarks in Multi-Model Queries
+
+When a query touches Vector + Relational + Graph:
+
+```
+Query: Find articles similar to Q,
+       with published=true,
+       where author is connected to [user1, user2]
+
+Involves 3 engines, each at different LSNs:
+  Vector engine: LSN=5000
+  Relational engine: LSN=5010
+  Graph engine: LSN=4990
+
+Snapshot determination:
+  Use conservative: snapshot_lsn = MIN(5000, 5010, 4990) = 4990
+
+All three engines execute at LSN=4990:
+  - Vector: return articles as of LSN=4990
+  - Relational: filter by published as of LSN=4990
+  - Graph: traverse edges as of LSN=4990
+
+Response includes watermarks:
+  {
+    results: [...],
+    watermark_lsn: 4990,
+    engine_watermarks: {
+      vector: 5000,
+      relational: 5010,
+      graph: 4990
+    }
+  }
+
+Client understands:
+  - Results are consistent at LSN=4990
+  - Vector data is more recent (5000)
+  - Graph data is at watermark (4990)
+```
+
+## Snapshot Consistency in Joins
+
+```
+Query: SELECT o.*, c.* FROM orders o JOIN customers c ON o.customer_id=c.id
+       WHERE o.created_at > '2025-01-01'
+
+Both orders and customers tables, both sharded
+
+1. Determine snapshot LSN
+   orders_shard_0: LSN=5000
+   orders_shard_1: LSN=5005
+   customers_shard_0: LSN=4995
+   customers_shard_1: LSN=5008
+
+   snapshot_lsn = MIN(5000, 5005, 4995, 5008) = 4995
+
+2. Execute join at LSN=4995
+   Scan orders at 4995:
+     order_1 (customer_id=100)
+     order_2 (customer_id=200)
+
+   Scan customers at 4995:
+     customer_100: "Alice"
+     customer_200: "Bob"
+
+   Join result:
+     (order_1, Alice)
+     (order_2, Bob)
+
+3. Consistency guarantee
+   If a customer was updated at LSN>4995,
+   the join still uses the LSN=4995 version
+   Results are consistent snapshot
+```
+
+## Snapshot Lifecycle
+
+```
+Snapshot created at Control Plane:
+  snapshot_lsn = current_lsn (e.g., 5000)
+
+Snapshot used for query:
+  Dispatched to all Data Plane shards
+  Shards read as of snapshot_lsn
+
+Snapshot persisted:
+  L0: in-memory (memtable)
+  L1: segment files are immutable
+       (can read old LSN range from file)
+
+Snapshot discarded:
+  After checkpointing
+  old snapshots < checkpoint_lsn can be deleted
+```
+
+## Configuring Snapshot Behavior
+
+```sql
+-- Read at exact LSN (for PITR)
+SELECT * FROM documents
+WHERE created_at > '2025-01-01'
+CONSISTENCY SNAPSHOT_AT_LSN(5000);
+
+-- Read at timestamp
+SELECT * FROM documents
+CONSISTENCY SNAPSHOT_AT_TIME('2025-03-23T10:30:00Z');
+
+-- Read at relative time
+SELECT * FROM documents
+CONSISTENCY SNAPSHOT_AFTER_DELAY('30s');
+-- Waits 30s, then reads at current_lsn
+
+-- Default: immediate snapshot
+SELECT * FROM documents CONSISTENCY SNAPSHOT;
+-- snapshot_lsn = current_lsn (same as default)
+```
+
+## Performance Impact
+
+Snapshot isolation adds minimal overhead:
+
+```
+Track snapshot LSN in request: +0 (already tracking)
+Filter L0/L1 by LSN range: +0 (index lookup)
+Skip segments outside LSN range: +0 (file scan optimization)
+
+Overhead: ~0% (effectively free)
+
+Trade-off: Snapshot may be slightly stale
+(E.g., snapshot_lsn=4995 when current_lsn=5010)
+But consistency guarantee is worth it.
+```
+
+## Snapshot Isolation vs. Serializable
+
+| Aspect | Snapshot Isolation | Serializable |
+|--------|-------------------|-------------|
+| Dirty reads | Prevented | Prevented |
+| Non-repeatable reads | Prevented | Prevented |
+| Phantom reads | Mostly prevented | Prevented |
+| Write skew | NOT prevented | Prevented |
+| Concurrency | High | Lower (requires 2-phase locking) |
+| Latency | Low | Higher (lock coordination) |
+| Typical use | Default in SI DBs | Financial/critical apps |
+
+NodeDB defaults to **Snapshot Isolation** for performance. Use explicit `FOR UPDATE` locks or write skew detection for critical invariants.

@@ -1,8 +1,232 @@
 ---
 title: Hybrid Execution Model
-description: Control Plane and Data Plane connected by SPSC bridge.
+description: How the Control Plane (Tokio, Send+Sync) and Data Plane (Thread-per-Core, !Send) separate concerns and connect via lock-free SPSC ring buffers.
 ---
 
 # Hybrid Execution Model
 
-TODO
+The hybrid execution model is the cornerstone of NodeDB's architecture. It splits compute into two specialized planes, each optimized for its workload, bridged by deterministic lock-free SPSC (Single-Producer, Single-Consumer) ring buffers. This design eliminates contention, enables true parallelism, and simplifies reasoning about both performance and correctness.
+
+## The Problem: Competing Constraints
+
+DataFusion (the query planner) requires `Send + Sync` types—it was built for the Tokio ecosystem with its work-stealing thread pool. But physical execution—HNSW traversal, vector SIMD math, io_uring I/O submission—demands `!Send` isolation: each CPU core owns its shard, shares no mutable state, and processes a strict FIFO queue of requests.
+
+Naively mixing Tokio and Thread-per-Core in one binary causes:
+
+1. **Lock contention** on shared memory between cores
+2. **Unpredictable latency** when Tokio tasks preempt data plane work
+3. **Page cache thrashing** when O_DIRECT WAL writes evict mmap vector indexes from RAM
+4. **Allocator contention** when all cores compete for the same jemalloc arena
+
+The solution: **hard separation** with a thin, lock-free bridge.
+
+## The Control Plane (Tokio + DataFusion)
+
+Handles all variable-latency work: connection establishment, query parsing, client buffering, and logical planning.
+
+**Characteristics:**
+- Runs on Tokio's standard thread pool (work-stealing, default CPU count)
+- `Send + Sync` — all types must be thread-safe
+- DataFusion parses SQL/DSL into a logical DAG
+- Cost-based optimizer reads column statistics from redb and emits physical plans
+- Dispatches work to Data Plane cores via SPSC channel
+
+**Responsibilities:**
+- Accept TCP/HTTP/gRPC connections
+- Parse and validate queries
+- Build logical execution plans
+- Perform tenant-scoped permission checks
+- Assemble multi-shard results from Data Plane responses
+- Stream results back to clients
+
+**Must NOT do:**
+- Touch storage directly (every read goes through Data Plane)
+- Execute io_uring submissions
+- Perform SIMD math (use numr only on Data Plane)
+- Spawn Data Plane tasks (send requests through SPSC instead)
+
+## The Data Plane (Thread-per-Core + io_uring)
+
+Handles all deterministic, CPU-bound work: physical execution, storage I/O, and SIMD computation.
+
+**Characteristics:**
+- One isolated, shared-nothing reactor per CPU core
+- `!Send` — each core owns its memory, unshared
+- Processes requests from Control Plane via per-core SPSC ring buffer
+- Submits I/O via io_uring, handles completions with no blocking
+- Executes within tight latency budgets
+
+**Responsibilities:**
+- Execute physical plans (filter, project, aggregate, join, sort)
+- Traverse HNSW graphs for vector search
+- Walk CSR adjacency indexes for graph queries
+- Perform SIMD distance math via numr
+- Append mutations to WAL via io_uring
+- Read from L1 mmap (pre-fetching asynchronously to avoid page faults)
+- Enforce per-engine memory budgets
+
+**Must NOT do:**
+- Block on locks or atomics
+- Spawn Tokio tasks
+- Wait for Raft consensus (Raft lives on Control Plane)
+- Access shared memory without SPSC bridge
+- Perform unbounded allocations
+
+## The SPSC Bridge: The Only Communication Channel
+
+All cross-plane communication flows through bounded lock-free SPSC ring buffers. This is the critical boundary enforcing plane isolation.
+
+### Request Envelope (Control → Data)
+
+```
+request_id: u64           # Unique per connection for 24h
+tenant_id: u32            # Tenant scoping
+vshard_id: u16            # Virtual shard target
+plan: Plan                # Serialized execution plan
+deadline: Instant         # Hard deadline (query times out after)
+priority: Priority        # Critical, Interactive, Background
+trace_id: u64             # Distributed trace identifier
+```
+
+The `plan` is opaque to the bridge—it can be serialized plan bytes or a slab handle for large plans.
+
+### Response Envelope (Data → Control)
+
+```
+request_id: u64           # Matches originating request
+status: Status            # Ok, Partial, Cancelled, DeadlineExceeded, Error
+bytes_produced: u64       # Size of result payload (for backpressure)
+watermark_lsn: u64        # LSN at which results were computed
+payload: Arc<[u8]>        # Result data (zero-copy via Arc)
+```
+
+### Memory Ownership
+
+Payloads use `Arc<[u8]>` for zero-copy transfer. The producer owns the buffer until the consumer sends an ACK; the consumer must not mutate the payload. For large allocations, payloads may use slab handles—indices into a shared slab allocator where the Data Plane looks up the actual buffer.
+
+### Backpressure
+
+The SPSC queue has bounded capacity. When utilization exceeds thresholds, the Data Plane reduces I/O intensity:
+
+- **Normal** (< 85%): Full I/O speed
+- **Throttled** (85-95%): Reduce concurrent io_uring reads (fewer outstanding I/O ops)
+- **Suspended** (> 95%): Pause new read submissions (except replay-critical I/O)
+
+Hysteresis prevents oscillation at thresholds. Backpressure is **mathematical**, not algorithmic—if the queue is full, io_uring completion handlers have nowhere to write results, so the submission loop naturally blocks until the Control Plane drains the queue.
+
+## Dataflow: A Vector Search Query
+
+### Step 1: Parse (Control Plane)
+
+```
+Client: "SELECT * FROM docs WHERE embedding <-> [1.0, 2.0, ...] LIMIT 10"
+↓
+Control Plane parses SQL
+DataFusion logical plan: Filter(Project(VectorSearch(docs)))
+```
+
+### Step 2: Optimize (Control Plane)
+
+```
+Optimizer reads column statistics from redb:
+- Estimated rows matching category filter: 50K
+- Vector index available: HNSW
+- Cost: VectorSearch + hard filter
+
+Decides: Generate Roaring Bitmap of matching doc IDs
+Push bitmap into HNSW traversal
+```
+
+### Step 3: Dispatch (Control Plane)
+
+```
+Emit physical plan:
+  Plan { vshard_id: 42, op: VectorSearch, bitmap, query_vector, k: 10 }
+
+Create Request envelope:
+  request_id: 12345
+  tenant_id: 7
+  vshard_id: 42
+  plan: Bytes(Arc::new(serialized_plan))
+  deadline: now + 5s
+  priority: Interactive
+  trace_id: 0xdeadbeef
+
+Send via SPSC ring buffer to Data Plane core 42
+```
+
+### Step 4: Execute (Data Plane Core 42)
+
+```
+Receive request from SPSC queue
+Deserialize physical plan
+Load HNSW graph for docs collection (from L1 mmap)
+Decode Roaring Bitmap
+Start HNSW traversal:
+  - For each candidate node, check bitmap (SIMD skip if not matching)
+  - Compute distance via numr SIMD (AVX-512 cosine)
+  - Maintain top-10 heap
+Return results as Arrow batch
+```
+
+### Step 5: Return (Data Plane Core 42)
+
+```
+Serialize Arrow batch into Arc<[u8]>
+Create Response envelope:
+  request_id: 12345
+  status: Ok
+  bytes_produced: 4096
+  watermark_lsn: 1000000
+  payload: Arc(Arrow batch)
+
+Send via SPSC ring buffer back to Control Plane
+Data Plane awaits ACK
+```
+
+### Step 6: Assemble (Control Plane)
+
+```
+Receive response from SPSC queue
+Deserialize Arrow batch
+Stream results to client (Iterator pattern)
+Send ACK back to Data Plane
+ACK signals Data Plane can reclaim the Arc buffer
+```
+
+## Why This Separation Matters
+
+### Performance
+- **Control Plane**: Handles 1000s of concurrent connections without each blocking others
+- **Data Plane**: Achieves predictable per-core latency with no contention; every core runs at full speed
+- **Bridge**: < 2 μs round-trip latency between planes; overhead stays below 15% of end-to-end query time
+
+### Correctness
+- **No data races**: Plane isolation via Rust's type system; cross-plane communication is explicit
+- **No deadlocks**: SPSC queues are strictly bounded; no cross-core lock acquisition
+- **Determinism**: Data Plane behavior is reproducible; no preemption or GC pauses
+
+### Scalability
+- **Horizontal**: Add nodes, increase Raft groups, increase vShard count—all in the same model
+- **Vertical**: Add CPU cores, each core gets its own SPSC queue and io_uring ring
+
+## Limitations by Design
+
+This separation imposes deliberate constraints:
+
+1. **No cross-plane shared memory**: All state exchange uses SPSC
+2. **No Data Plane blocking**: If a core needs data from another core, it must queue a scatter request and handle the response asynchronously
+3. **No Control Plane I/O**: All disk/network I/O owned by Data Plane
+4. **No unbounded queues**: All SPSC channels have fixed capacity
+
+These constraints force clarity: every interaction between planes is visible, bounded, and measurable.
+
+## Bridge Variants
+
+NodeDB supports multiple SPSC implementations:
+
+- **Bounded ring buffer** (default): Fixed-size, pre-allocated, lock-free
+- **Slab allocator variant**: For variable-sized payloads, use slab handles
+- **Priority queues**: Separate Critical/Interactive/Background channels for scheduling control
+
+All variants maintain the same contract: lock-free, bounded, FIFO within priority class.

@@ -1,8 +1,299 @@
 ---
 title: Virtual Shards
-description: 1024 vShards mapped to Raft groups for elastic scaling.
+description: 1024 virtual shards distributed uniformly. Decoupled from physical nodes. Enable elastic rebalancing without data movement.
 ---
 
 # Virtual Shards
 
-TODO
+NodeDB divides the key space into 1024 **virtual shards** (vShards). Every document belongs to exactly one vShard determined by a hash of its key. vShards are decoupled from physical nodes, enabling elastic rebalancing without shuffling data.
+
+## Why 1024?
+
+```
+1024 vShards chosen to balance:
+
+- Granularity: With 1024 shards, a 10-node cluster assigns ~100 shards per node
+  (fine enough for rebalancing, coarse enough to avoid overhead)
+
+- Migration: Migrating a single shard is fast (~1 second typically)
+
+- Flexibility: Can easily rebalance between 3 and 100 nodes
+
+- Power of 2: Hash distribution naturally aligns with bit boundaries
+  hash(key) & 0x3FF = shard_id (fast modulo)
+```
+
+## vShard Assignment
+
+**Hash-based assignment:**
+
+```rust
+fn vshard_id(key: &[u8]) -> u16 {
+  (hash_xxh3(key) & 0x3FF) as u16  // 0-1023
+}
+
+Example:
+  hash("doc_001") = 0x123456789...
+  & 0x3FF (10-bit mask) = 0x089 = 137
+  → vshard_id = 137
+```
+
+**Distribution:**
+
+```
+1,000,000 documents, hash distributed across shards:
+  Shard 0: ~976 docs
+  Shard 1: ~1012 docs
+  Shard 2: ~987 docs
+  ...
+  Shard 1023: ~998 docs
+
+Average: 1,000,000 / 1024 = ~977 docs/shard
+Deviation: typically ±2-3% (very balanced)
+```
+
+## vShard to Raft Group Mapping
+
+Multiple vShards are grouped under one Raft group for consensus efficiency:
+
+```
+1024 vShards → ~12 Raft groups (typically 85 shards per group)
+
+Mapping:
+  vShards [0, 85] → Raft Group 0
+  vShards [86, 171] → Raft Group 1
+  vShards [172, 257] → Raft Group 2
+  ...
+  vShards [940, 1023] → Raft Group 11
+
+Why group together?
+  - Fewer consensus participants to manage
+  - Reduces heartbeat traffic (1 group = 1 leader, not 1024)
+  - Scales to many nodes (e.g., 100 nodes, 12 groups, 8-9 nodes per group)
+```
+
+## Routing Table
+
+The **RoutingTable** maps vShard IDs to physical nodes:
+
+```
+vShard 0 → [node1, node2, node3]     (replicas for Raft Group 0)
+vShard 1 → [node1, node2, node3]     (same group)
+...
+vShard 85 → [node1, node2, node3]    (same group)
+
+vShard 86 → [node2, node3, node1]    (replicas for Raft Group 1)
+vShard 87 → [node2, node3, node1]    (same group)
+...
+```
+
+**Usage:**
+
+```
+Query: SELECT * FROM documents WHERE id='doc_123'
+
+1. Compute vshard_id = hash('doc_123') & 0x3FF = 42
+2. Look up routing table: vshard 42 → [node1, node2, node3]
+3. Route to leader node of Raft Group containing shard 42
+   (leader of group 0, which owns shards 0-85)
+4. Execute on leader (or follower, if consistency allows)
+```
+
+## vShard Locality
+
+All documents in the same vShard are always co-located:
+
+```
+Shard 42 on node1:
+  doc_001 (vshard 42)
+  doc_456 (vshard 42)
+  doc_789 (vshard 42)
+
+Shard 42 on node2 (replica):
+  doc_001 (exact copy)
+  doc_456 (exact copy)
+  doc_789 (exact copy)
+
+Shard 42 on node3 (replica):
+  doc_001 (exact copy)
+  doc_456 (exact copy)
+  doc_789 (exact copy)
+```
+
+**Benefit:** Queries touching one vShard can be routed to any replica (strong locality, no cross-node joins for that shard).
+
+## Storage Key Format
+
+Every key is prefixed with its vShard ID:
+
+```
+Storage key format: [vshard_id: u16][tenant_id: u32][collection][doc_id]
+
+Example:
+  vshard_id = 42
+  tenant_id = 7
+  collection = "articles"
+  doc_id = "doc_001"
+  → Key = 0x002A_00000007_articles_doc_001
+
+When reading:
+  1. Parse key prefix to extract vshard_id (fast O(1))
+  2. Verify vshard_id is local (reject if mismatch)
+  3. Read value from L0/L1
+```
+
+This enables:
+- **Shard verification**: Reject requests for wrong vshard (routing error safety)
+- **vShard scan**: Iterate only keys matching a specific vShard
+- **Migration safety**: Copy keys matching vshard_id during migration
+
+## Load Balancing
+
+Distribute reads across replicas:
+
+```
+Query: SELECT * FROM articles WHERE id='doc_500'
+
+vshard_id = hash('doc_500') & 0x3FF = 100
+Replicas for vShard 100: [node1, node2, node3]
+
+Consistency = STRONG:
+  → Always query node1 (Raft Group 2 leader)
+
+Consistency = BOUNDED_STALENESS('1s'):
+  → Query nearest replica with lag ≤ 1s
+  → If local node2 is replica and lag=500ms: use node2
+  → Else use node3, else node1
+
+Consistency = EVENTUAL:
+  → Query local replica if available
+  → Else nearest
+```
+
+## vShard Rebalancing
+
+When nodes are added/removed, vShards are reassigned:
+
+```
+Before (3-node cluster):
+  node1 owns vShards [0, 340]
+  node2 owns vShards [341, 682]
+  node3 owns vShards [683, 1023]
+
+Add node4:
+  Rebalance to 4 nodes (256 shards each):
+  node1 owns vShards [0, 255]
+  node2 owns vShards [256, 511]
+  node3 owns vShards [512, 767]
+  node4 owns vShards [768, 1023]
+
+Migration process:
+  vShards [256, 340] move from node1 → node2 (3 phases)
+  vShards [341, 511] move from node2 → node3
+  vShards [512, 682] move from node3 → node4
+  vShards [683, 767] move from node3 → node4
+  vShards [768, 1023] move from node4 → node4 (already there)
+```
+
+No client intervention needed. RoutingTable is updated atomically.
+
+## vShard Sharding Key
+
+Documents can be sharded by different keys (not always primary key):
+
+```sql
+-- Shard by primary key (default)
+CREATE COLLECTION documents (
+  id UUID PRIMARY KEY,
+  content TEXT
+);
+-- vshard_id = hash(id) & 0x3FF
+
+-- Shard by user_id
+CREATE COLLECTION user_events (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL,
+  action VARCHAR,
+  SHARDING KEY user_id
+);
+-- vshard_id = hash(user_id) & 0x3FF
+-- All events from the same user are in the same shard
+-- Efficient co-located queries: "all events for user 123"
+```
+
+## vShard Statistics
+
+Each vShard tracks metadata:
+
+```
+vShard 42 statistics:
+  - Size (MB): 512
+  - Documents: 50,000
+  - Vectors: 45,000 (if vector index)
+  - LSN range: [1000, 5000]
+  - Last compaction: 10 min ago
+  - Tombstone ratio: 5%
+  - Replication lag: [10ms, 50ms, 100ms] (node1, node2, node3)
+
+Used for:
+  - Balancing decisions (migrate large shards first)
+  - Monitoring (flag shards with high tombstone ratio)
+  - Routing (avoid replicas with high lag if CONSISTENCY=STRONG)
+```
+
+## vShard Splits & Merges
+
+(Future capability) Dynamically adjust shard boundaries:
+
+```
+If shard 42 grows to 10 GB:
+  Split into vShards [42a, 42b]
+  Redistribute documents based on new hash boundaries
+  Update routing table
+
+If shards 100 and 101 are both < 100 MB:
+  Merge into vShard 100
+  Consolidate documents
+  Update routing table
+
+(Currently, vShards are fixed at creation)
+```
+
+## Multi-Tenant vShards
+
+Each tenant can have private vShards:
+
+```
+Tenant A owns vShards [0, 511]
+Tenant B owns vShards [512, 1023]
+
+(Or interleaved, depending on cluster design)
+
+Routing:
+  Query from tenant A for doc_id='123'
+    → hash('123') = X
+    → vshard_id = X & 0x3FF
+    → If in [0, 511]: ALLOWED
+    → Else: REJECTED (cross-tenant access)
+```
+
+## Observability
+
+Monitor vShard health:
+
+```bash
+nodedb-cli vshards list
+
+vShard 0: node1 (leader), replication_lag=[10ms, 20ms, 40ms], size=512MB
+vShard 1: node1 (leader), replication_lag=[5ms, 15ms, 30ms], size=501MB
+vShard 2: node2 (leader), replication_lag=[50ms, 100ms, 200ms], size=612MB (LAGGING)
+...
+
+nodedb-cli vshards rebalance --dry-run
+
+Proposed rebalancing:
+  Move vShard 2 from node2 → node4 (reduce load on node2)
+  Move vShards 100-105 from node3 → node1 (balance capacity)
+  Estimated time: 5 minutes
+  Estimated network traffic: 2 GB
+```

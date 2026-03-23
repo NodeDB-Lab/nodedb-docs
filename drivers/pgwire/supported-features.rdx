@@ -1,8 +1,189 @@
 ---
 title: Supported pgwire Features
-description: Simple Query, Extended Query, COPY, SSL negotiation.
+description: Simple Query, Extended Query, prepared statements, and transactions.
 ---
 
 # Supported pgwire Features
 
-TODO
+NodeDB implements the PostgreSQL wire protocol with full support for query modes, transactions, and prepared statements. This document details what works and any known limitations.
+
+## Query Modes
+
+### Simple Query
+The Simple Query mode sends raw SQL text and receives row data back.
+
+```sql
+SELECT * FROM documents WHERE id = 'doc1';
+```
+
+Supported operations:
+- SELECT, INSERT, UPDATE, DELETE (DML)
+- CREATE TABLE, DROP TABLE, ALTER TABLE (DDL)
+- CREATE INDEX, DROP INDEX
+- DESCRIBE TABLE (PostgreSQL syntax: `\d table_name` in psql)
+- SHOW/SET (for session variables)
+
+### Extended Query (Parse/Bind/Execute)
+The Extended Query mode separates parsing, binding, and execution for prepared statements.
+
+```
+1. Parse: Send SQL with placeholders ($1, $2, ...)
+2. Bind: Send parameter values
+3. Execute: Run the prepared statement
+```
+
+This is used internally by most driver libraries:
+
+```python
+cursor.execute("SELECT * FROM documents WHERE id = %s", ('doc1',))
+```
+
+Benefits:
+- Prevents SQL injection
+- Reuses query plans
+- Supports array and complex type parameters
+
+## Prepared Statements
+
+NodeDB supports both explicit and implicit prepared statements.
+
+### Explicit Preparation
+```sql
+PREPARE get_doc (TEXT) AS SELECT * FROM documents WHERE id = $1;
+EXECUTE get_doc('doc1');
+DEALLOCATE get_doc;
+```
+
+### Implicit Preparation (via libraries)
+Most drivers automatically prepare statements:
+
+```python
+# psycopg2 auto-prepares on repeated calls
+stmt = "SELECT * FROM documents WHERE id = %s"
+cursor.execute(stmt, ('doc1',))
+cursor.execute(stmt, ('doc2',))  # Uses prepared plan
+```
+
+## Transactions
+
+Full ACID transaction support:
+
+```sql
+BEGIN;
+INSERT INTO documents (id, data) VALUES ('doc1', '{"name":"Alice"}');
+UPDATE documents SET data = '{"name":"Bob"}' WHERE id = 'doc1';
+COMMIT;
+```
+
+Supported commands:
+- `BEGIN` — start transaction
+- `COMMIT` — commit changes
+- `ROLLBACK` — discard changes
+- `SAVEPOINT` — nested transaction point
+- `RELEASE SAVEPOINT` — commit nested transaction
+- `ROLLBACK TO SAVEPOINT` — rollback to nested point
+
+### Transaction Isolation Levels
+
+NodeDB supports standard PostgreSQL isolation levels:
+
+```sql
+BEGIN ISOLATION LEVEL READ UNCOMMITTED;
+-- or READ COMMITTED, REPEATABLE READ, SERIALIZABLE
+```
+
+Behavior:
+- **READ UNCOMMITTED** — No isolation guarantees
+- **READ COMMITTED** — No dirty reads (default)
+- **REPEATABLE READ** — No phantom reads
+- **SERIALIZABLE** — Full isolation with conflict detection
+
+## Type Parameter Support
+
+Extended query mode supports parameter binding for all PostgreSQL types:
+
+```python
+# Integer parameter
+cursor.execute("SELECT * FROM docs WHERE score > %s", (42,))
+
+# Array parameter
+cursor.execute("SELECT * FROM docs WHERE tags = ANY(%s)", ([tag1, tag2],))
+
+# JSON parameter
+cursor.execute("INSERT INTO docs (data) VALUES (%s)", (json.dumps({"key": "value"}),))
+
+# Timestamptz parameter
+cursor.execute("SELECT * FROM events WHERE ts > %s", (datetime.now(timezone.utc),))
+```
+
+## Not Supported
+
+The following pgwire features are not implemented:
+
+- **Stored Procedures** — Use client-side logic instead
+- **Triggers** — No server-side triggers
+- **Materialized Views** — Not implemented
+- **COPY Protocol** — Bulk loading uses document API
+- **Cursors** — Use LIMIT/OFFSET or result streaming instead
+- **Custom Types** — CREATE TYPE not supported
+- **LISTEN/NOTIFY** — Use WebSocket subscriptions instead
+
+## Performance Considerations
+
+### Connection Pooling
+Always use connection pooling in production:
+
+```python
+from psycopg2 import pool
+
+connection_pool = pool.SimpleConnectionPool(
+    1, 20,
+    host="127.0.0.1",
+    port=6432,
+    user="postgres",
+    database="nodedb"
+)
+```
+
+See [connection poolers](../connection-poolers.md) for production setups.
+
+### Prepared Statement Caching
+Most drivers cache prepared statements automatically. In long-running applications, this avoids repeated parsing overhead.
+
+### Batch Operations
+Use batch inserts for better throughput:
+
+```python
+# Good: batch insert
+data = [
+    ('doc1', {'name': 'Alice'}),
+    ('doc2', {'name': 'Bob'}),
+]
+cursor.executemany("INSERT INTO documents (id, data) VALUES (%s, %s)", data)
+
+# Avoid: individual inserts in a loop
+for doc_id, doc_data in data:
+    cursor.execute("INSERT INTO documents (id, data) VALUES (%s, %s)", (doc_id, doc_data))
+```
+
+## Error Handling
+
+NodeDB returns standard PostgreSQL error codes. Handle them in your application:
+
+```python
+import psycopg2
+from psycopg2 import sql, Error
+
+try:
+    cursor.execute("SELECT * FROM nonexistent_table")
+except Error as e:
+    print(f"Error code: {e.pgcode}")  # e.g., 'UndefinedTable'
+    print(f"Error message: {e.pgerror}")
+```
+
+Common error codes:
+- `42P01` — UndefinedTable
+- `42703` — UndefinedColumn
+- `23505` — UniqueViolation
+- `23503` — ForeignKeyViolation
+- `08006` — ConnectionFailure

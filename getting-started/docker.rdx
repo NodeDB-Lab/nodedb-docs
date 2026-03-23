@@ -1,8 +1,382 @@
 ---
-title: Docker
-description: Run NodeDB with Docker and docker-compose.
+title: Docker Deployment
+description: Deploy NodeDB using Docker containers and docker-compose.
 ---
 
-# Docker
+# Docker Deployment
 
-TODO
+NodeDB doesn't have an official Docker image yet, but you can build one from the source Dockerfile. This guide shows how to containerize NodeDB for development and production deployments.
+
+## Building the Docker Image
+
+Create a `Dockerfile` in the NodeDB root directory:
+
+```dockerfile
+# Build stage
+FROM rust:1.89-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache \
+  build-base \
+  pkgconfig \
+  linux-headers \
+  git
+
+# Clone repository (or copy local source)
+RUN git clone https://github.com/NodeDB/nodedb.git /app
+WORKDIR /app
+
+# Build release binary
+RUN cargo build --release --features cluster
+
+# Runtime stage
+FROM alpine:latest
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+  ca-certificates \
+  libgcc
+
+# Copy binary from builder
+COPY --from=builder /app/target/release/nodedb /usr/local/bin/
+
+# Create data directory
+RUN mkdir -p /data
+
+# Expose ports
+EXPOSE 6433 6432 6480 9400 9090
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD nc -z localhost 6432 || exit 1
+
+# Start NodeDB
+ENTRYPOINT ["nodedb"]
+CMD ["--data-dir", "/data"]
+```
+
+Build the image:
+
+```bash
+docker build -t nodedb:latest .
+```
+
+## Running NodeDB with Docker
+
+### Single Node
+
+```bash
+docker run -d \
+  --name nodedb \
+  -p 6433:6433 \
+  -p 6432:6432 \
+  -p 6480:6480 \
+  -v nodedb-data:/data \
+  nodedb:latest
+```
+
+This starts NodeDB with:
+- Native protocol on port 6433
+- PostgreSQL protocol on port 6432
+- HTTP API on port 6480
+- Data persisted in `nodedb-data` volume
+
+Test the connection:
+
+```bash
+psql -h localhost -p 6432
+```
+
+### With Custom Configuration
+
+Create a `server.toml`:
+
+```toml
+listen = "0.0.0.0:6433"
+pg_listen = "0.0.0.0:6432"
+http_listen = "0.0.0.0:6480"
+data_dir = "/data"
+memory_limit = 4294967296  # 4 GB
+max_connections = 1000
+log_format = "json"
+
+[engines]
+vector_budget_fraction = 0.35
+sparse_budget_fraction = 0.20
+crdt_budget_fraction = 0.10
+timeseries_budget_fraction = 0.10
+query_budget_fraction = 0.15
+```
+
+Mount it in the container:
+
+```bash
+docker run -d \
+  --name nodedb \
+  -p 6433:6433 \
+  -p 6432:6432 \
+  -p 6480:6480 \
+  -v nodedb-data:/data \
+  -v ./server.toml:/etc/nodedb/server.toml:ro \
+  nodedb:latest \
+  --config /etc/nodedb/server.toml
+```
+
+## Docker Compose
+
+For a full stack with NodeDB plus client services:
+
+```yaml
+version: '3.8'
+
+services:
+  nodedb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nodedb
+    ports:
+      - "6433:6433"   # Native protocol
+      - "6432:6432"   # PostgreSQL protocol
+      - "6480:6480"   # HTTP API
+      - "9400:9400"   # Raft RPC (cluster mode)
+      - "9090:9090"   # Sync WebSocket (edge sync)
+    volumes:
+      - nodedb-data:/data
+      - ./server.toml:/etc/nodedb/server.toml:ro
+    environment:
+      - RUST_LOG=info
+      - NODEDB_MEMORY_LIMIT=4294967296
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "6432"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - nodedb-net
+
+  # Optional: PgAdmin for PostgreSQL-compatible queries
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@example.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    networks:
+      - nodedb-net
+
+volumes:
+  nodedb-data:
+
+networks:
+  nodedb-net:
+    driver: bridge
+```
+
+Start the stack:
+
+```bash
+docker-compose up -d
+```
+
+View logs:
+
+```bash
+docker-compose logs -f nodedb
+```
+
+## Kubernetes Deployment
+
+For Kubernetes, use this StatefulSet manifest:
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nodedb
+spec:
+  serviceName: nodedb
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nodedb
+  template:
+    metadata:
+      labels:
+        app: nodedb
+    spec:
+      containers:
+      - name: nodedb
+        image: nodedb:latest
+        ports:
+        - containerPort: 6433
+          name: native
+        - containerPort: 6432
+          name: pg
+        - containerPort: 6480
+          name: http
+        - containerPort: 9400
+          name: raft
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: config
+          mountPath: /etc/nodedb
+        env:
+        - name: RUST_LOG
+          value: "info"
+        livenessProbe:
+          tcpSocket:
+            port: 6432
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 6432
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      configMaps:
+      - name: nodedb-config
+        mountPath: /etc/nodedb
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 100Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodedb
+spec:
+  clusterIP: None
+  selector:
+    app: nodedb
+  ports:
+  - port: 6432
+    targetPort: 6432
+    name: pg
+  - port: 6433
+    targetPort: 6433
+    name: native
+  - port: 6480
+    targetPort: 6480
+    name: http
+  - port: 9400
+    targetPort: 9400
+    name: raft
+```
+
+Deploy with:
+
+```bash
+kubectl apply -f nodedb-statefulset.yaml
+```
+
+Access NodeDB from within the cluster:
+
+```bash
+psql -h nodedb-0.nodedb.default.svc.cluster.local -p 6432
+```
+
+## Network Modes
+
+### Host Network (High Performance)
+
+For maximum performance, use host networking (Linux only):
+
+```bash
+docker run -d \
+  --name nodedb \
+  --network host \
+  -v nodedb-data:/data \
+  nodedb:latest
+```
+
+### Custom Bridge Network
+
+```bash
+docker network create nodedb-network
+docker run -d \
+  --name nodedb \
+  --network nodedb-network \
+  -v nodedb-data:/data \
+  nodedb:latest
+```
+
+Other services can reach NodeDB via hostname `nodedb`.
+
+## Storage Tuning
+
+For production, tune storage performance:
+
+```bash
+docker run -d \
+  --name nodedb \
+  -p 6433:6433 \
+  -p 6432:6432 \
+  -p 6480:6480 \
+  -v nodedb-data:/data \
+  --device /dev/nvme0n1:/dev/nvme0n1 \
+  --cap-add SYS_ADMIN \
+  --security-opt apparmor=unconfined \
+  nodedb:latest
+```
+
+This gives the container direct access to an NVMe device for maximal I/O performance.
+
+## Memory and CPU Limits
+
+Control resource consumption:
+
+```bash
+docker run -d \
+  --name nodedb \
+  -p 6433:6433 \
+  -p 6432:6432 \
+  -p 6480:6480 \
+  -v nodedb-data:/data \
+  --cpus="8" \
+  --memory="16g" \
+  --memory-swap="16g" \
+  nodedb:latest
+```
+
+## Logs and Monitoring
+
+View container logs:
+
+```bash
+docker logs -f nodedb
+
+# JSON-formatted logs for structured parsing
+docker logs -f nodedb | jq .
+```
+
+Export logs to a file:
+
+```bash
+docker logs nodedb > nodedb.log 2>&1
+```
+
+## Troubleshooting
+
+**Container exits immediately**: Check logs with `docker logs nodedb`.
+
+**Cannot connect**: Ensure ports are published with `-p` and the container is healthy (`docker ps`).
+
+**Slow I/O**: Use `--device` to map NVMe directly instead of Docker volumes for WAL writes.
+
+**OOM**: Increase `--memory` limit or reduce `memory_limit` in server.toml.
+
+## Next Steps
+
+- [Server Configuration](/getting-started/server-config) — Configure clustering, ports, and memory
+- [Quick Start](/getting-started/quickstart) — Run your first queries
+- [Cluster Setup](/operations/cluster-setup) — Multi-node distributed deployment

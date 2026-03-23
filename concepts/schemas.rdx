@@ -1,8 +1,293 @@
 ---
 title: Schemas
-description: Optional schema enforcement, evolution, and validation.
+description: Optional JSON Schema validation at write time. Non-breaking schema evolution. Declare once, evolve freely.
 ---
 
 # Schemas
 
-TODO
+NodeDB supports optional schema enforcement on collections. Schemas validate documents at write time and enable the optimizer to make better decisions. Unlike relational systems, schemas are optional—collections can remain schemaless and accept any documents.
+
+## Schema Definition
+
+A schema is a JSON Schema subset defining field types, constraints, and validation rules.
+
+```sql
+CREATE COLLECTION articles WITH SCHEMA (
+    properties: {
+        id: { type: "string", format: "uuid" },
+        title: { type: "string", minLength: 1, maxLength: 500 },
+        content: { type: "string" },
+        embedding: { type: "array", items: { type: "number" }, minItems: 1536, maxItems: 1536 },
+        tags: { type: "array", items: { type: "string" } },
+        published: { type: "boolean" },
+        created_at: { type: "string", format: "date-time" },
+        metadata: { type: "object" }
+    },
+    required: ["id", "title", "content"],
+    additionalProperties: true  -- Allow extra fields not in schema
+);
+```
+
+### Supported Constraints
+
+| Constraint | Type | Example |
+|------------|------|---------|
+| `type` | scalar, array, object | `"string"`, `"number"` |
+| `minLength` | string | `minLength: 1` |
+| `maxLength` | string | `maxLength: 500` |
+| `pattern` | string | `pattern: "^[a-z]+$"` |
+| `minimum` | number | `minimum: 0` |
+| `maximum` | number | `maximum: 100` |
+| `enum` | any | `enum: ["draft", "published", "archived"]` |
+| `required` | array | `required: ["id", "title"]` |
+| `uniqueItems` | array | Only in sparse/metadata indexes |
+| `additionalProperties` | boolean | Allow fields not in schema |
+
+### Format Specifiers
+
+```
+"format": "uuid"           -- Validate UUID format
+"format": "email"          -- Validate email format
+"format": "date-time"      -- RFC3339 timestamp
+"format": "date"           -- YYYY-MM-DD
+"format": "uri"            -- Valid URI
+"format": "hostname"       -- Valid hostname
+```
+
+## Schema Validation
+
+When documents are inserted or updated, NodeDB validates against the schema:
+
+```sql
+INSERT INTO articles (id, title, content, embedding)
+VALUES (
+    'not-a-uuid',    -- Fails: format is "uuid"
+    '',              -- Fails: minLength is 1
+    'Content',       -- OK
+    [0.1, 0.2, ...]  -- OK
+);
+
+-- Error: Failed validation
+-- - Field 'id': Expected format 'uuid', got 'not-a-uuid'
+-- - Field 'title': Minimum length is 1, got 0
+```
+
+Validation occurs on the Data Plane before the document is committed to storage. Invalid documents are rejected with `ValidationError`.
+
+## Schema Evolution (Non-Breaking Changes)
+
+Schemas can evolve without downtime. Changes are categorized:
+
+### Backward-Compatible
+
+These changes allow old documents to pass validation:
+
+- **Add optional field** (no `required`)
+- **Add constraint to optional field** (doesn't affect existing docs)
+- **Loosen constraint** (e.g., increase maxLength)
+- **Add enum option** (existing values still valid)
+
+```sql
+-- Original schema
+{ properties: { title: { type: "string" } }, required: ["id", "title"] }
+
+-- Compatible evolution: add optional description
+{ properties: {
+    title: { type: "string" },
+    description: { type: "string" }  -- new, optional
+}, required: ["id", "title"] }
+
+-- All existing documents still pass validation
+```
+
+### Breaking Changes
+
+These changes require data migration:
+
+- **Add required field** (old docs lack this field)
+- **Tighten constraint** (e.g., decrease maxLength)
+- **Change type** (e.g., string→number)
+- **Remove field** (documents that have it may become invalid)
+
+```sql
+-- Original
+{ properties: { title: { type: "string" } } }
+
+-- Breaking: make title required
+{ properties: { title: { type: "string" } }, required: ["title"] }
+
+-- All documents without title now fail validation
+```
+
+To handle breaking changes:
+
+```sql
+-- 1. Create new collection with new schema
+CREATE COLLECTION articles_v2 WITH SCHEMA (...);
+
+-- 2. Migrate data (backfill required fields, transform types)
+INSERT INTO articles_v2 (id, title, content, ...)
+SELECT id, COALESCE(title, 'Untitled'), content, ...
+FROM articles;
+
+-- 3. Redirect writes to articles_v2
+ALTER TABLE articles REDIRECT TO articles_v2;
+
+-- 4. After validation period, drop old collection
+DROP COLLECTION articles;
+
+-- 5. Rename v2 back to original name
+ALTER TABLE articles_v2 RENAME TO articles;
+```
+
+Or use a gradual migration with dual-write:
+
+```
+Clients write to articles (old schema)
+  ↓ sync job reads from articles
+  ↓ transforms and writes to articles_v2
+  ↓
+Reads from articles (old)
+Writes to articles_v2 (new, backfilling during migration)
+  ↓ once articles_v2 is complete
+Reads from articles_v2
+Writes to articles_v2
+  ↓ after validation
+Drop articles
+```
+
+## Index Hints from Schema
+
+The optimizer uses schema information to make better decisions:
+
+```sql
+SCHEMA says: title { type: "string", maxLength: 500 }
+  ↓
+Optimizer knows: title is short string
+  → Stores inline in redb B-Tree, no separate blob storage
+  → Estimates index memory usage
+
+SCHEMA says: embedding { type: "array", items: { type: "number" }, minItems: 1536, maxItems: 1536 }
+  ↓
+Optimizer knows: embedding is fixed 1536-D vector
+  → Can allocate mmap region for all vectors in advance
+  → Vectorizes operations
+  → Estimates HNSW memory more accurately
+```
+
+## Schema-Optional Collections
+
+Collections can remain schemaless:
+
+```sql
+-- No schema: accepts any documents
+CREATE COLLECTION flexible_docs;
+
+INSERT INTO flexible_docs (id) VALUES ('doc1');
+INSERT INTO flexible_docs (id, arbitrary_field) VALUES ('doc2', 'anything');
+INSERT INTO flexible_docs (id, nested) VALUES ('doc3', { a: 1, b: 2 });
+
+SELECT * FROM flexible_docs;
+-- Returns documents with varying fields
+```
+
+### Dynamic Schema Discovery
+
+NodeDB can infer a schema from documents:
+
+```sql
+-- Sample documents, infer schema
+ANALYZE SCHEMA flexible_docs SAMPLE 10000;
+
+-- Returns inferred schema (approximate)
+{
+    properties: {
+        id: { type: "string" },
+        arbitrary_field: { type: "string" },
+        nested: { type: "object" }
+    },
+    required: ["id"]  -- Fields present in all samples
+}
+```
+
+Inferred schemas are approximate (based on sample), not enforced. Useful for documentation or gradual adoption.
+
+## Validation Strategies
+
+### Strict (default)
+
+All writes must pass schema validation. Invalid documents rejected.
+
+```sql
+INSERT INTO articles (id, title) VALUES ('id1', '');
+-- Error: title minLength is 1
+```
+
+### Lenient
+
+Store documents even if they fail schema validation. Validation is logged but non-fatal.
+
+```sql
+ALTER COLLECTION articles SET validation_mode = 'LENIENT';
+
+INSERT INTO articles (id, title) VALUES ('id1', '');
+-- OK (stored)
+-- Warning logged: title minLength is 1
+```
+
+### Evolving
+
+New documents must pass schema; old documents may have been inserted before the schema was defined.
+
+```sql
+ALTER COLLECTION articles SET validation_mode = 'EVOLVING';
+```
+
+Useful when retrofitting a schema to existing schemaless collections.
+
+## Conditional Validation
+
+Validation rules can depend on other fields:
+
+```sql
+IF properties: {
+    status: { enum: ["draft", "published"] },
+    published_at: { type: "string", format: "date-time" }
+},
+
+-- Conditional: if status="published", published_at is required
+conditional: [
+    {
+        "if": { properties: { status: { const: "published" } } },
+        "then": { required: ["published_at"] }
+    }
+]
+```
+
+## Schema Versioning
+
+Track schema versions for debugging and migration:
+
+```sql
+-- Schema has auto-incrementing version
+SELECT schema_version FROM system.collection_metadata
+WHERE collection_name = 'articles';
+-- Returns: 3 (schema has changed 3 times)
+
+-- History of all schema changes
+SELECT schema_version, changed_at, changed_by, schema
+FROM system.schema_history
+WHERE collection_name = 'articles'
+ORDER BY schema_version DESC;
+```
+
+Schema versions are part of every query plan. When a schema changes, old prepared statements may invalidate.
+
+## Performance Impact
+
+Schema validation has minimal overhead (<1% query latency) because:
+1. Validation occurs on Data Plane (after deserialization, not in critical path)
+2. Checks are performed in vectorized batches
+3. Invalid documents fail fast before any writes
+
+If you have very simple schemas (no complex constraints), consider `validation_mode='LENIENT'` to skip validation on write and defer it to query time.

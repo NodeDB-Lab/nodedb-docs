@@ -1,8 +1,363 @@
 ---
 title: Authorization & RBAC
-description: Roles, permissions, GRANT/REVOKE.
+description: Define roles, grant permissions, and enforce access control.
 ---
 
 # Authorization & RBAC
 
-TODO
+NodeDB uses role-based access control (RBAC) with fine-grained permissions and Row-Level Security (RLS) policies.
+
+## Built-In Roles
+
+| Role | Permissions | Use Case |
+|------|-------------|----------|
+| `superuser` | All operations | Database administrator |
+| `tenant_admin` | Tenant-scoped admin | Tenant operator |
+| `monitor` | Read-only monitoring | Prometheus scraper, dashboards |
+| `read_write` | Read/write data | Application user |
+| `read_only` | Read-only | Analytics user, reporting |
+
+## Create Custom Role
+
+```sql
+CREATE ROLE analyst;
+```
+
+Grant permissions:
+
+```sql
+GRANT USAGE ON DATABASE nodedb TO analyst;
+GRANT SELECT ON ALL COLLECTIONS IN SCHEMA public TO analyst;
+GRANT USAGE ON SCHEMA public TO analyst;
+```
+
+List roles:
+
+```sql
+SHOW ROLES;
+```
+
+## Assign Users to Roles
+
+Create user in role:
+
+```sql
+CREATE USER alice WITH PASSWORD 'secure_pass' IN ROLE analyst;
+```
+
+Grant role to existing user:
+
+```sql
+GRANT analyst TO bob;
+```
+
+Revoke role:
+
+```sql
+REVOKE analyst FROM bob;
+```
+
+## Permission Hierarchy
+
+Permissions:
+
+- `USAGE` - Connect to database / use schema
+- `SELECT` - Read data
+- `INSERT` - Add rows
+- `UPDATE` - Modify rows
+- `DELETE` - Remove rows
+- `EXECUTE` - Run functions
+- `CREATE` - Create tables / schemas
+- `DROP` - Delete tables / schemas
+- `GRANT` - Grant permissions to others
+- `ADMIN` - Tenant administrator
+- `MONITOR` - Access metrics
+
+### Grant Default Permissions
+
+Read-only user:
+
+```sql
+CREATE ROLE analyst;
+GRANT USAGE ON DATABASE nodedb TO analyst;
+GRANT USAGE ON SCHEMA public TO analyst;
+GRANT SELECT ON ALL COLLECTIONS IN SCHEMA public TO analyst;
+```
+
+Read-write user:
+
+```sql
+CREATE ROLE app_user;
+GRANT USAGE ON DATABASE nodedb TO app_user;
+GRANT USAGE ON SCHEMA public TO app_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL COLLECTIONS IN SCHEMA public TO app_user;
+```
+
+Admin user:
+
+```sql
+CREATE ROLE admin_user;
+GRANT USAGE ON DATABASE nodedb TO admin_user;
+GRANT CREATE ON DATABASE nodedb TO admin_user;
+GRANT ADMIN ON ALL SCHEMAS IN DATABASE nodedb TO admin_user;
+```
+
+## Collection-Level Permissions
+
+Grant per-collection:
+
+```sql
+GRANT SELECT ON customers TO analyst;
+GRANT SELECT, INSERT ON transactions TO app_user;
+GRANT DROP ON temp_table TO admin_user;
+```
+
+View permissions:
+
+```sql
+SHOW GRANTS ON customers;
+```
+
+## Schema-Level Permissions
+
+Create schema:
+
+```sql
+CREATE SCHEMA app_data;
+```
+
+Grant schema access:
+
+```sql
+GRANT USAGE ON SCHEMA app_data TO app_user;
+GRANT CREATE ON SCHEMA app_data TO app_user;
+```
+
+## Row-Level Security (RLS) Policies
+
+Restrict rows by user or tenant:
+
+```sql
+CREATE RLS POLICY tenant_isolation ON customers
+  FOR read
+  USING (tenant_id = current_user_tenant());
+
+CREATE RLS POLICY price_visibility ON products
+  FOR select
+  USING (visibility = 'public' OR owner = current_user());
+
+CREATE RLS POLICY delete_own_records ON user_logs
+  FOR delete
+  USING (user_id = current_user_id());
+```
+
+Policy syntax:
+
+```sql
+CREATE RLS POLICY <name> ON <collection>
+  FOR <read|write|all>
+  USING (<condition>)
+  [WITH CHECK (<insert_update_condition>)];
+```
+
+View policies:
+
+```sql
+SHOW RLS POLICIES ON customers;
+```
+
+Disable policy temporarily:
+
+```sql
+ALTER POLICY tenant_isolation ON customers DISABLE;
+```
+
+Drop policy:
+
+```sql
+DROP POLICY tenant_isolation ON customers;
+```
+
+## Built-in Functions for RLS
+
+| Function | Returns | Example |
+|----------|---------|---------|
+| `current_user()` | String | 'alice' |
+| `current_user_id()` | Integer | 123 |
+| `current_user_tenant()` | String | 'tenant-42' |
+| `has_permission()` | Boolean | `has_permission('SELECT')` |
+
+Example multi-tenant policy:
+
+```sql
+CREATE RLS POLICY tenant_data ON products
+  FOR all
+  USING (tenant_id = current_user_tenant())
+  WITH CHECK (tenant_id = current_user_tenant());
+```
+
+User in tenant-42 sees only products where tenant_id = 'tenant-42'.
+
+## Tenant-Admin Role
+
+Tenant admins manage tenants within scoped access:
+
+```sql
+GRANT ADMIN ON TENANT tenant-42 TO alice;
+```
+
+Alice can:
+
+- Create users within tenant-42
+- Create collections within tenant-42
+- View quota usage for tenant-42
+- Cannot access other tenants
+
+Alice cannot:
+
+- Create other tenants
+- Modify global settings
+- Access superuser functions
+
+## Monitor Role
+
+Read-only monitoring access:
+
+```sql
+GRANT MONITOR ON DATABASE nodedb TO prometheus;
+```
+
+Prometheus user can:
+
+- Read from system tables (performance_schema)
+- Scrape GET /metrics
+- View SHOW NODES, SHOW CLUSTER
+- Cannot modify any data
+
+## Database-Level Permissions
+
+```sql
+-- Create database
+CREATE DATABASE analytics_db;
+
+-- Grant access
+GRANT USAGE ON DATABASE analytics_db TO analyst;
+GRANT CREATE ON DATABASE analytics_db TO analyst;
+
+-- Connect
+\c analytics_db analyst
+```
+
+## Revoke Permissions
+
+Revoke specific permission:
+
+```sql
+REVOKE SELECT ON customers FROM analyst;
+```
+
+Revoke all:
+
+```sql
+REVOKE ALL ON customers FROM analyst;
+```
+
+Revoke role:
+
+```sql
+REVOKE analyst FROM bob;
+```
+
+## Audit RLS Enforcement
+
+Track RLS evaluations:
+
+```toml
+[audit]
+log_rls_evaluations = true
+```
+
+View RLS audit:
+
+```sql
+SELECT timestamp, user_id, collection, policy_name, result
+FROM audit.rls_log
+WHERE result = 'denied'
+ORDER BY timestamp DESC;
+```
+
+## Effective Permissions Check
+
+View what alice can do:
+
+```sql
+SELECT * FROM information_schema.role_table_grants
+WHERE grantee = 'alice';
+```
+
+Does alice have SELECT on customers?
+
+```sql
+SELECT has_permission('SELECT', 'customers');
+```
+
+## Security Best Practices
+
+- Create minimal roles with specific permissions
+- Use RLS for multi-tenant data isolation
+- Grant permissions by role, not individual users
+- Revoke permissions when no longer needed
+- Audit permission changes
+- Test RLS policies with test queries
+- Never grant all permissions to applications
+- Use tenant_id in RLS for isolation
+- Rotate admin accounts quarterly
+
+## Default User Permissions
+
+All users get:
+
+- `USAGE` on PUBLIC schema
+- View PUBLIC collections
+
+Superuser gets:
+
+- All permissions on all objects
+- Can create/drop roles
+- Can grant permissions
+- Can modify system settings
+
+## Role Inheritance
+
+Child roles inherit parent permissions:
+
+```sql
+CREATE ROLE base_analyst;
+GRANT SELECT ON all_data TO base_analyst;
+
+CREATE ROLE senior_analyst INHERITING base_analyst;
+GRANT INSERT ON recent_data TO senior_analyst;
+```
+
+Senior analyst inherits SELECT from base_analyst plus INSERT on recent_data.
+
+## Troubleshooting Access
+
+Check why user denied access:
+
+```sql
+EXPLAIN SELECT * FROM customers WHERE tenant_id = 'tenant-42';
+-- Shows RLS policy being evaluated
+
+-- Debug: Run query as different user
+SET SESSION USER = 'alice';
+SELECT * FROM customers;
+SET SESSION USER RESET;
+```
+
+Common issues:
+
+- RLS policy condition is false
+- User lacks SELECT permission
+- Current user doesn't match filter
+- Tenant mismatch

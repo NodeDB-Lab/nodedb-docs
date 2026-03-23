@@ -1,8 +1,203 @@
 ---
-title: Limits
-description: Maximum document size, vector dimensions, connections, etc.
+title: "System Limits"
+description: "Resource limits, constraints, and maximum values for NodeDB"
 ---
 
-# Limits
+# System Limits
 
-TODO
+NodeDB enforces various resource limits to ensure stability and predictable performance. These limits are per-server and cannot be changed without restart in most cases.
+
+## Connection Limits
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| max_connections | 4096 | Yes (server.toml) | Maximum concurrent connections across all protocols |
+| max_connections_per_user | 0 | Yes (server.toml) | Max per authenticated user (0 = unlimited) |
+| idle_timeout_secs | 3600 | Yes (server.toml) | Close connection if idle longer than this |
+| connection_timeout_secs | 30 | Fixed | Time to complete handshake before close |
+| SPSC queue capacity | 16 MiB | Compile-time | Bounded ring buffer for requests/responses |
+
+Exceeding max_connections: new connections block in OS accept queue until slots free. Typically recovers within seconds as idle connections close.
+
+## Query Execution Limits
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| max_graph_depth | 10 | Fixed | Maximum depth of graph traversal |
+| max_visited_nodes | 100,000 | Fixed | Maximum nodes visited in graph/join traversal |
+| max_fan_out_per_operator | 1,000,000 | Fixed | Virtual rows produced before rejecting |
+| statement_timeout_secs | 300 | Yes (per connection) | Default max query execution time |
+| max_result_rows | 1,000,000 | Soft | Warning logged if exceeded |
+
+Hitting max_visited_nodes returns FanOutExceeded error (SQLSTATE 54001). Graph queries must add WHERE clauses to limit cardinality.
+
+## Memory Limits
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| memory_limit | 1 GiB | Yes (server.toml) | Total memory budget for all engines |
+| vector_budget_fraction | 0.30 | Yes (server.toml) | Portion allocated to vector engine |
+| sparse_budget_fraction | 0.15 | Yes (server.toml) | Portion allocated to relational data |
+| crdt_budget_fraction | 0.10 | Yes (server.toml) | Portion allocated to CRDT state |
+| timeseries_budget_fraction | 0.10 | Yes (server.toml) | Portion allocated to metrics |
+| query_budget_fraction | 0.20 | Yes (server.toml) | Portion for query execution buffers |
+
+Example with 1 GiB total:
+- Vector: 322 MiB
+- Sparse: 161 MiB
+- CRDT: 107 MiB
+- Timeseries: 107 MiB
+- Query: 215 MiB
+- Reserved: 161 MiB
+
+Soft budgets allow brief excursions (seconds); sustained overage causes MemoryExhausted error.
+
+## Storage Limits
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| wal_segment_size | 64 MiB | Yes (server.toml: wal_segment_target_mb) | Rotate segment at this size |
+| max_segment_age | 7 days | Fixed | Archive segments older than this |
+| compaction_tombstone_threshold | 0.20 | Yes (server.toml) | Trigger compaction at 20% deletes |
+| wal_record_max_size | 4 GiB | Fixed | Single WAL record must fit |
+| page_size | 4 KiB | Compile-time | Page size (4 KiB or 16 KiB) |
+
+WAL grows monotonically. Checkpoints/compaction don't reduce size; old segments must be archived or deleted manually.
+
+## Data Size Limits
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| max_collection_name_length | 256 | Fixed | SQL identifier length |
+| max_document_size | 100 MiB | Fixed | Single row/document size |
+| max_embedding_dimension | 10,000 | Fixed | Embedding vector dimensions |
+| max_embedding_cardinality | 1 Billion | Fixed | Total vectors in index |
+| max_text_field_size | 100 MiB | Fixed | Single TEXT column value |
+| max_json_depth | 100 | Fixed | Nested JSON levels |
+| max_array_elements | 1,000,000 | Fixed | Elements in single array |
+
+Exceeding these returns error without partial write.
+
+## Index Limits
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| max_indexes_per_collection | 64 | Fixed | Number of indexes on one table |
+| max_index_key_size | 8 KiB | Fixed | Composite index key size |
+| max_index_cardinality | 1 Billion | Fixed | Unique values in indexed column |
+
+Indexes consume memory per vector_budget_fraction or sparse_budget_fraction.
+
+## Transaction and Consistency Limits
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| max_transaction_size | 1 GiB | Fixed | All writes in transaction must fit |
+| max_lock_age_secs | 600 | Fixed | Lock held >10 minutes triggers timeout |
+| serialization_conflict_retry_max | 5 | Fixed | Automatic retries before giving up |
+| max_write_batch_size | 100 MB | Fixed | Batch operation max payload |
+
+Transactions exceeding 1 GiB are rejected. Break into smaller transactions.
+
+## Cluster Limits
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| num_groups | 4 | Yes (server.toml) | Raft shards in cluster |
+| replication_factor | 3 | Yes (server.toml) | Copies of each shard |
+| max_nodes_per_cluster | 256 | Fixed | Maximum nodes in cluster |
+| max_raft_snapshot_size | 1 GiB | Fixed | Snapshot size limit |
+| raft_log_retention | 1000 logs | Fixed | Keep last N logs per group |
+
+Cluster must be re-initialized to change num_groups or replication_factor.
+
+## Network Limits
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| max_message_size | 16 MiB | Fixed | Single protocol message size |
+| tcp_read_buffer | 2 MiB | Fixed | Socket buffer for reads |
+| tcp_write_buffer | 2 MiB | Fixed | Socket buffer for writes |
+| rpc_timeout_secs | 30 | Fixed | Inter-node RPC timeout |
+
+Messages >16 MiB should be streamed (native protocol supports multi-message responses).
+
+## Concurrency Limits
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| max_threads (data plane) | CPU count - 1 | Yes (server.toml: data_plane_cores) | I/O thread count |
+| max_async_tasks (control) | Unbounded | Fixed | Tokio task count |
+| max_pending_requests | 10,000 | Fixed | Requests queued in SPSC bridge |
+
+Control plane uses Tokio and scales to thousands of tasks. Data plane uses fixed thread count.
+
+## Feature-Specific Limits
+
+### Vector Engine
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| max_vector_batch_size | 100 MB | Fixed | Vectors processed per query |
+| knn_search_k | 100,000 | Fixed | Maximum k for k-NN search |
+| vector_quantization_bits | 8 | Fixed | Int8 quantization only |
+
+### CRDT Engine
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| max_crdt_operation_size | 10 MB | Fixed | Single Loro operation |
+| crdt_version_history_retention | 90 days | Fixed | Keep 90 days of history |
+
+### Timeseries Engine
+
+| Limit | Default | Configurable | Description |
+|-------|---------|--------------|-------------|
+| max_cardinality | 1 Million | Fixed | Unique tag combinations |
+| max_tags_per_point | 100 | Fixed | Key-value pairs per point |
+| max_fields_per_point | 256 | Fixed | Numeric fields per point |
+| time_range_query_max_duration | 10 years | Fixed | Can't query more than 10 years |
+
+## Performance and Warnings
+
+NodeDB logs warnings before hard limits are hit:
+
+| Condition | Warning | Action |
+|-----------|---------|--------|
+| Memory usage > 90% | WARNING: Memory usage high | Evict caches |
+| Result set > 1M rows | WARNING: Large result set | Continue (may be slow) |
+| Query > 30s execution | WARNING: Slow query | Continue (may exceed deadline) |
+| WAL > 80% of disk | WARNING: WAL size critical | Run checkpoint manually |
+| Single message > 8 MiB | WARNING: Large message | Continue (may stress memory) |
+
+Warnings are logged but do not reject operations (except where hard limits apply).
+
+## Soft vs Hard Limits
+
+**Hard limits** (cannot be exceeded):
+- max_connections
+- max_document_size
+- max_embedding_dimension
+- max_graph_depth
+- max_visited_nodes
+
+Exceeding hard limit: operation rejected immediately.
+
+**Soft limits** (can be exceeded briefly):
+- memory_limit and engine budgets
+- max_result_rows
+- statement_timeout (if specified)
+
+Exceeding soft limit: operation may succeed if resource freed quickly, or fail if sustained.
+
+## Changing Limits
+
+Most limits require server restart and `server.toml` edit. Runtime limits via SQL (e.g., `SET statement_timeout`) are supported for some parameters.
+
+Example: Increasing memory for a single query:
+
+```sql
+SET statement_timeout = '60 seconds';  -- Extend from default 300s
+SELECT * FROM large_table WHERE ...;
+RESET statement_timeout;
+```

@@ -1,8 +1,190 @@
 ---
-title: pgwire Extensions
-description: NodeDB-specific extensions to the PostgreSQL wire protocol.
+title: "PostgreSQL Wire Extensions"
+description: "NodeDB extensions to pgwire protocol on port 6432"
 ---
 
-# pgwire Extensions
+# PostgreSQL Wire Extensions
 
-TODO
+NodeDB implements the PostgreSQL wire protocol (pgwire) on port 6432 for compatibility with PostgreSQL clients and tools. The protocol is standard except for NodeDB-specific extensions in parameter passing and response metadata.
+
+## Protocol Compliance
+
+NodeDB supports the PostgreSQL 12+ wire protocol. Standard features:
+
+- Startup handshake with ParameterStatus messages
+- Extended query protocol (Parse, Bind, Execute, Describe, Sync)
+- Row-by-row result streaming
+- Error messages in Notice/Error response format
+- Sasl authentication (if enabled)
+- Cancel request support
+- Copy In/Out for bulk loading
+
+## NodeDB Extensions
+
+### Trace Context in Query Parameters
+
+When executing a query, clients can pass trace context via query parameters (Extended Query protocol):
+
+```
+BIND statement USING 'trace-id'::TEXT, 'span-id'::TEXT
+```
+
+Named placeholders are mapped to SPSC request envelope fields:
+
+```sql
+-- These placeholders are recognized specially:
+SELECT * FROM users WHERE id = $1
+-- Sets priority from connection config
+
+-- To set trace ID explicitly:
+SELECT /*+ trace_id='550e8400-e29b-41d4-a716-446655440000' */ * FROM users
+```
+
+### SPSC Priority Hints
+
+PostgreSQL wire protocol has no concept of request priority. NodeDB allows priority hints via SQL comments:
+
+```sql
+SELECT /*+ priority=10 */ * FROM large_table;
+```
+
+Priority values: 0 (low) to 255 (critical). Default: 128 (normal). Higher priority requests are processed before lower priority ones in the SPSC queue.
+
+### Deadline in Query Timeout
+
+The PostgreSQL `SET statement_timeout` is mapped to SPSC deadline:
+
+```sql
+SET statement_timeout = '5 seconds';
+SELECT * FROM users;
+-- Translated to deadline = now() + 5 seconds in SPSC request
+```
+
+### Extended Error Details
+
+NodeDB provides additional error context in error responses:
+
+```
+ERROR: 42601 syntax error in query
+DETAIL: Parse error at position 15: unexpected keyword
+HINT: Did you mean 'SELECT'?
+SQLSTATE: 42601
+```
+
+Additional NodeDB-specific fields:
+
+- **X-NodeDB-Error-Code**: Internal error code (e.g., `CollectionNotFound`)
+- **X-NodeDB-Attempt**: Retry attempt number (0 on first attempt)
+- **X-NodeDB-LSN**: Watermark LSN at error time (for consistency checks)
+
+### Type Mapping Extensions
+
+Standard PostgreSQL type OIDs are used. NodeDB adds support for:
+
+- **1021**: FLOAT4_ARRAY - Array of 32-bit floats (common for embeddings)
+- **1022**: FLOAT8_ARRAY - Array of 64-bit floats
+- **114**: JSON - JSON data (standard)
+- **3802**: JSONB - Binary JSON (standard)
+
+Vector types use FLOAT4_ARRAY for efficient serialization.
+
+### ResultSet Metadata Extensions
+
+After Describe response, NodeDB includes additional column metadata:
+
+```
+Column: "embedding" (OID=1021)
+  Modifier: -1
+  Format: Binary (1)
+  X-NodeDB-Engine: "vector"
+  X-NodeDB-Quantized: false
+  X-NodeDB-Dimension: 768
+```
+
+Extensions allow clients to optimize data interpretation (e.g., use SIMD for float arrays, special handling for quantized embeddings).
+
+## Example: Standard PostgreSQL Client
+
+Standard PostgreSQL clients (psql, pgBouncer, ORMs) connect to port 6432 without modification:
+
+```bash
+psql -h localhost -p 6432 -U alice -d semantic_db
+```
+
+All standard pgwire features work:
+
+```sql
+semantic_db=# SELECT * FROM products LIMIT 3;
+ id |          embedding           | title
+----+------------------------------+-------
+  1 | {0.1,0.2,0.3,...,0.768}     | Widget
+  2 | {0.15,0.22,0.31,...,0.769}  | Gadget
+  3 | {0.08,0.19,0.25,...,0.770}  | Doohickey
+```
+
+## Example: Extended Query with Trace Context
+
+```python
+import psycopg2
+
+conn = psycopg2.connect(
+    host="localhost", port=6432, user="alice", dbname="semantic_db"
+)
+
+cursor = conn.cursor()
+
+# Execute with trace context
+cursor.execute(
+    "SELECT * FROM users WHERE id = %s",
+    (42,),
+    # Optional: set via comment
+)
+
+# Rows are returned as tuples
+for row in cursor.fetchall():
+    print(row)
+```
+
+## Example: Priority Hints
+
+```sql
+-- High priority for critical query
+SELECT /*+ priority=200 */ * FROM fraud_detection_features LIMIT 100;
+
+-- Low priority for background analytics
+SELECT /*+ priority=50 */ * FROM daily_aggregate_report;
+```
+
+## Compatibility Notes
+
+NodeDB pgwire implementation is compatible with:
+
+- **psql** (PostgreSQL CLI) - all major versions
+- **pgBouncer** (connection pooling) - versions 1.13+
+- **psycopg2** (Python) - versions 2.8+
+- **node-postgres** (Node.js) - versions 8.0+
+- **rust-postgres** (Rust) - all versions
+- **JDBC** (Java) - all versions
+- **libpq** (C) - all versions
+
+Test compatibility by running:
+
+```bash
+psql -h localhost -p 6432 -c "SELECT version();"
+```
+
+Returns NodeDB version information mimicking PostgreSQL format.
+
+## Protocol Debugging
+
+To capture and inspect pgwire traffic:
+
+```bash
+# With tcpdump
+tcpdump -i lo port 6432 -w pgwire.pcap
+
+# With Wireshark
+wireshark -i lo 'tcp port 6432'
+```
+
+Use Wireshark's built-in PostgreSQL dissector to decode pgwire frames.

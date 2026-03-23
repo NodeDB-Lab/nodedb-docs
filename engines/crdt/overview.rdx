@@ -1,8 +1,154 @@
 ---
 title: CRDT Engine Overview
-description: Episodic state management with loro CRDTs.
+description: Conflict-free replicated data types for distributed state synchronization.
 ---
 
-# CRDT Engine Overview
+# CRDT Engine
 
-TODO
+The CRDT Engine uses Conflict-free Replicated Data Types (CRDTs) to maintain episodic state across distributed replicas without coordination. Perfect for edge devices, offline-first apps, and multi-tenant systems.
+
+## Core Concepts
+
+**CRDT**: A data structure that converges to the same state across replicas when updates are applied in any order, without explicit synchronization.
+
+**Episodic State**: Historical snapshots with causal ordering. Track the evolution of game state, user preferences, model weights, etc.
+
+**Availability + Consistency Tradeoff**:
+- **AP mode** (on edge): Always writable, merges happen at sync time
+- **CP mode** (on cluster): Raft consensus ensures global consistency before ACK
+
+## Supported CRDT Types
+
+Powered by Loro (Rust CRDT library):
+
+| Type | Semantics | Use Case |
+|------|-----------|----------|
+| **Counter** | Increment-only or signed | Likes, scores, metrics |
+| **Text** | Collaborative editing | Documents, notes, chat |
+| **Map** | Key-value container | Objects, records |
+| **List** | Ordered elements | Queues, leaderboards |
+| **Set** | Membership tracking | Tags, permissions, roles |
+
+## AP Mode (Edge Devices)
+
+On edge, CRDTs prioritize availability: every write succeeds immediately.
+
+```sql
+-- Enable AP mode for user preferences
+CREATE TABLE user_prefs (
+  user_id STRING PRIMARY KEY,
+  favorites CRDT(List<STRING>),  -- Tags, bookmarks
+  settings CRDT(Map),            -- App settings
+  sync_version BIGINT            -- Causal version
+);
+
+-- Write succeeds immediately, queues for cloud sync
+INSERT INTO user_prefs (user_id, favorites)
+VALUES ('user:123', CRDT_APPEND('favorites', 'tag:ai'));
+
+-- Offline writes still work
+-- When connectivity restored, syncs to cloud
+```
+
+**Conflict resolution** (declarative):
+
+```sql
+-- Multiple replicas update same data
+-- Replica A: favorites = ['ai', 'ml']
+-- Replica B: favorites = ['ai', 'databases']
+
+-- When merged (any order):
+-- Result: ['ai', 'ml', 'databases'] (set semantics with Add Wins)
+
+-- Chose conflict policy:
+CREATE TABLE user_prefs (
+  user_id STRING PRIMARY KEY,
+  favorites CRDT(List<STRING>) WITH POLICY AddWins,  -- Default
+  -- OR
+  last_updated TIMESTAMP CRDT WITH POLICY LastWriteWins
+);
+```
+
+## CP Mode (Cluster)
+
+On cluster, Raft ensures strong consistency before ACK.
+
+```sql
+-- Enable CP mode via Raft
+CREATE TABLE shared_state (
+  state_id STRING PRIMARY KEY,
+  value CRDT(Counter) CONSISTENCY strong,
+  history CRDT(List)
+);
+
+-- Write through Raft consensus
+UPDATE shared_state SET value = value + 1 WHERE state_id = 'score:1';
+-- Replicated to majority, then ACK'd
+
+-- Merge conflicts handled transparently
+-- All replicas converge to same value
+```
+
+## Use Cases
+
+**Collaborative Apps**: Multiple users editing simultaneously (text CRDTs handle merges).
+
+**Game State**: Player positions, inventory, scores replicated to peers without server.
+
+**Offline-First**: Mobile apps write locally, sync when connected.
+
+**Multi-Tenant**: Each tenant has isolated CRDT set, merges happen safely.
+
+**Distributed ML**: Model checkpoints stored as CRDTs, federated updates merge without central coordination.
+
+## Performance
+
+- **Write latency** (AP): <1ms (local, no sync needed)
+- **Write latency** (CP): 50-200ms (Raft replication + quorum)
+- **Merge cost**: O(deltas) where deltas = number of concurrent updates
+- **Memory overhead**: 10-30% extra for CRDT metadata
+
+## Architecture
+
+CRDTs run in the Data Plane with dedicated budget (default 5% of total). Deltas are stored alongside snapshots. Compaction merges consecutive deltas to reduce disk usage.
+
+On sync, edge devices send deltas to cloud Origin. Cloud applies deltas to its CRDT replica, resolves conflicts, and broadcasts result back.
+
+## Enabling CRDTs
+
+**By type**: Specify CRDT type in schema:
+
+```sql
+CREATE TABLE game_state (
+  game_id STRING PRIMARY KEY,
+  player_positions CRDT(Map),          -- {player_id → (x, y)}
+  inventory CRDT(Map),                 -- {player_id → List of items}
+  leaderboard CRDT(List),              -- Ordered scores
+  chat CRDT(Text),                     -- Collaborative message history
+  status_set CRDT(Set)                 -- Active players
+);
+```
+
+**By field**: Only specific fields are CRDTs:
+
+```sql
+CREATE TABLE users (
+  id STRING PRIMARY KEY,
+  name STRING,                          -- Regular field (non-CRDT)
+  permissions CRDT(Set),               -- CRDT field (conflicts resolved)
+  metadata JSON CRDT(Map),             -- Nested CRDT
+  last_sync TIMESTAMP                  -- Regular (no sync tracking)
+);
+```
+
+## Guarantees
+
+**Eventual Consistency**: All replicas converge to same state given enough time and network connectivity.
+
+**Causality Preservation**: If write A happened before write B (causally), the result reflects this ordering.
+
+**Deterministic Merge**: Same set of deltas always produces same result, regardless of order.
+
+**Offline Capability**: Writes succeed even without connectivity.
+
+See [Conflict Resolution](/engines/crdt/conflict-resolution) for policies, [Merge Semantics](/engines/crdt/merge-semantics) for technical details, and [Constraint Validation](/engines/crdt/constraint-validation) for consistency.

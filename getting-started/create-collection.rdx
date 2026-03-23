@@ -1,8 +1,286 @@
 ---
-title: Create a Collection
-description: Define your first collection with schema and indexes.
+title: Creating Collections
+description: Create flexible schemas for your data in NodeDB.
 ---
 
-# Create a Collection
+# Creating Collections
 
-TODO
+Collections in NodeDB are flexible containers for documents, records, and objects with optional typed schemas. Think of them as PostgreSQL tables with dynamic schema support.
+
+## Basic Collection Creation
+
+The simplest way to create a collection requires no schema:
+
+```sql
+CREATE COLLECTION documents;
+```
+
+NodeDB will infer column types from your first INSERT. You can immediately insert and query:
+
+```sql
+INSERT INTO documents (id, title, body)
+VALUES (1, 'Hello', 'World');
+
+SELECT * FROM documents;
+```
+
+## Collections with Explicit Schema
+
+For type safety and validation, define a schema upfront:
+
+```sql
+CREATE COLLECTION articles (
+  id integer PRIMARY KEY,
+  title text NOT NULL,
+  body text,
+  published_at timestamp,
+  author_id integer,
+  view_count integer DEFAULT 0
+);
+```
+
+Supported data types:
+
+| Type | Purpose | Example |
+|------|---------|---------|
+| `integer` | 64-bit signed integers | `42`, `-100` |
+| `text` | UTF-8 strings | `'hello'`, `'world'` |
+| `float` | 64-bit IEEE 754 floats | `3.14`, `-0.5` |
+| `boolean` | True/false | `true`, `false` |
+| `timestamp` | RFC3339 datetime | `'2026-03-23T10:00:00Z'` |
+| `vector(dim, metric)` | Embeddings for semantic search | `vector(384, cosine)` |
+| `json` | Nested objects and arrays | `'{"key": "value"}'` |
+| `binary` | Binary blobs | MessagePack or raw bytes |
+
+## Vector Fields for Semantic Search
+
+Add vector fields for similarity search:
+
+```sql
+CREATE COLLECTION documents (
+  id integer PRIMARY KEY,
+  title text NOT NULL,
+  content text,
+  embedding vector(384, cosine),
+  tags_embedding vector(128, l2)
+);
+```
+
+Metrics supported: `cosine`, `l2`, `inner_product`. Dimensions are required.
+
+After inserting vectors, create an index for fast search:
+
+```sql
+CREATE VECTOR INDEX idx_doc_embedding
+  ON documents (embedding)
+  METRIC cosine
+  M 16
+  EF_CONSTRUCTION 200;
+```
+
+## Graph Collections
+
+For graph data, use edge collections:
+
+```sql
+CREATE COLLECTION graph_nodes (
+  node_id integer PRIMARY KEY,
+  label text,
+  properties json
+);
+
+CREATE COLLECTION graph_edges (
+  source integer NOT NULL,
+  target integer NOT NULL,
+  relation_type text,
+  weight float,
+  PRIMARY KEY (source, target, relation_type)
+);
+```
+
+## View Existing Collections
+
+List all collections:
+
+```sql
+SHOW COLLECTIONS;
+```
+
+View a collection's schema:
+
+```sql
+DESCRIBE documents;
+```
+
+Output shows columns, types, and whether they're indexed:
+
+```
+    name    |  type   | indexed | nullable
+-------------+---------+---------+---------
+ id          | integer | yes     | no
+ title       | text    | no      | no
+ content     | text    | no      | yes
+ embedding   | vector  | yes     | yes
+```
+
+## Indexed Columns
+
+Columns are automatically indexed if they are:
+- Part of the PRIMARY KEY
+- Vector fields (for semantic search)
+- Explicitly indexed with `CREATE INDEX`
+
+To create an index on a regular column:
+
+```sql
+CREATE INDEX idx_author ON articles (author_id);
+```
+
+Drop an index:
+
+```sql
+DROP INDEX idx_author;
+```
+
+## Constraints
+
+Define constraints to maintain data integrity:
+
+```sql
+CREATE COLLECTION users (
+  user_id integer PRIMARY KEY,
+  email text UNIQUE NOT NULL,
+  username text NOT NULL,
+  age integer CHECK (age >= 13),
+  created_at timestamp DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Supported constraints:
+
+| Constraint | Purpose | Example |
+|-----------|---------|---------|
+| `PRIMARY KEY` | Unique identifier | `id integer PRIMARY KEY` |
+| `UNIQUE` | No duplicate values | `email text UNIQUE` |
+| `NOT NULL` | Required field | `title text NOT NULL` |
+| `CHECK` | Condition validation | `CHECK (age >= 0)` |
+| `DEFAULT` | Default value | `status text DEFAULT 'active'` |
+
+## Altering Collections
+
+Add a column to an existing collection:
+
+```sql
+ALTER TABLE documents ADD COLUMN category text;
+```
+
+Rename a column:
+
+```sql
+ALTER TABLE documents RENAME COLUMN category TO topic;
+```
+
+Drop a column:
+
+```sql
+ALTER TABLE documents DROP COLUMN deprecated_field;
+```
+
+## Dropping Collections
+
+Remove a collection and all its data:
+
+```sql
+DROP COLLECTION documents;
+```
+
+If the collection doesn't exist and you don't want an error:
+
+```sql
+DROP COLLECTION IF EXISTS documents;
+```
+
+## Querying Collection Metadata
+
+Get detailed information about a collection:
+
+```sql
+-- Show all columns and their properties
+SELECT
+  column_name,
+  data_type,
+  is_nullable,
+  column_default
+FROM information_schema.columns
+WHERE table_name = 'documents'
+ORDER BY ordinal_position;
+```
+
+## Best Practices
+
+1. **Use PRIMARY KEY**: Every collection should have a `PRIMARY KEY` for efficient lookups.
+
+2. **Vector field naming**: Use descriptive names like `embedding`, `text_embedding`, or `image_embedding`.
+
+3. **Metric choice**: Use `cosine` for normalized embeddings, `l2` for Euclidean distance, `inner_product` for relevance scoring.
+
+4. **Index strategy**: Create vector indexes only on fields you'll search frequently; indexes consume memory.
+
+5. **Schema evolution**: Use `ALTER TABLE` to evolve schemas. NOT NULL fields require a DEFAULT when adding.
+
+## Examples
+
+### Document Store
+
+```sql
+CREATE COLLECTION docs (
+  doc_id integer PRIMARY KEY,
+  title text NOT NULL,
+  content text,
+  embedding vector(384, cosine),
+  created_at timestamp DEFAULT CURRENT_TIMESTAMP,
+  tags json
+);
+
+CREATE VECTOR INDEX idx_doc_search ON docs (embedding);
+```
+
+### Time Series
+
+```sql
+CREATE COLLECTION metrics (
+  metric_id integer PRIMARY KEY,
+  timestamp timestamp NOT NULL,
+  metric_name text NOT NULL,
+  value float,
+  tags json,
+  UNIQUE (timestamp, metric_name)
+);
+
+CREATE INDEX idx_timestamp ON metrics (timestamp);
+```
+
+### Knowledge Graph
+
+```sql
+CREATE COLLECTION entities (
+  entity_id integer PRIMARY KEY,
+  name text NOT NULL,
+  entity_type text,
+  embedding vector(1024, cosine)
+);
+
+CREATE COLLECTION relations (
+  source_id integer NOT NULL,
+  target_id integer NOT NULL,
+  relation_type text NOT NULL,
+  weight float DEFAULT 1.0,
+  PRIMARY KEY (source_id, target_id, relation_type)
+);
+```
+
+## Next Steps
+
+- [Insert Data](/getting-started/insert-data) — Add records to your collections
+- [Query Data](/getting-started/query-data) — Find and retrieve data
+- [Vector Search](/getting-started/vector-search-intro) — Perform semantic search

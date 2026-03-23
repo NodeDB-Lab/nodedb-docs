@@ -1,8 +1,271 @@
 ---
-title: SPSC Envelope Format
-description: Request/Response message structure across the bridge.
+title: "SPSC Envelope Format"
+description: "Request and Response message structure for Control-Data Plane bridge"
 ---
 
 # SPSC Envelope Format
 
-TODO
+The SPSC (Single Producer, Single Consumer) bridge is the only communication mechanism between the Control Plane (Tokio, query planning) and Data Plane (io_uring, storage execution). Envelopes are fixed-size or length-prefixed messages in a bounded ring buffer.
+
+## Architecture
+
+The bridge consists of:
+- **Request queue**: Control → Data (length-prefixed messages)
+- **Response queue**: Data → Control (length-prefixed messages)
+- **Ring buffer**: Bounded circular buffer, typically 16 MiB per queue
+- **Backpressure**: Control plane blocks if request queue full; Data plane blocks if response queue full
+
+## Request Envelope
+
+Request message from Control Plane to Data Plane:
+
+```
+Offset  Field           Type  Size  Description
+------  -----           ----  ----  -----------
+0       Request ID      u32   4B    Unique identifier for this request
+4       Tenant ID       u32   4B    Tenant (0 for single-tenant)
+8       VShard ID       u16   2B    Virtual shard routing hint
+10      Priority        u8    1B    Priority 0-255 (higher = more urgent)
+11      Reserved        u8    1B    (0x00)
+12      Plan Digest     [u8]  32B   SHA256 hash of query plan
+44      Deadline Ns     u64   8B    Absolute deadline (nanoseconds since epoch)
+52      Trace ID        [u8]  16B   UUID for distributed tracing
+68      Payload Len     u32   4B    Size of payload bytes
+72      Payload         u8*   N     Query execution plan or command
+72+N    (End of envelope)
+```
+
+**Request ID** (4 bytes):
+- Unique within this connection
+- Used to correlate responses
+- May wrap after 2^32 requests per connection
+- Example: 0x12345678
+
+**Tenant ID** (4 bytes):
+- Multi-tenant deployment identifier
+- 0x00000000 for single-tenant mode
+- Isolates data and auth contexts
+
+**VShard ID** (2 bytes):
+- Virtual shard hint for data plane routing
+- 0-65535, distributed across data plane cores
+- Zero means "auto-route"
+- Used for affinity and parallel execution hints
+
+**Priority** (1 byte):
+- 0 = lowest priority (background)
+- 128 = normal priority (default)
+- 255 = highest priority (critical, unblockable)
+
+Queuing in SPSC respects priority; high-priority requests are dequeued before low-priority.
+
+**Plan Digest** (32 bytes):
+- SHA256 hash of query execution plan
+- Used for compiled query caching
+- If plan changes, digest changes
+- Allows data plane to skip recompilation
+
+**Deadline Ns** (8 bytes):
+- Absolute deadline in nanoseconds since Unix epoch (Jan 1, 1970)
+- 0 = no deadline (run until completion)
+- Data plane cancels execution if current time > deadline
+- Example: 1711270000000000000 (March 2024)
+
+**Trace ID** (16 bytes):
+- UUID for distributed tracing (e.g., W3C Trace Context)
+- Used to correlate across Control and Data planes
+- Passed to logging and metrics
+- Example: 550e8400-e29b-41d4-a716-446655440000
+
+**Payload Len** (4 bytes):
+- Size of payload in bytes
+- 0 = no payload (e.g., for simple commands)
+- Max typical: 1 MiB (bridge warns if >16 MiB)
+
+**Payload** (variable):
+- Protobuf-encoded execution plan
+- OR raw SQL query string (for interpreter mode)
+- OR other command format
+
+Total envelope size: 72 bytes fixed header + N bytes payload
+
+## Response Envelope
+
+Response message from Data Plane to Control Plane:
+
+```
+Offset  Field           Type  Size  Description
+------  -----           ----  ----  -----------
+0       Request ID      u32   4B    Echo of request ID
+4       Status          u8    1B    Result status code
+5       Attempt         u8    1B    Retry attempt count
+6       Partial         u8    1B    0=complete, 1=more rows coming
+7       Reserved        u8    1B    (0x00)
+8       Bytes Produced  u64   8B    Total result bytes written
+16      Watermark LSN   u64   8B    WAL LSN of last committed record
+24      Error Code      u32   4B    If status=error: error type
+28      Error Len       u16   2B    If status=error: error msg length
+30      Error Msg       u8*   M     If status=error: UTF-8 error message
+30+M    Payload         u8*   N     Result data (rows, metadata)
+30+M+N  (End of envelope)
+```
+
+**Request ID** (4 bytes):
+- Echo of request's request_id
+- Allows client to correlate response to request
+
+**Status** (1 byte):
+- 0x00 = Success (complete results)
+- 0x01 = Error (result is error details)
+- 0x02 = Partial (more results coming)
+
+**Attempt** (1 byte):
+- Retry attempt number (0 on first try)
+- Incremented if ConflictRetry error
+- Used for observability/debugging
+
+**Partial** (1 byte):
+- 0x00 = All results in this message
+- 0x01 = More results available (call again)
+
+Set to 1 when streaming large result sets. Client must continue reading to get all rows.
+
+**Bytes Produced** (8 bytes):
+- Total bytes of result data written to payload
+- Used for flow control and backpressure
+- Example: 1048576 (1 MiB of row data)
+
+**Watermark LSN** (8 bytes):
+- Log Sequence Number at point of consistency
+- Set to last committed write LSN before query started
+- Can be used for read consistency checks
+- Example: 0x0000000000012345
+
+**Error Code** (4 bytes):
+- Only present if status = 0x01 (error)
+- Maps to bridge ErrorCode enum (DeadlineExceeded, RejectedConstraint, etc.)
+- See bridge-errors.rdx for full reference
+
+**Error Len** (2 bytes):
+- Only present if status = 0x01
+- Length of error message in bytes
+
+**Error Msg** (variable):
+- Only present if status = 0x01
+- Human-readable error description (UTF-8)
+
+**Payload** (variable):
+- Result data if status = 0x00 (Success)
+- Typically: row count, column metadata, then rows
+- Format: binary serialization (MessagePack or Protobuf)
+
+Total response size: 30 bytes fixed header + M bytes error + N bytes payload
+
+## Message Flow Example
+
+**Query Execution**:
+
+```
+Control Plane                    Data Plane
+│                               │
+├─ Request {                    │
+│   ID: 1,                      │
+│   Query: "SELECT * FROM...",  │
+│   Timeout: 5000ms             │
+│ }─────────────────────────────>
+│                               ├─ Parse query
+│                               ├─ Build execution plan
+│                               ├─ Execute
+│
+│                               ├─ Response {
+│                               │   ID: 1,
+│                               │   Status: Success,
+│                               │   Rows: [alice, bob, ...]
+│                               ├─ Payload: binary encoded
+│ <─────────────────────────────┤
+├─ Decode response
+├─ Return to client
+│
+```
+
+**Error Case**:
+
+```
+Control Plane                    Data Plane
+│                               │
+├─ Request {                    │
+│   ID: 2,                      │
+│   Query: "INSERT ..."         │
+│ }─────────────────────────────>
+│                               ├─ Parse, validate
+│                               ├─ Check constraint
+│                               ├─ COLLISION! (duplicate key)
+│                               ├─ Response {
+│                               │   ID: 2,
+│                               │   Status: Error,
+│                               │   ErrorCode: RejectedConstraint,
+│                               │   ErrorMsg: "duplicate key..."
+│ <─────────────────────────────┤
+├─ Decode error
+├─ Return error to client
+│
+```
+
+## Backpressure and Flow Control
+
+If request queue fills (e.g., Control issues queries faster than Data can process):
+- Control plane write blocks
+- Data plane must drain queue (process and respond)
+- Queue is bounded to prevent runaway memory usage
+
+Typical queue depth: 4-16 requests at any time
+
+## Priority Queuing
+
+Requests in the bridge are dequeued by priority:
+
+1. If multiple requests pending: dequeue highest priority first
+2. High-priority requests (priority > 200) never starve (guaranteed dequeue within 100ms)
+3. Low-priority (priority < 50) may wait indefinitely if high-priority traffic heavy
+
+Use for load shedding: set low priority for background analytics.
+
+## Envelope Size Limits
+
+- **Fixed header**: 72 bytes (request), 30 bytes (response)
+- **Max payload**: Limited by ring buffer capacity (default 16 MiB)
+- **Typical payload**: 4 KiB to 1 MiB per message
+- **Streaming**: Large result sets use multiple Response messages with Partial flag
+
+If payload exceeds 16 MiB, bridge logs warning and may stall.
+
+## Serialization Format
+
+Payloads within envelopes use:
+- **Query plans**: Protobuf (compact binary)
+- **Results**: MessagePack (variable-length fields)
+- **Metadata**: JSON (within MessagePack wrapped)
+
+Both formats support schemas and are version-tolerant.
+
+## Multi-Message Responses
+
+For large result sets, response is streamed:
+
+```
+Response 1: { RequestID: 1, Partial: 1, Bytes: 16MiB }
+Response 2: { RequestID: 1, Partial: 1, Bytes: 16MiB }
+Response 3: { RequestID: 1, Partial: 0, Bytes: 8MiB }  (final)
+```
+
+Client reads until Partial = 0.
+
+## Time Representation
+
+All timestamps in envelopes are Unix nanoseconds (since Jan 1, 1970, 00:00:00 UTC):
+
+- 1970-01-01 00:00:00 = 0x0000000000000000
+- 2024-01-01 00:00:00 = 0x000000018B06C000 (approximately)
+- 2025-03-23 = 0x0000000194A31000 (approximately)
+
+Use UTC; no timezone conversion in bridge.

@@ -1,8 +1,240 @@
 ---
 title: Log Ingestion
-description: Structured log ingestion with dictionary compression.
+description: Structured logs with Zstd dictionary compression and field indexing.
 ---
 
 # Log Ingestion
 
-TODO
+Logs are ingested as structured events with timestamp, level, service, and message fields. Zstd dictionary compression reduces size 3-5x while preserving searchability.
+
+## Log Format
+
+**Structured log entry**:
+
+```json
+{
+  "timestamp": "2024-03-23T10:00:00Z",
+  "level": "ERROR",
+  "service": "api-server",
+  "message": "Database connection timeout after 30s",
+  "user_id": "user:456",
+  "request_id": "req:789",
+  "duration_ms": 30000,
+  "trace_id": "trace:abc123"
+}
+```
+
+**Insert via SQL**:
+
+```sql
+INSERT INTO logs (timestamp, level, service, message, user_id, request_id, duration_ms)
+VALUES (NOW(), 'ERROR', 'api-server', 'Database connection timeout after 30s', 'user:456', 'req:789', 30000);
+```
+
+**Insert via native protocol** (preferred for high volume):
+
+```python
+import time
+from nodedb import LogsClient
+
+client = LogsClient(host='localhost:6433')
+
+client.write_log(
+    timestamp=int(time.time() * 1000),
+    level='ERROR',
+    service='api-server',
+    message='Database connection timeout after 30s',
+    fields={
+        'user_id': 'user:456',
+        'request_id': 'req:789',
+        'duration_ms': 30000
+    }
+)
+```
+
+## Write Path
+
+**1. Buffering**
+
+Logs buffered in memtable, similar to metrics:
+
+```
+Incoming logs:
+  [ERROR] api-server: Database connection timeout
+  [WARN] db-server: Slow query (1000ms)
+  [INFO] api-server: Request complete
+
+Memtable:
+  [timestamp][service] → List<(level, message, fields)>
+```
+
+**Latency**: <1µs per log (append).
+
+**Throughput**: 1-10M logs/second.
+
+**2. Zstd Dictionary Compression**
+
+When memtable flushes:
+
+```
+Raw logs (100KB):
+  ERROR api-server Database connection timeout
+  ERROR api-server Connection refused
+  WARN db-server Slow query (1000ms)
+  WARN db-server Connection timeout
+  ...
+
+Pre-trained dictionary (finds patterns):
+  "ERROR", "api-server", "connection", "timeout", "WARN", "db-server", "query"
+
+Compression:
+  "ERROR api-server connection timeout" → 5 bytes (dict refs)
+  "ERROR api-server connection refused" → 5 bytes
+  "WARN db-server query slow" → 4 bytes
+  ...
+
+Result: 100KB → 30KB (3x compression)
+```
+
+**Dictionary quality**: Trained on representative sample of logs.
+
+```toml
+[timeseries]
+log_dictionary_refresh_interval_hours = 24  # Update dictionary daily
+log_dictionary_training_sample_size = 100000  # Learn from 100K logs
+```
+
+**3. Hourly Flush and Daily Compaction**
+
+Same as metrics: hourly files → daily Parquet.
+
+## Indexing for Search
+
+**Field indices** for fast filtering:
+
+```sql
+-- Created automatically on common fields
+CREATE INDEX idx_logs_level ON logs (level);
+CREATE INDEX idx_logs_service ON logs (service);
+CREATE INDEX idx_logs_timestamp ON logs (timestamp DESC);
+```
+
+**Search query**:
+
+```sql
+-- Fast: uses index
+SELECT timestamp, message
+FROM logs
+WHERE level = 'ERROR' AND service = 'api-server'
+ORDER BY timestamp DESC
+LIMIT 100;
+```
+
+**Full-text search on message** (slower, requires decompress):
+
+```sql
+-- Searches message text
+SELECT timestamp, message
+FROM logs
+WHERE bm25_score(message, 'connection timeout') > 0.5
+ORDER BY bm25_score(message, 'connection timeout') DESC
+LIMIT 50;
+```
+
+## High-Volume Strategies
+
+**Batch inserts** (preferred):
+
+```python
+logs_batch = [
+    {'timestamp': t1, 'level': 'INFO', 'service': 's1', 'message': 'm1'},
+    {'timestamp': t2, 'level': 'ERROR', 'service': 's2', 'message': 'm2'},
+    ...  # 10K logs
+]
+
+# Insert all at once (faster than individual inserts)
+client.write_logs_batch(logs_batch)
+```
+
+**Sampling** for very high cardinality:
+
+```toml
+[timeseries]
+# Sample INFO logs (high volume) but keep ERROR/WARN
+log_sampling_config = {
+  "INFO": 0.01,      # Keep 1% of INFO logs
+  "WARN": 1.0,       # Keep all WARN logs
+  "ERROR": 1.0       # Keep all ERROR logs
+}
+```
+
+**Retention by level**:
+
+```toml
+[timeseries]
+log_retention_by_level = {
+  "ERROR": 90,   # Keep ERROR logs 90 days
+  "WARN": 30,    # Keep WARN logs 30 days
+  "INFO": 7      # Keep INFO logs 7 days
+}
+```
+
+## Examples
+
+**Application logging**:
+
+```python
+import logging
+from nodedb import LogsClient
+
+# Create logger backed by NodeDB
+client = LogsClient(host='localhost:6433')
+
+def write_to_nodedb(record):
+    client.write_log(
+        timestamp=int(record.created * 1000),
+        level=record.levelname,
+        service='my-app',
+        message=record.getMessage(),
+        fields={
+            'logger_name': record.name,
+            'function': record.funcName,
+            'line_number': record.lineno
+        }
+    )
+
+logging.basicConfig(level=logging.INFO)
+handler = logging.Handler()
+handler.emit = write_to_nodedb
+logging.root.addHandler(handler)
+```
+
+**Query recent errors from specific service**:
+
+```sql
+SELECT
+  timestamp,
+  message,
+  duration_ms
+FROM logs
+WHERE level = 'ERROR'
+  AND service = 'payment-service'
+  AND timestamp >= NOW() - INTERVAL '1 hour'
+ORDER BY timestamp DESC;
+```
+
+**Count logs by level over time**:
+
+```sql
+SELECT
+  DATE_TRUNC('minute', timestamp) as minute,
+  level,
+  COUNT(*) as count
+FROM logs
+WHERE service = 'api-server'
+  AND timestamp >= NOW() - INTERVAL '1 day'
+GROUP BY minute, level
+ORDER BY minute DESC;
+```
+
+See [Retention Tiering](/engines/timeseries/retention-tiering) for storage and [Timeseries Overview](/engines/timeseries/overview) for architecture.

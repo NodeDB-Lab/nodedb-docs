@@ -1,8 +1,308 @@
 ---
 title: Dead Letter Queue
-description: Rejected deltas, compensation hints, reprocessing.
+description: Constraint violations, compensation hints, exponential backoff retry.
 ---
 
-# Dead Letter Queue
+# Dead Letter Queue (DLQ)
 
-TODO
+The Dead Letter Queue collects constraint violations and unresolvable conflicts that require manual intervention. It provides visibility into failed operations and tools for recovery.
+
+## What Goes to DLQ
+
+**Constraint violations**:
+- UNIQUE constraint violations (duplicate values)
+- Foreign key violations (referenced record doesn't exist)
+- Check constraint violations (custom validation failed)
+
+**Unresolvable conflicts**:
+- Operations escalated via EscalateToDlq policy
+- Manual resolution required by business logic
+
+**Merge errors**:
+- Corrupted deltas (malformed CRDT operations)
+- Encoding errors (invalid MessagePack, etc.)
+
+## DLQ Table
+
+```sql
+CREATE TABLE dlq (
+  id STRING PRIMARY KEY,              -- Unique DLQ entry ID
+  source_replica STRING,              -- Which replica sent this
+  table_name STRING,                  -- Table involved
+  error_type STRING,                  -- UNIQUE_VIOLATION, FK_VIOLATION, etc.
+  error_time TIMESTAMP,               -- When error occurred
+  error_detail STRING,                -- JSON with full context
+  operation_delta BLOB,               -- The CRDT delta that failed
+  retry_count INTEGER,                -- How many retry attempts
+  next_retry_time TIMESTAMP,          -- When to auto-retry (if enabled)
+  status STRING,                      -- pending, resolved, abandoned
+  resolution STRING,                  -- How it was resolved
+  CONSTRAINT dlq_pkey PRIMARY KEY(id)
+);
+```
+
+## Viewing DLQ Entries
+
+**List all pending violations**:
+
+```sql
+SELECT id, table_name, error_type, error_time
+FROM dlq
+WHERE status = 'pending'
+ORDER BY error_time DESC;
+```
+
+**Detailed violation**:
+
+```sql
+SELECT
+  id,
+  table_name,
+  error_type,
+  error_detail,  -- Full context as JSON
+  operation_delta
+FROM dlq
+WHERE id = 'dlq:abc123';
+
+-- Example error_detail:
+-- {
+--   "constraint": "users.email UNIQUE",
+--   "conflicting_records": [
+--     {"id": "u1", "email": "alice@a.com", "source": "edge_device_1"},
+--     {"id": "u2", "email": "alice@a.com", "source": "edge_device_2"}
+--   ],
+--   "timestamp": "2024-03-23T10:30:00Z"
+-- }
+```
+
+**By constraint type**:
+
+```sql
+-- All UNIQUE violations
+SELECT COUNT(*) as count FROM dlq
+WHERE error_type = 'UNIQUE_VIOLATION'
+GROUP BY table_name
+ORDER BY count DESC;
+```
+
+## Resolution Strategies
+
+### Strategy 1: Delete Records
+
+Keep one conflicting record, delete others:
+
+```sql
+-- View violation
+SELECT error_detail FROM dlq WHERE id = 'dlq:123';
+-- {conflicting_records: [{id: 'u1', email: 'alice@a.com'}, {id: 'u2', email: 'alice@a.com'}]}
+
+-- Delete u2, keep u1
+DELETE FROM users WHERE id = 'u2';
+
+-- Mark DLQ resolved
+UPDATE dlq SET status = 'resolved', resolution = 'DELETE u2'
+WHERE id = 'dlq:123';
+```
+
+### Strategy 2: Update Values
+
+Make values unique by renaming:
+
+```sql
+-- Instead of deleting, update one record
+UPDATE users SET email = 'alice2@a.com' WHERE id = 'u2';
+
+-- Mark resolved
+UPDATE dlq SET status = 'resolved', resolution = 'Updated u2.email to alice2@a.com'
+WHERE id = 'dlq:123';
+```
+
+### Strategy 3: Merge Records
+
+Combine data from conflicting records:
+
+```sql
+-- Merge purchases from two user records into one
+INSERT INTO purchases (user_id, ...)
+SELECT 'u1', ... FROM purchases WHERE user_id = 'u2';
+
+-- Delete duplicate user
+DELETE FROM users WHERE id = 'u2';
+
+-- Mark resolved
+UPDATE dlq SET status = 'resolved', resolution = 'Merged u2 into u1'
+WHERE id = 'dlq:123';
+```
+
+### Strategy 4: Accept Merge
+
+Apply conflict policy retrospectively:
+
+```sql
+-- If LWW policy, accept the timestamp-newer value
+-- If AddWins, accept all values
+-- Application determines which is correct
+
+UPDATE dlq SET status = 'resolved', resolution = 'Applied LWW policy'
+WHERE id = 'dlq:123';
+```
+
+## Compensation Hints
+
+**CompensationHint**: Metadata in DLQ entry guiding how to resolve:
+
+```sql
+SELECT
+  id,
+  error_detail,
+  json_extract(error_detail, '$.compensation_hint') as hint
+FROM dlq
+WHERE status = 'pending';
+
+-- Example hint:
+-- "Keep record with highest score"
+-- "Delete record from less-trusted source"
+-- "Merge and normalize"
+```
+
+**Setting hints** (application responsibility):
+
+When inserting CRDT data, provide resolution guidance:
+
+```sql
+INSERT INTO users (id, email) VALUES ('u1', 'alice@a.com')
+WITH COMPENSATION_HINT('If duplicate email found, keep record with most recent activity');
+
+-- Hint is stored with delta, visible in DLQ for manual review
+```
+
+## Auto-Retry
+
+Configure automatic retry for transient errors:
+
+```toml
+[crdt]
+dlq_auto_retry_enabled = true
+dlq_retry_delay_secs = 3600          # 1 hour, then retry
+dlq_max_retries = 3                  # Give up after 3 attempts
+dlq_exponential_backoff = true       # Delay: 1h, 2h, 4h (exponential)
+```
+
+**Behavior**:
+
+```
+t=10:30 - Violation detected, added to DLQ
+t=11:30 - Auto-retry attempt 1 (still fails)
+t=13:30 - Auto-retry attempt 2 (still fails, exponential backoff)
+t=17:30 - Auto-retry attempt 3 (final attempt)
+         If still fails, marked as abandoned
+```
+
+**Manual retry**:
+
+```sql
+-- Force immediate retry
+UPDATE dlq SET next_retry_time = NOW(), retry_count = 0
+WHERE id = 'dlq:123' AND status = 'pending';
+
+-- Retry only specific violations
+UPDATE dlq SET next_retry_time = NOW()
+WHERE table_name = 'users' AND error_type = 'FK_VIOLATION';
+```
+
+## Monitoring
+
+**DLQ metrics**:
+
+```sql
+-- Violations over time
+SELECT
+  DATE(error_time),
+  COUNT(*) as violation_count,
+  error_type
+FROM dlq
+GROUP BY DATE(error_time), error_type
+ORDER BY DATE(error_time) DESC;
+
+-- Unresolved violations
+SELECT
+  table_name,
+  COUNT(*) as pending_count,
+  MIN(error_time) as oldest
+FROM dlq
+WHERE status = 'pending'
+GROUP BY table_name
+ORDER BY pending_count DESC;
+
+-- Resolution rate
+SELECT
+  COUNT(CASE WHEN status = 'resolved' THEN 1 END) as resolved,
+  COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+  COUNT(CASE WHEN status = 'abandoned' THEN 1 END) as abandoned
+FROM dlq;
+```
+
+**Alerts**:
+
+```toml
+[monitoring]
+# Alert if DLQ backlog > 100 items
+dlq_backlog_alert_threshold = 100
+
+# Alert if oldest unresolved > 24 hours
+dlq_age_alert_threshold_hours = 24
+```
+
+## Examples
+
+**Duplicate email violation**:
+
+```sql
+-- DLQ entry: users.email UNIQUE violated
+-- Conflicting: u1 (alice@a.com), u2 (alice@a.com)
+-- Hint: "Keep account with more activity"
+
+-- Check activity
+SELECT id, COUNT(*) as activity_count
+FROM user_activity
+WHERE user_id IN ('u1', 'u2')
+GROUP BY user_id;
+-- u1: 10 activities, u2: 2 activities
+
+-- Keep u1
+DELETE FROM users WHERE id = 'u2';
+UPDATE dlq SET status = 'resolved' WHERE id = 'dlq:xyz';
+```
+
+**Foreign key violation**:
+
+```sql
+-- DLQ entry: members.team_id REFERENCES teams
+-- Violation: member references non-existent team:unknown
+
+-- Check if team should exist
+-- If yes, insert it:
+INSERT INTO teams (team_id, name) VALUES ('team:unknown', 'Unknown Team');
+
+-- Then retry:
+UPDATE dlq SET next_retry_time = NOW() WHERE id = 'dlq:abc';
+
+-- If no, delete the member:
+DELETE FROM members WHERE team_id = 'team:unknown';
+UPDATE dlq SET status = 'resolved' WHERE id = 'dlq:abc';
+```
+
+**Unresolvable merge (custom logic)**:
+
+```sql
+-- DLQ entry: EscalateToDlq policy triggered
+-- Conflict in game_state on player_position field
+-- Both replicas have different positions, neither is obviously correct
+
+-- Application reviews actual player location (e.g., from GPS logs)
+-- Picks correct position and updates:
+UPDATE game_state SET player_position = (lat, lon) WHERE player_id = 'p1';
+UPDATE dlq SET status = 'resolved', resolution = 'Verified with GPS data' WHERE id = 'dlq:def';
+```
+
+See [Conflict Resolution](/engines/crdt/conflict-resolution) for policies that escalate and [Constraint Validation](/engines/crdt/constraint-validation) for constraint handling.

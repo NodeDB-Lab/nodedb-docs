@@ -1,8 +1,389 @@
 ---
 title: Cluster Topology
-description: Node roles, join/leave/decommission lifecycle.
+description: Cluster architecture, node roles (leader, follower, learner), bootstrap, join, leave, and decommission operations.
 ---
 
 # Cluster Topology
 
-TODO
+A NodeDB cluster is a group of nodes running the hybrid execution model together, replicating data via Multi-Raft. The cluster must always have an odd number of nodes (3, 5, 7, etc.) for quorum consensus.
+
+## Node Roles
+
+Every node in the cluster has a role determined by the Raft consensus layer:
+
+### Leader Node
+
+**Responsibilities:**
+- Accepts writes from clients
+- Replicates writes to followers
+- Maintains leadership (heartbeat every 150 ms)
+- Resolves conflicts in case of simultaneous writes
+
+**Behavior:**
+```
+Client sends write
+  ↓
+Leader appends to WAL
+  ↓
+Leader sends AppendEntries RPC to followers
+  ↓
+Followers acknowledge
+  ↓
+Leader commits (quorum)
+  ↓
+Leader applies to L0
+  ↓
+Leader sends ACK to client
+```
+
+**Election:**
+- Maintains position by sending heartbeats
+- If followers don't receive heartbeat for 300 ms, they trigger election
+- Candidate with majority votes becomes leader
+
+### Follower Node
+
+**Responsibilities:**
+- Accept read requests (if consistency allows)
+- Receive replication from leader
+- Vote in leader elections
+- Apply committed entries to L0
+
+**Behavior:**
+```
+Receive write request
+  ↓
+IF CONSISTENCY='STRONG':
+  → Forward to leader
+ELSE IF CONSISTENCY='BOUNDED_STALENESS(1s)':
+  → Check replication lag
+  → If lag <= 1s: execute locally
+  → Else: forward to leader
+
+Receive AppendEntries from leader
+  → Append to WAL
+  → Send ACK
+  → Apply when leader says commit_index
+
+Receive heartbeat (empty AppendEntries)
+  → Update election timer
+  → Stay follower
+```
+
+### Learner Node
+
+**Responsibilities:**
+- Participate in replication (receive writes)
+- Do NOT vote in elections
+- Do NOT serve reads
+- Used for safe cluster expansion
+
+**Behavior:**
+```
+Learner is promoted to follower:
+  1. Learner joins cluster with no voting rights
+  2. Replicates data from leader
+  3. Once caught up (lag < 1s): promote to voter
+  4. Learner becomes full follower
+
+Use case: Adding node 4 to 3-node cluster
+  Before: 3 nodes, quorum = 2
+  Add node 4 as learner: 3 voters + 1 learner, quorum still = 2
+  Node 4 catches up: 4 voters, quorum = 3
+  No disruption during catch-up
+```
+
+## Cluster Modes
+
+### Single-Node
+
+Useful for embedded, development, and single-machine deployments.
+
+```
+nodedb --single-node --data-dir ./data
+
+- 1 node is always leader
+- No replication
+- No failover
+- WAL is still persisted (crash recovery works)
+```
+
+### Quorum (3 nodes)
+
+Minimum production setup. Can tolerate 1 node failure.
+
+```
+nodedb --cluster-name "prod"
+       --seed-nodes "node1:6379,node2:6379,node3:6379"
+
+Cluster:
+  node1 (leader)   → replicates to node2, node3
+  node2 (follower)
+  node3 (follower)
+
+Quorum: 2 out of 3
+- If node1 dies: node2/node3 elect new leader, cluster continues
+- If any 1 node dies: quorum (2/3) survives
+- If 2 nodes die: quorum lost, cluster read-only
+```
+
+### Larger Clusters (5, 7, 9 nodes)
+
+Used for higher availability and geographically distributed systems.
+
+```
+5-node cluster:
+  Quorum = 3
+  Can tolerate 2 node failures
+
+7-node cluster:
+  Quorum = 4
+  Can tolerate 3 node failures
+
+Distributed example:
+  US-EAST: node1, node2 (local quorum: 2 nodes)
+  US-WEST: node3, node4 (local quorum: 2 nodes)
+  EU: node5 (tiebreaker)
+
+Latency:
+  US-EAST local writes: ~1 ms
+  US-EAST to US-WEST: ~50 ms
+  US to EU: ~100 ms
+```
+
+## Bootstrap Process
+
+Creating a new cluster:
+
+```
+1. Start 3 nodes with cluster config
+   node1 --cluster-name "prod" --node-id 1 --bind 0.0.0.0:5433
+   node2 --cluster-name "prod" --node-id 2 --bind 0.0.0.0:5433
+   node3 --cluster-name "prod" --node-id 3 --bind 0.0.0.0:5433
+
+2. Bootstrap cluster (on any node)
+   nodedb-cli --node=node1 cluster bootstrap \
+     --members "1@node1:6379,2@node2:6379,3@node3:6379"
+
+3. Nodes exchange heartbeats
+   Leader election happens automatically
+   One of 3 becomes leader
+
+4. Cluster is READY
+   Accepts reads and writes
+```
+
+Or use pre-configured seed nodes:
+
+```
+All nodes configured with:
+  --seed-nodes "node1:6379,node2:6379,node3:6379"
+
+Nodes auto-discover and form cluster (no explicit bootstrap).
+```
+
+## Join a Node
+
+Adding a node to an existing cluster:
+
+```
+Existing 3-node cluster (node1, node2, node3)
+Want to add node4 to make 5-node cluster
+
+Steps:
+
+1. Start new node as learner
+   node4 --cluster-name "prod" --node-id 4
+         --learner
+         --seed-nodes "node1:6379,node2:6379"
+
+2. node4 joins, receives replication
+   node4 is learner (doesn't vote)
+   Quorum remains 2 (only node1, node2, node3 vote)
+
+3. Wait for node4 to catch up
+   Monitor: nodedb-cli cluster status
+   node4 replication_lag < 100 ms
+
+4. Promote learner to voter
+   nodedb-cli --node=node1 cluster add-voter --node-id 4
+
+5. node4 is now full member
+   New quorum = 3 (out of 5)
+   Cluster can tolerate 2 failures
+```
+
+## Leave Cluster
+
+Gracefully remove a node:
+
+```
+Existing 3-node cluster
+Want to remove node3
+
+Steps:
+
+1. Initiate graceful shutdown on node3
+   nodedb-cli --node=node3 node shutdown --graceful
+
+2. node3 stops accepting new requests
+   Drains in-flight requests
+
+3. node3 notifies leader: "I'm leaving"
+   Leader issues ConfChange: REMOVE_VOTER(node3)
+   Leader waits for quorum ACK
+
+4. Leader removes node3 from quorum
+   New quorum = 2 (node1, node2)
+   Followers apply ConfChange
+
+5. node3 exits
+   Cluster now 2 nodes (unstable quorum)
+
+6. (Recommended) Add new node4 to restore quorum
+   Otherwise cluster is vulnerable (any failure = partition)
+```
+
+## Decommission
+
+Permanently retire a node (e.g., hardware replacement):
+
+```
+Steps:
+
+1. Drain data: Shard migration
+   nodedb-cli cluster drain-node --node-id 3
+
+   For each vShard owned by node3:
+     - Identify target replica node (node1 or node2)
+     - Copy data (base + WAL catch-up + atomic cut-over)
+     - Update routing table
+     - Data now on target node
+
+2. Remove from cluster
+   nodedb-cli cluster remove-voter --node-id 3
+
+3. node3 is no longer part of cluster
+   Can be powered off
+
+4. New node can be added later (if needed)
+   nodedb-cli cluster add-learner --node-id 4
+```
+
+## Failure Scenarios
+
+### Single Node Failure
+
+```
+3-node cluster (node1 is leader):
+  Quorum = 2
+
+node1 crashes
+  ├─ node1 stops sending heartbeats
+  ├─ node2, node3 don't receive heartbeat for 300 ms
+  ├─ node2, node3 timeout, trigger election
+  ├─ One of (node2, node3) wins election (2 votes = quorum)
+  ├─ New leader is elected
+  └─ Cluster continues (reads and writes work)
+
+Recovery: node1 rejoins
+  ├─ node1 boots, reads persistent state
+  ├─ Discovers it was leader but term is old
+  ├─ Applies itself as follower (new leader already exists)
+  ├─ Catches up via replication from new leader
+  └─ Cluster is back to 3 nodes
+```
+
+### Network Partition
+
+```
+3-node cluster split:
+  Side A: node1, node2 (can talk to each other)
+  Side B: node3 (isolated)
+
+Side A:
+  ├─ node1, node2 have quorum (2/3)
+  ├─ Leader stays active on side A
+  ├─ Accepts reads and writes
+
+Side B:
+  ├─ node3 has no quorum (1/3)
+  ├─ node3 stops accepting writes
+  ├─ Serves reads with EVENTUAL consistency
+
+Reconciliation: partition heals
+  ├─ node3 reconnects
+  ├─ node3 is behind (missed writes on side A)
+  ├─ Followers send missing entries
+  ├─ node3 catches up
+  └─ Cluster is consistent again (no data loss)
+```
+
+### Leader Death + Network Partition
+
+```
+5-node cluster (node1 is leader):
+  Quorum = 3
+
+node1 dies + network partition:
+  Side A: node2, node3 (can talk)
+  Side B: node4, node5 (can talk)
+  Partitioned: A <-> B
+
+Side A (quorum = 2/3, not enough):
+  ├─ node2, node3 cannot elect leader (need 3)
+  ├─ No leader on side A
+  └─ Reads: allowed, Writes: blocked
+
+Side B (quorum = 2/5, not enough):
+  ├─ node4, node5 cannot elect leader (need 3)
+  ├─ No leader on side B
+  └─ Reads: allowed, Writes: blocked
+
+Cluster is SPLIT-BRAIN SAFE:
+  ├─ Neither side can write (no quorum)
+  ├─ No conflicting writes possible
+  ├─ When partition heals, one side is source of truth
+```
+
+## Monitoring
+
+Check cluster health:
+
+```bash
+nodedb-cli cluster status
+
+Output:
+cluster_id: "abc123"
+node_count: 3
+quorum: 2
+status: HEALTHY
+
+Members:
+  node_id: 1
+  role: LEADER
+  status: ALIVE
+  term: 100
+  commit_index: 50000
+
+  node_id: 2
+  role: FOLLOWER
+  status: ALIVE
+  replication_lag: 50 ms (behind leader)
+
+  node_id: 3
+  role: FOLLOWER
+  status: ALIVE
+  replication_lag: 30 ms (behind leader)
+```
+
+## Performance Characteristics
+
+| Operation | Single-Node | 3-Node Cluster | 5-Node Cluster |
+|-----------|------------|----------------|----------------|
+| Write latency | 1-5 ms | 5-20 ms | 5-20 ms |
+| Strong read | 1-5 ms | 1-5 ms | 1-5 ms |
+| Bounded-staleness read | < 1 ms | 1-10 ms | 1-10 ms |
+| Failover time | N/A | 300-500 ms | 300-500 ms |
+| Network overhead | 0 | ~300 Kbps | ~300 Kbps |
+| Max quorum loss tolerance | 0 | 1 failure | 2 failures |

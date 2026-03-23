@@ -1,8 +1,553 @@
 ---
 title: DDL Statements
-description: CREATE/DROP COLLECTION, CREATE/DROP INDEX, ALTER.
+description: Complete DDL reference for collections, indexes, users, roles, tenants, policies, backup/restore, and cluster management.
 ---
 
 # DDL Statements
 
-TODO
+Data Definition Language (DDL) commands create and manage database objects: collections, indexes, users, roles, policies, and tenants.
+
+## Collections
+
+### CREATE COLLECTION
+
+Create a flexible-schema collection:
+
+```sql
+CREATE COLLECTION documents;
+```
+
+With field schema (optional):
+
+```sql
+CREATE COLLECTION documents FIELDS (
+  id INTEGER,
+  title TEXT,
+  content TEXT,
+  embedding VECTOR(384)
+);
+```
+
+Supported field types: `INTEGER`, `BIGINT`, `FLOAT`, `DOUBLE`, `TEXT`, `TIMESTAMP`, `VECTOR(dimensions)`, `JSON`.
+
+### DROP COLLECTION
+
+Remove a collection:
+
+```sql
+DROP COLLECTION documents;
+```
+
+Only the owner, collection owner, or tenant_admin can drop.
+
+### SHOW COLLECTIONS
+
+List all collections in the current tenant:
+
+```sql
+SHOW COLLECTIONS;
+```
+
+Returns: `collection`, `owner`, `created_at`.
+
+## Indexes
+
+### CREATE INDEX (Scalar/Metadata)
+
+Index a scalar field for fast equality/range lookup:
+
+```sql
+CREATE INDEX idx_status ON documents (status);
+```
+
+Multi-column index:
+
+```sql
+CREATE INDEX idx_author_date ON documents (author, created_at);
+```
+
+### CREATE VECTOR INDEX
+
+HNSW (Hierarchical Navigable Small World) index for semantic search:
+
+```sql
+CREATE VECTOR INDEX idx_embeddings
+ON documents (embedding)
+METRIC cosine
+M 16
+EF_CONSTRUCTION 200;
+```
+
+Parameters:
+
+| Parameter | Default | Range | Notes |
+|:----------|:--------|:------|:------|
+| METRIC | cosine | cosine, l2, hamming | Distance metric |
+| M | 16 | 4-64 | Max connections per node |
+| EF_CONSTRUCTION | 200 | 100-1000 | Search width during construction |
+
+Query with index:
+
+```sql
+SELECT id, title
+FROM documents
+ORDER BY vector_distance(embedding, ARRAY[0.1, 0.2, ...])
+LIMIT 10;
+```
+
+### CREATE FULLTEXT INDEX
+
+BM25 inverted index for full-text search:
+
+```sql
+CREATE FULLTEXT INDEX idx_content_bm25
+ON documents (content);
+```
+
+Query with index:
+
+```sql
+SELECT id, title, bm25_score(content, 'machine learning') as score
+FROM documents
+WHERE text_match(content, 'machine learning')
+ORDER BY score DESC;
+```
+
+### DROP INDEX
+
+Remove an index:
+
+```sql
+DROP INDEX idx_status;
+```
+
+### SHOW INDEXES
+
+List indexes:
+
+```sql
+SHOW INDEXES;
+SHOW INDEX ON documents;
+```
+
+## Users & Service Accounts
+
+### CREATE USER
+
+Create a user account:
+
+```sql
+CREATE USER alice@company.com WITH PASSWORD 'secure_password';
+```
+
+Optional roles:
+
+```sql
+CREATE USER bob WITH PASSWORD 'pass' IN ROLE tenant_admin;
+```
+
+### ALTER USER
+
+Change user properties:
+
+```sql
+ALTER USER alice@company.com WITH PASSWORD 'new_password';
+```
+
+Disable/enable:
+
+```sql
+ALTER USER alice DISABLED;
+ALTER USER alice ENABLED;
+```
+
+### DROP USER
+
+Remove a user:
+
+```sql
+DROP USER alice@company.com;
+```
+
+### CREATE SERVICE ACCOUNT
+
+Service accounts are passwordless, authenticate via API key:
+
+```sql
+CREATE SERVICE ACCOUNT data_loader;
+```
+
+Returns an API key. Use in code:
+
+```bash
+curl -H "Authorization: Bearer ndb_abc123xyz" http://127.0.0.1:6480/query
+```
+
+### DROP SERVICE ACCOUNT
+
+```sql
+DROP SERVICE ACCOUNT data_loader;
+```
+
+## Roles & Permissions
+
+### CREATE ROLE
+
+Create a custom role:
+
+```sql
+CREATE ROLE analyst;
+```
+
+Built-in roles: `tenant_admin`, `viewer`, `editor`.
+
+### ALTER ROLE
+
+```sql
+ALTER ROLE analyst WITH SUPERUSER;
+```
+
+### DROP ROLE
+
+```sql
+DROP ROLE analyst;
+```
+
+### GRANT / REVOKE
+
+Grant permissions:
+
+```sql
+GRANT SELECT, INSERT ON documents TO alice;
+GRANT ALL ON documents TO bob;
+```
+
+To role:
+
+```sql
+GRANT SELECT ON documents TO ROLE analyst;
+```
+
+Revoke permissions:
+
+```sql
+REVOKE INSERT ON documents FROM alice;
+```
+
+## Tenants & API Keys
+
+### CREATE TENANT
+
+Create a new tenant (multi-tenant isolation):
+
+```sql
+CREATE TENANT company_a;
+```
+
+### ALTER TENANT
+
+```sql
+ALTER TENANT company_a WITH MAX_MEMORY_GB 100;
+ALTER TENANT company_a WITH MAX_USERS 50;
+```
+
+### DROP TENANT
+
+```sql
+DROP TENANT company_a;
+```
+
+### CREATE API KEY
+
+Create an API key for authentication:
+
+```sql
+CREATE API KEY my_key;
+```
+
+Returns: `key_id`, `token` (use in Authorization header).
+
+### REVOKE API KEY
+
+```sql
+REVOKE API KEY my_key;
+```
+
+### LIST API KEYS
+
+```sql
+LIST API KEYS;
+```
+
+## Row-Level Security (RLS) Policies
+
+### CREATE RLS POLICY
+
+Restrict data access by user:
+
+```sql
+CREATE RLS POLICY documents_by_owner
+ON documents
+USING (owner_id = current_user_id);
+```
+
+Supports:
+
+- `current_user_id` — current user's ID
+- `current_tenant_id` — current tenant
+- Column comparisons
+
+### DROP RLS POLICY
+
+```sql
+DROP RLS POLICY documents_by_owner;
+```
+
+### SHOW RLS POLICIES
+
+```sql
+SHOW RLS POLICIES;
+SHOW RLS POLICY ON documents;
+```
+
+## Backup & Restore
+
+### BACKUP TENANT TO
+
+Export tenant data:
+
+```sql
+BACKUP TENANT company_a TO 's3://backup-bucket/company_a_2026-03-23.bak';
+```
+
+Supports: local paths, S3 (`s3://bucket/path`), GCS, Azure Blob.
+
+### RESTORE TENANT FROM
+
+Import tenant data:
+
+```sql
+RESTORE TENANT company_b FROM 's3://backup-bucket/company_a_2026-03-23.bak';
+```
+
+Dry run (preview without applying):
+
+```sql
+RESTORE TENANT company_b FROM 's3://...' DRY RUN;
+```
+
+## Cluster Management
+
+### SHOW CLUSTER
+
+View cluster topology:
+
+```sql
+SHOW CLUSTER;
+```
+
+Returns: node_id, host, port, status, raft_leader, replicas.
+
+### SHOW NODES
+
+List all nodes:
+
+```sql
+SHOW NODES;
+```
+
+### SHOW NODE <id>
+
+Details for one node:
+
+```sql
+SHOW NODE 1;
+```
+
+### SHOW RAFT GROUPS
+
+Raft consensus groups (1024 vShards):
+
+```sql
+SHOW RAFT GROUPS;
+```
+
+### ALTER RAFT GROUP
+
+Reconfigure replication:
+
+```sql
+ALTER RAFT GROUP 0 REPLICAS [1, 2, 3];
+```
+
+### REMOVE NODE
+
+Decommission a node:
+
+```sql
+REMOVE NODE 4;
+```
+
+### REBALANCE
+
+Rebalance vShards across nodes:
+
+```sql
+REBALANCE;
+```
+
+### SHOW MIGRATIONS
+
+View in-progress vShard migrations:
+
+```sql
+SHOW MIGRATIONS;
+```
+
+### SHOW PEER HEALTH
+
+Health check for cluster peers:
+
+```sql
+SHOW PEER HEALTH;
+```
+
+## Introspection
+
+### SHOW USERS
+
+List all users:
+
+```sql
+SHOW USERS;
+```
+
+### SHOW TENANTS
+
+List tenants:
+
+```sql
+SHOW TENANTS;
+```
+
+### SHOW SESSION
+
+Current session info:
+
+```sql
+SHOW SESSION;
+```
+
+Returns: user, tenant, connected_at, transaction_state.
+
+### SHOW CONNECTIONS
+
+Active connections:
+
+```sql
+SHOW CONNECTIONS;
+```
+
+### SHOW AUDIT LOG
+
+View audit trail:
+
+```sql
+SHOW AUDIT LOG;
+```
+
+Filter by timerange:
+
+```sql
+SHOW AUDIT LOG FROM '2026-03-20' TO '2026-03-23';
+```
+
+### EXPORT AUDIT
+
+Export audit log:
+
+```sql
+EXPORT AUDIT LOG TO 's3://logs/audit_2026.jsonl';
+```
+
+### SHOW GRANTS
+
+Permissions for current user:
+
+```sql
+SHOW GRANTS;
+```
+
+For another user:
+
+```sql
+SHOW GRANTS FOR alice;
+```
+
+### SHOW PERMISSIONS
+
+All available permissions:
+
+```sql
+SHOW PERMISSIONS;
+```
+
+## Special Commands
+
+### KILL CONNECTION
+
+Terminate a connection:
+
+```sql
+KILL CONNECTION '127.0.0.1:54321';
+```
+
+Only superuser can use.
+
+### SET <param>
+
+Set session variables:
+
+```sql
+SET search_path = 'public';
+SET statement_timeout = 30000;
+```
+
+## Ownership Transfer
+
+### ALTER COLLECTION OWNER TO
+
+Transfer collection ownership:
+
+```sql
+ALTER COLLECTION documents OWNER TO bob;
+```
+
+Only current owner or superuser.
+
+## Constraints & Validation
+
+NodeDB enforces:
+
+- **Unique constraints**: At insertion time via index lookup
+- **Not null**: Field validation at schema parse
+- **Check constraints**: Custom SQL predicates (via RLS)
+- **Foreign keys**: Soft reference validation (not enforced by default; configure with RLS)
+
+## Limits
+
+| Item | Limit | Notes |
+|:-----|:------|:------|
+| Users per tenant | Configurable | Default 100 |
+| Roles | Unlimited | |
+| Collections | Unlimited | |
+| Indexes per collection | Unlimited | Limited by storage |
+| API keys per user | 10 | |
+| RLS policies per collection | Unlimited | |
+
+## Next Steps
+
+- [INSERT](/query/insert-upsert) — Add data after CREATE COLLECTION
+- [Vector Search](/query/vector-search) — Use CREATE VECTOR INDEX
+- [SQL Overview](/query/sql-overview) — Learn SQL features
+- [Error Codes](/reference/error-codes) — DDL error reference

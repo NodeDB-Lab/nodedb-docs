@@ -1,8 +1,368 @@
 ---
 title: Document API
-description: CRUD operations on individual documents.
+description: CRUD operations on documents via HTTP.
 ---
 
 # Document API
 
-TODO
+The Document API provides simple HTTP operations for creating, reading, updating, and deleting documents. This is useful for applications that prefer REST over SQL.
+
+## Create Document
+
+```
+POST /collections/{collection_name}/documents
+Content-Type: application/json
+
+{
+  "id": "doc1",
+  "data": { "title": "Hello", "content": "World" }
+}
+```
+
+Response (201 Created):
+
+```json
+{
+  "status": "ok",
+  "id": "doc1",
+  "created_at": "2024-01-15T10:30:00Z",
+  "version": 1
+}
+```
+
+Example with Python:
+
+```python
+import requests
+
+response = requests.post(
+    "http://127.0.0.1:6480/collections/articles/documents",
+    headers={"Authorization": "Bearer ndb_..."},
+    json={
+        "id": "article-1",
+        "data": {
+            "title": "NodeDB Guide",
+            "author": "Alice",
+            "tags": ["database", "distributed"]
+        }
+    }
+)
+print(response.status_code)  # 201
+print(response.json())
+```
+
+### Auto-Generated ID
+
+Omit `id` to generate one automatically:
+
+```python
+response = requests.post(
+    "http://127.0.0.1:6480/collections/articles/documents",
+    json={"data": {"title": "New Article"}}
+)
+new_id = response.json()["id"]  # Generated UUID or similar
+```
+
+## Get Document
+
+```
+GET /collections/{collection_name}/documents/{id}
+```
+
+Response (200 OK):
+
+```json
+{
+  "status": "ok",
+  "id": "doc1",
+  "data": {
+    "title": "Hello",
+    "content": "World"
+  },
+  "version": 1,
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+Example:
+
+```python
+response = requests.get(
+    "http://127.0.0.1:6480/collections/articles/documents/article-1",
+    headers={"Authorization": "Bearer ndb_..."}
+)
+doc = response.json()
+print(doc["data"]["title"])
+```
+
+### Not Found
+
+If document doesn't exist:
+
+```json
+{
+  "status": "error",
+  "error": "not_found",
+  "message": "Document 'doc999' not found"
+}
+```
+
+## Update Document
+
+```
+PUT /collections/{collection_name}/documents/{id}
+Content-Type: application/json
+
+{
+  "data": { "title": "Updated Title", "content": "New Content" }
+}
+```
+
+Response (200 OK):
+
+```json
+{
+  "status": "ok",
+  "id": "doc1",
+  "version": 2,
+  "updated_at": "2024-01-15T11:00:00Z"
+}
+```
+
+Example:
+
+```python
+response = requests.put(
+    "http://127.0.0.1:6480/collections/articles/documents/article-1",
+    headers={"Authorization": "Bearer ndb_..."},
+    json={
+        "data": {
+            "title": "Updated Article",
+            "author": "Alice",
+            "tags": ["database", "distributed", "sql"],
+            "updated_by": "editor"
+        }
+    }
+)
+print(response.json()["version"])  # 2
+```
+
+### Partial Updates (Merge)
+
+To merge with existing data instead of replacing:
+
+```python
+response = requests.put(
+    "http://127.0.0.1:6480/collections/articles/documents/article-1",
+    headers={"Authorization": "Bearer ndb_..."},
+    json={
+        "data": {"tags": ["database", "sql"]},
+        "merge": True  # Merge with existing fields
+    }
+)
+```
+
+## Delete Document
+
+```
+DELETE /collections/{collection_name}/documents/{id}
+```
+
+Response (204 No Content or 200 OK):
+
+```json
+{
+  "status": "ok",
+  "id": "doc1",
+  "deleted": true
+}
+```
+
+Example:
+
+```python
+response = requests.delete(
+    "http://127.0.0.1:6480/collections/articles/documents/article-1",
+    headers={"Authorization": "Bearer ndb_..."}
+)
+print(response.status_code)  # 200 or 204
+```
+
+## Batch Operations
+
+### Create Multiple
+
+```python
+requests.post(
+    "http://127.0.0.1:6480/collections/articles/documents/batch",
+    json=[
+        {"id": "doc1", "data": {"title": "First"}},
+        {"id": "doc2", "data": {"title": "Second"}},
+        {"id": "doc3", "data": {"title": "Third"}}
+    ]
+)
+```
+
+### Delete Multiple
+
+```python
+requests.delete(
+    "http://127.0.0.1:6480/collections/articles/documents/batch",
+    json=["doc1", "doc2", "doc3"]
+)
+```
+
+## Field Types
+
+Documents support various data types in the `data` field:
+
+```json
+{
+  "id": "doc1",
+  "data": {
+    "string_field": "text",
+    "number_field": 42,
+    "float_field": 3.14,
+    "bool_field": true,
+    "null_field": null,
+    "array_field": [1, 2, 3],
+    "object_field": {"nested": "value"},
+    "timestamp": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+## Versioning
+
+Each document has a version number that increments on updates:
+
+```python
+doc1 = requests.get(
+    "http://127.0.0.1:6480/collections/articles/documents/doc1"
+).json()
+print(doc1["version"])  # 1
+
+requests.put(
+    "http://127.0.0.1:6480/collections/articles/documents/doc1",
+    json={"data": {"...": "..."}}
+)
+
+doc2 = requests.get(
+    "http://127.0.0.1:6480/collections/articles/documents/doc1"
+).json()
+print(doc2["version"])  # 2
+```
+
+### Optimistic Locking
+
+Update only if version hasn't changed:
+
+```python
+requests.put(
+    "http://127.0.0.1:6480/collections/articles/documents/doc1",
+    json={
+        "data": {"title": "New"},
+        "expected_version": 2  # Fails if not exactly version 2
+    }
+)
+```
+
+If version mismatch:
+
+```json
+{
+  "status": "error",
+  "error": "version_conflict",
+  "message": "Expected version 2 but found version 3"
+}
+```
+
+## Query Documents
+
+For complex queries, use the [SQL Query endpoint](./query-endpoint.md):
+
+```python
+requests.post(
+    "http://127.0.0.1:6480/query",
+    json={"sql": "SELECT * FROM articles WHERE author = $1", "params": ["Alice"]}
+)
+```
+
+## Consistency Control
+
+Set consistency level for document operations:
+
+```python
+requests.get(
+    "http://127.0.0.1:6480/collections/articles/documents/doc1",
+    headers={"X-Consistency": "strong"}
+)
+```
+
+Options: `strong` (default for reads), `eventual`, `bounded_staleness`
+
+## Timestamps
+
+Documents automatically track:
+
+- `created_at` — When document was created
+- `updated_at` — When last updated
+- `deleted_at` — When deleted (soft deletes)
+
+Example:
+
+```json
+{
+  "id": "doc1",
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T11:45:30Z"
+}
+```
+
+## Error Handling
+
+### Collection Not Found
+
+```json
+{
+  "status": "error",
+  "error": "collection_not_found",
+  "message": "Collection 'unknown' does not exist"
+}
+```
+
+### Duplicate ID
+
+```json
+{
+  "status": "error",
+  "error": "already_exists",
+  "message": "Document with id 'doc1' already exists"
+}
+```
+
+### Invalid Data
+
+```json
+{
+  "status": "error",
+  "error": "validation_error",
+  "message": "Field 'score' must be a number"
+}
+```
+
+## Size Limits
+
+- Document ID: up to 1024 bytes
+- Document data: up to 10 MB (configurable)
+- Batch operations: up to 1000 documents per request
+
+## Performance Tips
+
+1. Use batch operations for multiple documents
+2. Set appropriate consistency levels
+3. Index frequently queried fields
+4. Use version checks to prevent conflicts
+5. Cache hot documents in application
+6. Use SQL queries for complex filtering

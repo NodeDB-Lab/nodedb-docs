@@ -1,8 +1,320 @@
 ---
 title: Write-Ahead Log
-description: O_DIRECT WAL with group commit and CRC32C checksums.
+description: O_DIRECT, segmented WAL with CRC32C checksums, group commit, and AES-256-GCM encryption. The durability substrate.
 ---
 
 # Write-Ahead Log
 
-TODO
+The Write-Ahead Log (WAL) is the durability substrate. Before any mutation is applied to L0 RAM or acknowledged to the client, it is appended to the WAL. On crash recovery, the Data Plane replays the WAL to restore lost in-memory state.
+
+## WAL Design Goals
+
+1. **Durability**: Every acknowledged write is durable (survives crashes)
+2. **Determinism**: Write latency is predictable (no GC pauses, no O_SYNC stalls)
+3. **Throughput**: Support 100K+ writes/second on NVMe
+4. **Crash Recovery**: Fast, deterministic replay (< 1 minute for typical deployments)
+5. **PITR (Point-In-Time Recovery)**: Continuous archival enables recovery to any timestamp
+
+## WAL Storage
+
+The WAL is stored in **64 MiB segments** on local NVMe:
+
+```
+├── nodedb-wal/
+│   ├── 0000000000000000.wal    (segment 0: 0-64 MB)
+│   ├── 0000000000000001.wal    (segment 1: 64-128 MB)
+│   ├── 0000000000000002.wal    (segment 2: 128-192 MB) <- current
+│   ├── manifest.json           (segment metadata)
+│   └── checkpoint.json         (recovery point)
+```
+
+Segments are **immutable** once rotated. The current segment is being written; when it reaches 64 MiB, it's rotated and a new segment is started.
+
+## WAL Record Format
+
+Each record is self-contained and checksummed:
+
+```
+┌────────┬──────────┬─────────────┬───┬──────────┬──────────┬─────────────┬──────────┐
+│ magic  │ version  │ record_type │lsn│tenant_id │ vshard_id│ payload_len │ crc32c   │
+│ 4 B    │ 2 B      │ 2 B         │8B │ 4 B      │ 2 B      │ 4 B         │ 4 B      │
+├────────┴──────────┴─────────────┴───┴──────────┴──────────┴─────────────┴──────────┤
+│ payload (variable length)                                                           │
+│ - record_type=INSERT: serialized document                                          │
+│ - record_type=DELETE: document_id                                                  │
+│ - record_type=CRDT_DELTA: Loro delta bytes                                         │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `magic` | u32 | 0xDEADBEEF — validates record boundary |
+| `version` | u16 | Record format version (currently 1) |
+| `record_type` | u16 | INSERT, DELETE, CRDT_DELTA, METADATA_UPDATE |
+| `lsn` | u64 | Log Sequence Number (monotonically increasing) |
+| `tenant_id` | u32 | Tenant scope |
+| `vshard_id` | u16 | Virtual shard |
+| `payload_len` | u32 | Length of payload in bytes |
+| `crc32c` | u32 | CRC32C checksum of entire record |
+| `payload` | bytes | Record-specific data |
+
+### Record Types
+
+```c
+enum RecordType {
+    INSERT = 1,
+    DELETE = 2,
+    UPDATE = 3,
+    CRDT_DELTA = 4,
+    METADATA_UPDATE = 5,
+    CHECKPOINT = 6,      // Safe point for recovery
+    UNKNOWN = 0xFFFF     // Unknown; skip if optional
+}
+```
+
+### LSN (Log Sequence Number)
+
+LSNs are monotonically increasing 64-bit integers. Every record has a unique LSN:
+
+```
+Record 0: LSN=0
+Record 1: LSN=1
+Record 2: LSN=2
+...
+Record 999999: LSN=999999
+```
+
+LSNs are **persistent** across crash recovery (stored in checkpoint). The next record written after recovery uses `last_lsn + 1`.
+
+Replicas use LSNs to track replication progress: "Replica is at LSN 500000, leader is at LSN 500050" = 50 records behind.
+
+## Write Path
+
+### Step 1: Serialize
+
+```
+Client sends INSERT command
+  ↓
+Control Plane validates
+  ↓
+Data Plane receives via SPSC
+  ↓
+Data Plane serializes document to MessagePack
+  ↓
+Create WAL record: Record {
+    lsn: next_lsn,
+    tenant_id: 7,
+    vshard_id: 42,
+    record_type: INSERT,
+    payload: serialized_doc
+}
+  ↓
+Compute CRC32C of entire record
+```
+
+### Step 2: Append to Buffer
+
+```
+Data Plane appends record to in-memory WAL write buffer
+(not yet persisted to disk)
+
+Write buffer = [Record0, Record1, Record2, ...]
+Write buffer size = 16 KB (configurable)
+```
+
+### Step 3: Group Commit
+
+When the buffer fills or a 10 ms timeout expires, **group commit** flushes all buffered records together:
+
+```
+Batch N records from write buffer
+  ↓
+Submit single io_uring WRITE operation
+  (scatters multiple records in one syscall)
+  ↓
+Wait for io_uring completion (CQE)
+  ↓
+All N records are now durable
+  ↓
+Send ACK to all waiting clients (batched)
+```
+
+**Benefit:** 1000 sequential writes become 1 I/O operation. On NVMe (16 GB/s), this achieves ~100K writes/second.
+
+### Step 4: Double-Write Buffer (DWB)
+
+After io_uring confirms the write, the record is placed in a **Double-Write Buffer** (DWB) — a small, fixed-size ring buffer:
+
+```
+DWB = [Record, Record, Record, ...] (capacity 64)
+
+DWB serves two purposes:
+1. Deduplication: If same request retried, we know it's duplicate (via LSN)
+2. Atomicity: Multiple related records batched to DWB before applying to L0
+```
+
+Once the record is safe in DWB, it's applied to L0 (memtable, index).
+
+### Step 5: Response to Client
+
+```
+Record is durable (on disk)
+Record is applied to L0 (visible in reads)
+  ↓
+Send Response to client: OK
+```
+
+Latency: Typically 1-10 ms (dominated by group commit timeout and NVMe write latency).
+
+## Segment Rotation
+
+When a segment reaches 64 MiB:
+
+```
+Current segment: 0000000000000002.wal (63.5 MB used)
+New record arrives (1 MB)
+  ↓
+Record doesn't fit in current segment
+  ↓
+Rotate:
+  1. Finalize current segment (write footer with min/max LSN)
+  2. Close file descriptor
+  3. Sync to disk (fsync)
+  4. Create new segment: 0000000000000003.wal
+  5. Continue appending to new segment
+```
+
+The old segment is now immutable. Archiver will copy it to S3.
+
+## Encryption
+
+All WAL records are encrypted with **AES-256-GCM** (authenticated encryption):
+
+```
+Plaintext: Record { lsn, tenant_id, payload }
+  ↓
+Key: Derived from master key + encryption_key_id
+IV: Random 96-bit nonce
+  ↓
+Ciphertext = AES-256-GCM(plaintext, key, IV)
+Tag = Authentication tag (16 B)
+  ↓
+Encrypted record: {
+    encryption_key_id: u16,
+    iv: [u8; 12],
+    ciphertext: bytes,
+    tag: [u8; 16]
+}
+```
+
+On read (recovery), the Data Plane decrypts and validates the authentication tag. If decryption fails or tag is invalid, recovery aborts (indicating corruption or tampering).
+
+## Crash Recovery
+
+On startup, the Data Plane:
+
+1. **Load checkpoint**: Read `checkpoint.json` to find last safe LSN
+2. **Identify segments**: List all segments >= checkpoint LSN
+3. **Replay**: For each segment in order, deserialize and apply records
+4. **Validate**: Check CRC32C of every record
+5. **Re-apply**: Execute mutations to recreate L0 state
+6. **Verify**: Confirm replicated state matches (Raft-replicated shards)
+
+```
+checkpoint.json:
+{
+    "last_safe_lsn": 500000,
+    "timestamp": "2025-03-23T10:30:00Z",
+    "segments": ["0000000000000000.wal", "0000000000000001.wal"]
+}
+
+Startup:
+  Load segments [0-1]
+  From LSN 500001 onwards, replay and re-apply
+  After segment 1, reach safe state
+  Mark as READY for queries
+```
+
+### Recovery Latency
+
+Typical recovery time: **< 1 minute** for 100 GB of data.
+
+- Sequential disk reads: 500 MB/s on NVMe
+- Record deserialization: 100 μs per record (~10K records/sec)
+- Mutation application: 1 μs per mutation (in-memory)
+
+Bottleneck: I/O (reading segments from disk). Parallelism not possible (WAL must be replayed in order).
+
+## Checkpoints
+
+Periodically, the Data Plane writes a **checkpoint** (safe recovery point):
+
+```sql
+CHECKPOINT;
+
+-- In background (every 10 minutes of idle time):
+1. Flush all memtables to L1
+2. Take snapshot of all indexes
+3. Record LSN = current LSN
+4. Write checkpoint.json
+5. Segments before checkpoint LSN can be deleted (after replication lag clears)
+```
+
+Checkpoints reduce recovery time by allowing the replay to start from the checkpoint LSN instead of the beginning of time.
+
+## WAL Archival
+
+A background **WAL Archiver** continuously uploads older segments to S3:
+
+```
+Archiver task (runs every 10 minutes):
+  1. Find segments older than 24 hours
+  2. For each old segment:
+     a. Read from disk
+     b. Compress with zstd (optional)
+     c. Upload to S3: s3://bucket/wal-archive/{cluster-id}/{segment-id}.zst
+  3. Delete local segment file (after verifying S3 upload)
+  4. Update manifest
+
+S3 path: s3://nodedb-backups/cluster-123456/
+  ├── 2025-03-22/
+  │   ├── 0000000000000000.wal.zst
+  │   ├── 0000000000000001.wal.zst
+  │   └── ...
+  ├── 2025-03-23/
+  │   ├── 0000000000000100.wal.zst
+  │   └── ...
+```
+
+Archived segments enable **Point-In-Time Recovery (PITR)**: recover to any timestamp within the archival window (default: 30 days).
+
+## WAL Configuration
+
+```sql
+ALTER CLUSTER SET (
+    wal_segment_size_mb = 64,           -- Segment size
+    wal_group_commit_interval_ms = 10,  -- Batch timeout
+    wal_buffer_size_kb = 16,            -- In-memory buffer before batch
+    wal_archive_to_s3 = true,           -- Archive to S3
+    wal_archive_retention_days = 30,    -- How long to keep S3 archives
+    wal_encryption_key_id = 'master-2025-03', -- Encryption key
+    wal_fsync_mode = 'GROUP'            -- GROUP or SYNC (per-request fsync)
+);
+```
+
+### FSYNC Modes
+
+**GROUP (default):** Batches fsync calls. Latency: ~10 ms, throughput: ~100K writes/sec.
+
+**SYNC:** Each write fsyncs immediately. Latency: ~1 ms per write, throughput: ~1K writes/sec (slow but safer for single-client scenarios).
+
+## Metrics
+
+The WAL emits these metrics:
+
+- `wal_records_written_total` — Total records appended
+- `wal_bytes_written_total` — Total bytes appended
+- `wal_fsync_latency_ms_p99` — 99th percentile fsync latency
+- `wal_group_commit_batch_size_avg` — Avg records per batch
+- `wal_segments_in_rotation` — Active segments (target: 1-2)
+- `wal_archive_lag_seconds` — Delay between segment write and S3 upload (target: < 600s)
