@@ -22,6 +22,7 @@ header_links = [
   { label = "Drivers", href = "/drivers" },
   { label = "Operations", href = "/operations" },
   { label = "Reference", href = "/reference" },
+  { label = "NodeDB-Lite", href = "/nodedb-lite" },
 ]
 navigation = [
 
@@ -91,6 +92,17 @@ navigation = [
       "vector/pre-filtering",
       "vector/indexing-params",
     ] },
+    { group = "Graph Engine", pages = [
+      "graph/overview",
+      "graph/csr-index",
+      "graph/traversal",
+      "graph/graphrag",
+    ] },
+    { group = "Document Engine", pages = [
+      "document/overview",
+      "document/secondary-indexes",
+      "document/json-functions",
+    ] },
     { group = "Sparse & Metadata Engine", pages = [
       "sparse/overview",
       "sparse/btree-indexes",
@@ -126,6 +138,8 @@ navigation = [
       "select",
       "insert-upsert",
       "update-delete",
+      "joins",
+      "aggregations",
       "ddl",
       "explain",
       "functions",
@@ -250,6 +264,24 @@ navigation = [
     { group = "Limits & Defaults", pages = [
       "limits",
       "defaults",
+    ] },
+  ] },
+
+  # ── NodeDB-Lite ──────────────────────────────────────────────
+  { path = "/nodedb-lite", dir = "nodedb-lite", groups = [
+    { group = "Overview", pages = [
+      "overview",
+      "quickstart",
+    ] },
+    { group = "SDKs", pages = [
+      "rust-sdk",
+      "javascript-sdk",
+      "ios-android",
+    ] },
+    { group = "Sync", pages = [
+      "sync",
+      "shapes",
+      "compensation",
     ] },
   ] },
 ]
