@@ -1,0 +1,39 @@
+---
+title: Memory Management
+description: Per-engine memory budgets, jemalloc arenas, and memory governance.
+---
+
+# Memory Management
+
+## Memory Limit
+
+```toml
+[server]
+memory_limit = "4GiB"
+```
+
+Or: `NODEDB_MEMORY_LIMIT=4GiB`
+
+## Per-Engine Budgets
+
+Memory is divided among engines. No single engine can starve others. Default allocation:
+
+| Budget               | Default |
+| -------------------- | ------- |
+| Vector               | 30%     |
+| Sparse / Metadata    | 15%     |
+| CRDT                 | 10%     |
+| Timeseries           | 10%     |
+| Query Execution      | 20%     |
+| Unallocated headroom | 15%     |
+
+## Per-Core Arenas
+
+Each Data Plane core is pinned to a dedicated jemalloc arena via `nodedb-mem`. This eliminates allocator lock contention in the TPC architecture.
+
+## Backpressure
+
+When memory pressure rises:
+- Engine memtables flush to disk earlier
+- SPSC bridge reduces read depth at 85% utilization
+- New reads suspend at 95% utilization

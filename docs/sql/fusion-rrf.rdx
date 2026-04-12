@@ -1,0 +1,46 @@
+---
+title: Cross-Engine Fusion (RRF)
+description: Reciprocal Rank Fusion for combining results from multiple engines in one query.
+---
+
+# Cross-Engine Fusion (RRF)
+
+Reciprocal Rank Fusion merges ranked results from different engines — vector similarity, BM25 text ranking, graph hop distance — into a single result set. No application-level merging needed.
+
+## How RRF Works
+
+For each result, compute: `score = Σ 1 / (k + rank_i)` where `k` is a constant (default 60) and `rank_i` is the result's rank from each source.
+
+## Vector + Full-Text
+
+```sql
+SELECT title, rrf_score(
+    vector_distance(embedding, $query_vec),
+    bm25_score(body, 'distributed database')
+) AS score
+FROM articles
+LIMIT 10;
+```
+
+## GraphRAG (Vector + Graph)
+
+```sql
+GRAPH RAG FUSION ON entities
+  QUERY $embedding VECTOR_TOP_K 50 EXPANSION_DEPTH 2
+  EDGE_LABEL 'related_to' FINAL_TOP_K 10 RRF_K (60.0, 35.0);
+```
+
+Vector search finds seed nodes, graph BFS expands context, RRF merges both rankings.
+
+## Cross-Model Queries
+
+All engines share the same snapshot. A query that combines vector similarity, graph traversal, spatial filtering, and document field access sees a consistent point-in-time view.
+
+```sql
+-- Spatial filter → vector rank → document fields
+SELECT name, vector_distance(embedding, $vec) AS sim
+FROM restaurants
+WHERE ST_DWithin(location, ST_Point(-73.99, 40.75), 2000)
+  AND embedding <-> $vec
+LIMIT 10;
+```

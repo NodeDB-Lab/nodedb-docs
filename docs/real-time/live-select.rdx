@@ -1,0 +1,31 @@
+---
+title: LIVE SELECT
+description: Register a query and receive matching changes in real time. No polling.
+---
+
+# LIVE SELECT
+
+Register a query and receive matching inserts, updates, and deletes as they happen.
+
+```sql
+LIVE SELECT * FROM orders WHERE total > 100.00;
+LIVE SELECT id, status FROM orders WHERE status != 'pending';
+```
+
+## Protocol Support
+
+- **pgwire** — Delivered as `NotificationResponse` messages. Works in `psql` and JDBC.
+- **WebSocket** — JSON frames on `/ws`
+- **NDB** — MessagePack frames on native connection
+
+## Cancellation
+
+```sql
+CANCEL LIVE SELECT <subscription_id>;
+```
+
+The subscription remains active until cancelled or the session ends.
+
+## vs Change Streams
+
+LIVE SELECT is session-scoped and push-based. For durable, multi-consumer event streaming, use [Change Streams](/docs/real-time/change-streams).

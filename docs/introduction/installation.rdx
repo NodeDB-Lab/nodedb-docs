@@ -1,0 +1,98 @@
+---
+title: Installation
+description: Build NodeDB from source. Requires Rust 1.94+ and Linux with io_uring support.
+---
+
+# Installation
+
+NodeDB requires Linux kernel 5.1+ (for io_uring) and Rust 1.94+.
+
+## Build from Source
+
+```bash
+git clone https://github.com/NodeDB-Lab/nodedb.git
+cd nodedb
+
+# Release build (all crates)
+cargo build --release
+
+# Run tests
+cargo test --all-features
+```
+
+The build produces two binaries:
+
+- `target/release/nodedb` — the database server
+- `target/release/ndb` — the terminal client (TUI with syntax highlighting, tab completion, history search)
+
+## Start the Server
+
+```bash
+./target/release/nodedb
+```
+
+Default output:
+
+```
+2026-01-01T00:00:00Z INFO nodedb: Starting NodeDB
+2026-01-01T00:00:00Z INFO nodedb: Listening on 127.0.0.1:6433 (native)
+2026-01-01T00:00:00Z INFO nodedb: Listening on 127.0.0.1:6432 (PostgreSQL)
+2026-01-01T00:00:00Z INFO nodedb: Listening on 127.0.0.1:6480 (HTTP)
+2026-01-01T00:00:00Z INFO nodedb: Data directory: ~/.nodedb/data
+```
+
+## Configuration
+
+All protocols share one bind address. Env vars take precedence over the TOML file.
+
+```toml
+# nodedb.toml
+[server]
+host = "127.0.0.1"
+data_dir = "/var/lib/nodedb"
+memory_limit = "4GiB"
+data_plane_cores = 4
+max_connections = 1024
+log_format = "text"
+
+[server.ports]
+native = 6433
+pgwire = 6432
+http = 6480
+resp = 6381          # Optional: set to enable
+ilp = 8086           # Optional: set to enable
+```
+
+| Config field       | Environment variable      | Default          |
+| ------------------ | ------------------------- | ---------------- |
+| `host`             | `NODEDB_HOST`             | `127.0.0.1`      |
+| `ports.native`     | `NODEDB_PORT_NATIVE`      | `6433`           |
+| `ports.pgwire`     | `NODEDB_PORT_PGWIRE`      | `6432`           |
+| `ports.http`       | `NODEDB_PORT_HTTP`        | `6480`           |
+| `ports.resp`       | `NODEDB_PORT_RESP`        | disabled         |
+| `ports.ilp`        | `NODEDB_PORT_ILP`         | disabled         |
+| `data_dir`         | `NODEDB_DATA_DIR`         | `~/.local/share/nodedb` |
+| `memory_limit`     | `NODEDB_MEMORY_LIMIT`     | `1GiB`           |
+| `data_plane_cores` | `NODEDB_DATA_PLANE_CORES` | CPUs - 1         |
+| `max_connections`  | `NODEDB_MAX_CONNECTIONS`  | `4096`           |
+| `log_format`       | `NODEDB_LOG_FORMAT`       | `text`           |
+
+## Connect
+
+```bash
+# With the ndb TUI client
+./target/release/ndb
+
+# With psql
+psql -h localhost -p 6432
+
+# Health check via HTTP
+curl http://localhost:6480/health
+```
+
+## System Requirements
+
+- **OS**: Linux (kernel 5.1+ for io_uring)
+- **Rust**: 1.94+
+- **Memory**: 512 MiB minimum, 4+ GiB recommended
+- **Disk**: NVMe recommended for Data Plane I/O

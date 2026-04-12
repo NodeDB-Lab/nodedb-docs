@@ -1,0 +1,89 @@
+---
+title: Columnar Engine
+description: Per-column compression with block statistics, predicate pushdown, and 20-40x compression ratios.
+---
+
+# Columnar Engine
+
+Typed columns with per-column compression — the same approach as ClickHouse and DuckDB, living alongside your OLTP data.
+
+## When to Use
+
+- Analytical queries (GROUP BY, aggregations, window functions)
+- Reporting dashboards
+- Data science workloads
+- Any scan-heavy workload reading few columns from many rows
+- HTAP: pair with strict documents for combined OLTP + OLAP
+
+## Compression Codecs
+
+Each column gets a codec chain tuned for its data type:
+
+| Codec      | Target                        | Approach                            |
+| ---------- | ----------------------------- | ----------------------------------- |
+| ALP        | Floats                        | Lossless float-to-integer conversion |
+| FastLanes  | Integers                      | SIMD bit-packing                    |
+| FSST       | Strings                       | Substring dictionary compression    |
+| Gorilla    | Metrics                       | XOR-based compression               |
+| Pcodec     | Complex numerics              | Adaptive numeric compression        |
+| rANS       | Cold-tier data                | Entropy coding                      |
+| LZ4        | All                           | Terminal stage compression          |
+
+Multi-stage pipeline achieves 20-40x compression on typical workloads.
+
+## Block Statistics
+
+Data is stored in 1024-row blocks. Each block has min/max/null-count statistics. The query engine skips blocks that can't match the predicate — no decompression needed.
+
+## DDL
+
+```sql
+-- Plain columnar
+CREATE COLLECTION logs TYPE COLUMNAR (
+    ts TIMESTAMP TIME_KEY,
+    host VARCHAR,
+    level VARCHAR,
+    message VARCHAR
+);
+
+-- Timeseries profile
+CREATE COLLECTION metrics TYPE COLUMNAR (
+    ts TIMESTAMP TIME_KEY, host VARCHAR, cpu FLOAT
+) WITH profile = 'timeseries', partition_by = '1h';
+
+-- Spatial profile
+CREATE COLLECTION locations TYPE COLUMNAR (
+    geom GEOMETRY SPATIAL_INDEX, name VARCHAR
+);
+```
+
+## Queries
+
+```sql
+SELECT level, COUNT(*) FROM logs
+WHERE ts > now() - INTERVAL '1 hour'
+GROUP BY level ORDER BY COUNT(*) DESC;
+
+-- Window functions
+SELECT host, message,
+       ROW_NUMBER() OVER (PARTITION BY host ORDER BY ts DESC) AS rank
+FROM logs;
+```
+
+## HTAP Bridge
+
+Combine strict (OLTP) with columnar (OLAP):
+
+```sql
+CREATE COLLECTION orders TYPE DOCUMENT STRICT (...);
+
+CREATE MATERIALIZED VIEW order_analytics AS
+SELECT status, DATE_TRUNC('day', created_at) AS day, COUNT(*), SUM(total)
+FROM orders GROUP BY status, day;
+
+-- Point lookups → strict engine. Scans → columnar engine. Automatic routing.
+```
+
+## Delete Bitmaps
+
+Deleted rows are tracked with Roaring Bitmaps. Three-phase crash-safe compaction reclaims space: write new segments → swap references → delete old segments.

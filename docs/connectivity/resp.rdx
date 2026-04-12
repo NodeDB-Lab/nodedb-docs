@@ -1,0 +1,41 @@
+---
+title: RESP (Redis Protocol)
+description: Redis-compatible wire protocol for KV operations. Disabled by default.
+---
+
+# RESP (Redis Protocol)
+
+NodeDB speaks RESP2 for KV operations. Existing Redis clients work out of the box.
+
+## Enable
+
+```toml
+# nodedb.toml
+[server.ports]
+resp = 6381
+```
+
+Or: `NODEDB_PORT_RESP=6381`
+
+## Usage
+
+```bash
+redis-cli -p 6381
+
+SELECT sessions          # switch to a KV collection
+SET sess_abc '{"user":"alice"}' EX 3600
+GET sess_abc
+DEL sess_abc
+INCR page_views
+ZADD leaderboard 1500 player-123
+ZRANK leaderboard player-123
+SUBSCRIBE sessions
+```
+
+## Supported Commands
+
+`GET`, `SET` (EX/PX/NX/XX), `DEL`, `EXISTS`, `MGET`, `MSET`, `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`, `SCAN`, `KEYS`, `HGET`, `HMGET`, `HSET`, `FLUSHDB`, `DBSIZE`, `SUBSCRIBE`, `PUBLISH`, `PING`, `ECHO`, `SELECT`, `INFO`, `QUIT`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT`, `GETSET`, `ZADD`, `ZREM`, `ZRANK`, `ZRANGE`, `ZCARD`, `ZSCORE`.
+
+## Same Data, Two Interfaces
+
+RESP accesses the same KV data as SQL. A key set via `redis-cli` is queryable via `SELECT * FROM sessions WHERE key = 'sess_abc'`.

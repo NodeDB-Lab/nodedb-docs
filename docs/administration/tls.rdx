@@ -1,0 +1,43 @@
+---
+title: TLS & mTLS
+description: Transport encryption for all protocols with optional mutual TLS.
+---
+
+# TLS & mTLS
+
+## Server TLS
+
+```toml
+[server.tls]
+cert_path = "/etc/nodedb/tls/server.crt"
+key_path = "/etc/nodedb/tls/server.key"
+```
+
+Per-protocol TLS toggle:
+
+```toml
+[server.tls]
+native = true
+pgwire = true
+http = true
+resp = true
+ilp = false    # disable TLS for high-throughput ILP ingest
+```
+
+## mTLS (Mutual TLS)
+
+```toml
+[tls]
+cert = "/path/to/server.crt"
+key = "/path/to/server.key"
+client_ca = "/path/to/ca.crt"
+crl = "/path/to/revocation.crl"
+```
+
+When `client_ca` is set, clients must present a valid certificate signed by the CA.
+
+## Encryption at Rest
+
+- **Data volumes** — AES-256-XTS
+- **WAL segments** — AES-256-GCM with per-file data encryption keys
+- **Lite devices** — AES-256-GCM + Argon2id key derivation

@@ -1,0 +1,33 @@
+---
+title: Conflict Policies
+description: Declarative per-collection conflict resolution strategies.
+---
+
+# Conflict Policies
+
+## Setting Policies
+
+```sql
+CREATE COLLECTION notes WITH (conflict_policy = 'lww');
+CREATE COLLECTION profiles WITH (conflict_policy = 'field_merge');
+```
+
+## Available Policies
+
+| Policy        | Behavior                                         |
+| ------------- | ------------------------------------------------ |
+| `lww`         | Last-writer-wins based on timestamp (default)    |
+| `field_merge` | Per-field merge — concurrent edits to different fields merge automatically |
+
+## Field-Level Merge
+
+With `field_merge`, concurrent edits to different fields on the same document are both preserved. Concurrent edits to the same field use the LWW tiebreaker.
+
+## Per-Collection Configuration
+
+The `PolicyRegistry` stores resolution strategies per collection. Each collection can have its own policy independent of others.
+
+```sql
+ALTER COLLECTION notes SET conflict_policy = 'field_merge';
+SHOW CONFLICT POLICY ON notes;
+```

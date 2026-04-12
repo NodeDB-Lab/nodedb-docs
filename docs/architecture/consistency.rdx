@@ -1,0 +1,44 @@
+---
+title: Consistency Model
+description: Read consistency levels, snapshot isolation, and cross-engine query consistency.
+---
+
+# Consistency Model
+
+## Write Consistency
+
+A write is acknowledged only after:
+
+- **WAL append** is persisted (O_DIRECT + fsync)
+- **Raft quorum commit** (for replicated namespaces)
+
+Single-node: linearizable writes for the shard leader. Replicated: linearizable writes within each Raft group.
+
+## Read Consistency Levels
+
+```sql
+-- Strong: leader-read after commit index >= required LSN (default for metadata/constraints)
+SET read_consistency = 'strong';
+
+-- Bounded staleness: follower read allowed if lag <= duration
+SET read_consistency = 'bounded_staleness_5s';
+
+-- Eventual: local read for CRDT edge sync (monotonic convergence)
+SET read_consistency = 'eventual';
+```
+
+| Level               | Behavior                                     | Use case                          |
+| ------------------- | -------------------------------------------- | --------------------------------- |
+| Strong              | Leader read, waits for commit index          | Metadata, constraints, OLTP      |
+| Bounded Staleness   | Follower read if lag within configured bound | Read replicas, analytics          |
+| Eventual            | Local read, monotonic convergence            | CRDT edge sync, NodeDB-Lite      |
+
+## Snapshot Isolation
+
+Cross-engine queries execute against a shared snapshot watermark. A query that combines vector search, graph traversal, and document field access sees a consistent point-in-time view across all engines.
+
+Default isolation: Snapshot Isolation (SI) per query. Write skew detection is enforced for UNIQUE and FK constraints at commit.
+
+## Cross-Model Queries
+
+RRF fusion and cross-engine joins include source watermarks in response metadata. This lets clients verify the freshness of results that span multiple engines.

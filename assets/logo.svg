@@ -1,8 +1,65 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
-  <!-- Hexagonal doc shape -->
-  <path d="M64 8L116 36v56L64 120 12 92V36z" fill="#2563eb" opacity="0.12"/>
-  <path d="M64 8L116 36v56L64 120 12 92V36z" stroke="#2563eb" stroke-width="3" fill="none"/>
-  <!-- Oxide ring (O) -->
-  <circle cx="64" cy="64" r="22" stroke="#2563eb" stroke-width="4" fill="none"/>
-  <circle cx="64" cy="64" r="12" stroke="#2563eb" stroke-width="2.5" fill="none" opacity="0.5"/>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 200 200"
+   version="1.1"
+   id="svg2"
+   sodipodi:docname="logo.svg"
+   inkscape:version="1.4.3 (0d15f75042, 2025-12-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview2"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="4.075"
+     inkscape:cx="100"
+     inkscape:cy="100"
+     inkscape:window-width="1920"
+     inkscape:window-height="1024"
+     inkscape:window-x="1920"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg2" />
+  <defs
+     id="defs2">
+    <linearGradient
+       id="grad"
+       x1="0.1"
+       y1="0.9"
+       x2="0.9"
+       y2="0.1">
+      <stop
+         offset="0%"
+         stop-color="#3B82F6"
+         id="stop1" />
+      <stop
+         offset="100%"
+         stop-color="#2DD4BF"
+         id="stop2" />
+    </linearGradient>
+  </defs>
+  <!-- Single continuous stroke: 11 segments forming hexagon + N
+       Pointy-top hexagon. Vertices: Top(100,18) UR(171,59) LR(171,141) Bot(100,182) LL(29,141) UL(29,59)
+       Path: start(UR edge) -> top -> UL -> LL -> bottom-left edge partial ->
+             turn UP (N foot) -> N diagonal -> turn UP (N top) ->
+             UR -> LR -> bottom -> end(BL edge) -->
+  <path
+     d="M 115,28 100,18 29,59 v 82 l 36.546012,21.77301 0.245399,-93.78528 65.226999,62.23927 0.49079,-89.092031 35.80982,23.245399 0.2454,75.374232 L 100,182 84.754601,172.7362"
+     fill="none"
+     stroke="url(#grad)"
+     stroke-width="14"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     id="path2"
+     sodipodi:nodetypes="cccccccccccc"
+     inkscape:export-filename="path2.png"
+     inkscape:export-xdpi="314.62119"
+     inkscape:export-ydpi="314.62119" />
 </svg>

@@ -1,0 +1,61 @@
+---
+title: Spatial Queries
+description: OGC spatial predicates, distance queries, geofencing, and spatial joins.
+---
+
+# Spatial Queries
+
+## Proximity Search
+
+```sql
+SELECT name, ST_Distance(location, ST_Point(-73.990, 40.750)) AS dist
+FROM restaurants
+WHERE ST_DWithin(location, ST_Point(-73.990, 40.750), 1000)
+ORDER BY dist;
+```
+
+## Geofencing (Point-in-Polygon)
+
+```sql
+SELECT name FROM restaurants
+WHERE ST_Within(location, ST_GeomFromGeoJSON('{
+    "type": "Polygon",
+    "coordinates": [[[-74.0, 40.7], [-73.9, 40.7], [-73.9, 40.8], [-74.0, 40.8], [-74.0, 40.7]]]
+}'));
+```
+
+## OGC Predicates
+
+| Function          | Description                         |
+| ----------------- | ----------------------------------- |
+| `ST_Contains`     | Geometry A contains geometry B      |
+| `ST_Intersects`   | Geometries share any space          |
+| `ST_Within`       | Geometry A is within geometry B     |
+| `ST_DWithin`      | Within a given distance             |
+| `ST_Distance`     | Distance between two geometries     |
+| `ST_Intersection` | Intersection geometry               |
+| `ST_Buffer`       | Buffer around geometry              |
+| `ST_Envelope`     | Bounding box                        |
+| `ST_Union`        | Union of geometries                 |
+
+## Spatial Join
+
+```sql
+SELECT r.name, z.zone_name FROM restaurants r, delivery_zones z
+WHERE ST_Contains(z.boundary, r.location);
+```
+
+## H3 Hexagonal Indexing
+
+```sql
+SELECT h3_to_string(h3_encode(40.748, -73.985, 9)) AS hex;
+```
+
+## Hybrid Spatial-Vector
+
+```sql
+SELECT name, vector_distance(embedding, $query_vec) AS similarity
+FROM restaurants
+WHERE ST_DWithin(location, ST_Point(-73.990, 40.750), 2000) AND embedding <-> $query_vec
+LIMIT 10;
+```

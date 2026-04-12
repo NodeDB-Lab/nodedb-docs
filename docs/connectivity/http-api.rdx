@@ -1,0 +1,60 @@
+---
+title: HTTP API
+description: REST API for SQL execution, streaming, health checks, and Prometheus metrics.
+---
+
+# HTTP API
+
+REST API on port 6480 for web clients and services.
+
+## Endpoints
+
+### Execute SQL
+
+```bash
+curl -X POST http://localhost:6480/query \
+  -H "Authorization: Bearer ndb_..." \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM users LIMIT 10"}'
+```
+
+### Stream Results (NDJSON)
+
+```bash
+curl -X POST http://localhost:6480/query/stream \
+  -d '{"sql": "SELECT * FROM large_table"}'
+```
+
+### Health & Readiness
+
+```bash
+curl http://localhost:6480/health        # basic health
+curl http://localhost:6480/health/ready   # WAL recovered, ready for queries
+```
+
+### Prometheus Metrics
+
+```bash
+curl http://localhost:6480/metrics
+```
+
+70+ system metrics: per-engine, per-core, connection, query, replication, storage. Latency histogram with 13 buckets.
+
+### PromQL
+
+```
+http://localhost:6480/obsv/api
+```
+
+Full Prometheus query engine. Point Grafana at this URL as a Prometheus data source.
+
+### CDC Streams
+
+```
+GET /v1/streams/{stream}/events?group={group}   # SSE
+GET /v1/streams/{stream}/poll?group={group}      # Long-poll
+```
+
+### WebSocket
+
+`/ws` endpoint for JSON-RPC: SQL execution, LIVE SELECT delivery, session reconnect.

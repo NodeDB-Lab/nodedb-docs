@@ -1,0 +1,64 @@
+---
+title: Graph Queries
+description: GRAPH commands, MATCH pattern matching, and algorithm execution in SQL.
+---
+
+# Graph Queries
+
+## Edge Operations
+
+```sql
+GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020 };
+GRAPH DELETE EDGE FROM 'alice' TO 'bob' TYPE 'knows';
+```
+
+## Traversal
+
+```sql
+GRAPH TRAVERSE FROM 'alice' DEPTH 3;
+GRAPH TRAVERSE FROM 'alice' DEPTH 2 LABEL 'follows' DIRECTION out;
+GRAPH NEIGHBORS OF 'bob' LABEL 'follows' DIRECTION both;
+GRAPH PATH FROM 'alice' TO 'charlie' MAX_DEPTH 5 LABEL 'knows';
+```
+
+## MATCH Pattern Queries
+
+Cypher-subset pattern matching:
+
+```sql
+MATCH (a:Person)-[:knows]->(b:Person)-[:knows]->(c:Person)
+WHERE a.name = 'Alice'
+RETURN b.name, c.name;
+
+-- Variable-length paths
+MATCH (u:User)-[:follows*2..3]->(rec:User) WHERE u.id = 'you' RETURN DISTINCT rec.id LIMIT 10;
+
+-- Anti-join
+MATCH (a:User)-[:follows]->(b:User) WHERE NOT EXISTS { MATCH (b)-[:blocked_by]->(a) } RETURN a.id, b.id;
+
+-- OPTIONAL MATCH
+MATCH (a:Person)-[:knows]->(b:Person) OPTIONAL MATCH (b)-[:works_at]->(c:Company) RETURN a.name, b.name, c.name;
+```
+
+## Algorithms
+
+```sql
+GRAPH ALGO PAGERANK ON social DAMPING 0.85 ITERATIONS 20 TOLERANCE 1e-7;
+GRAPH ALGO WCC ON knowledge_graph;
+GRAPH ALGO SSSP ON routes FROM 'city:chicago';
+GRAPH ALGO COMMUNITY ON products ITERATIONS 10 RESOLUTION 1.0;
+GRAPH ALGO BETWEENNESS ON network SAMPLE 500;
+GRAPH ALGO KCORE ON collaboration;
+GRAPH ALGO TRIANGLES ON social MODE global;
+GRAPH ALGO DIAMETER ON web;
+```
+
+Available: `pagerank`, `wcc`, `label_propagation`, `lcc`, `sssp`, `betweenness`, `closeness`, `harmonic`, `degree`, `louvain`, `triangles`, `diameter`, `kcore`.
+
+## GraphRAG
+
+```sql
+GRAPH RAG FUSION ON entities
+  QUERY $embedding VECTOR_TOP_K 50 EXPANSION_DEPTH 2
+  EDGE_LABEL 'related_to' FINAL_TOP_K 10 RRF_K (60.0, 35.0);
+```

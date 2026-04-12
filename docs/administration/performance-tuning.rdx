@@ -1,0 +1,50 @@
+---
+title: Performance Tuning
+description: Data Plane cores, io_uring tuning, engine-specific parameters, and query optimization.
+---
+
+# Performance Tuning
+
+## Data Plane Cores
+
+```toml
+[server]
+data_plane_cores = 4    # default: CPUs - 1
+```
+
+More cores = more parallel shards. Each core is an isolated, shared-nothing shard.
+
+## io_uring
+
+The Data Plane uses io_uring for NVMe I/O. Ensure:
+
+- Linux kernel 5.1+ (5.11+ recommended for full io_uring features)
+- NVMe storage (io_uring benefits are minimal on spinning disks)
+- `ulimit -l unlimited` for locked memory
+
+## Vector Engine
+
+| Parameter         | Default | Tune for              |
+| ----------------- | ------- | --------------------- |
+| M                 | 16      | Higher = more recall  |
+| EF_CONSTRUCTION   | 200     | Higher = better graph |
+| Quantization      | none    | SQ8/PQ for large datasets |
+
+## FTS Engine
+
+| Parameter         | Default | Tune for              |
+| ----------------- | ------- | --------------------- |
+| Memtable threshold | 32M postings | Higher = fewer flushes |
+| Compaction levels  | 8x8    | More levels = less write amplification |
+
+## Query Optimization
+
+```sql
+EXPLAIN SELECT * FROM users WHERE age > 30;
+```
+
+Check that:
+- Vector searches use the HNSW index (not brute force)
+- Spatial queries use the R*-tree (check for `SpatialOp`)
+- Columnar queries show predicate pushdown and block skip
+- FTS queries use the inverted index (not full scan)

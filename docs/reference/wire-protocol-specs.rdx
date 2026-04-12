@@ -1,0 +1,41 @@
+---
+title: Wire Protocol Specs
+description: Protocol specifications for NDB (native), pgwire extensions, and HTTP API.
+---
+
+# Wire Protocol Specs
+
+## NDB (Native Protocol)
+
+Binary MessagePack over TCP (port 6433). Two message types:
+
+- **Sql** — SQL text as MessagePack string. Parsed by sqlparser.
+- **Native opcodes** — Typed messages (Get, Put, VectorSearch, etc.) that skip SQL parsing.
+
+Both produce the same `PhysicalPlan`.
+
+## pgwire Extensions
+
+NodeDB extends the PostgreSQL wire protocol with:
+
+- `LIVE SELECT` — async notification delivery via `NotificationResponse`
+- `GRAPH` commands — parsed as SQL, executed via EngineRules
+- `MATCH` patterns — Cypher-subset parsed inline
+- `SEARCH ... USING VECTOR` — vector search syntax
+- Session variables: `SET nodedb.consistency = 'eventual'`
+
+## HTTP API
+
+REST endpoints on port 6480:
+
+| Method | Path                          | Description            |
+| ------ | ----------------------------- | ---------------------- |
+| POST   | `/query`                      | Execute SQL            |
+| POST   | `/query/stream`               | Stream NDJSON results  |
+| GET    | `/health`                     | Health check           |
+| GET    | `/health/ready`               | Readiness check        |
+| GET    | `/metrics`                    | Prometheus metrics     |
+| GET    | `/obsv/api`                   | PromQL endpoint        |
+| GET    | `/v1/streams/{id}/events`     | SSE CDC stream         |
+| GET    | `/v1/streams/{id}/poll`       | Long-poll CDC          |
+| WS     | `/ws`                         | WebSocket JSON-RPC     |

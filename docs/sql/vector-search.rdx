@@ -1,0 +1,55 @@
+---
+title: Vector Search Queries
+description: Nearest neighbor search, filtered vector search, and multi-vector queries.
+---
+
+# Vector Search Queries
+
+## Nearest Neighbor
+
+```sql
+SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, -0.2, ...], 10);
+```
+
+Returns the 10 nearest neighbors by the metric configured on the index (l2, cosine, inner_product, manhattan, chebyshev, hamming, jaccard, or pearson).
+
+## Filtered Vector Search
+
+```sql
+SELECT title, vector_distance(embedding, ARRAY[0.1, 0.3, ...]) AS score
+FROM articles
+WHERE category = 'machine-learning'
+  AND id IN (SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, ...], 10));
+```
+
+The engine builds a Roaring Bitmap of matching IDs and selects the optimal strategy: pre-filter (selective filters), post-filter (broad filters), or brute-force (very selective).
+
+## Distance Function
+
+```sql
+SELECT id, vector_distance(embedding, $query_vec) AS dist
+FROM articles
+ORDER BY dist LIMIT 10;
+```
+
+## Hybrid Vector + Text (RRF)
+
+```sql
+SELECT title, rrf_score(
+    vector_distance(embedding, $query_vec),
+    bm25_score(body, 'transformer attention')
+) AS score
+FROM articles
+LIMIT 10;
+```
+
+Reciprocal Rank Fusion merges BM25 text results with vector similarity in a single pass.
+
+## Multi-Vector
+
+Collections can have multiple vector indexes on different embedding columns:
+
+```sql
+CREATE VECTOR INDEX idx_text ON products METRIC cosine DIM 384;
+CREATE VECTOR INDEX idx_image ON products METRIC cosine DIM 512;
+```

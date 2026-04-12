@@ -1,0 +1,41 @@
+---
+title: INSERT & UPSERT
+description: Insert documents, upsert with merge semantics, and bulk import.
+---
+
+# INSERT & UPSERT
+
+## INSERT
+
+```sql
+-- Single row
+INSERT INTO users (id, name, email) VALUES ('u1', 'Alice', 'alice@example.com');
+
+-- Multiple rows
+INSERT INTO users (id, name) VALUES ('u1', 'Alice'), ('u2', 'Bob');
+
+-- Object literal syntax (schemaless collections)
+INSERT INTO users { name: 'Alice', email: 'alice@example.com', age: 30 };
+
+-- INSERT ... SELECT
+INSERT INTO archive SELECT * FROM orders WHERE created_at < '2025-01-01';
+```
+
+## UPSERT
+
+Insert or merge if the document ID already exists:
+
+```sql
+UPSERT INTO users (id, name, role) VALUES ('u1', 'Alice', 'admin');
+
+-- Object literal syntax
+UPSERT INTO users { id: 'u1', name: 'Alice', role: 'admin' };
+```
+
+## Bulk Import
+
+```sql
+-- Auto-detected format (NDJSON, JSON array, or CSV)
+COPY users FROM '/path/to/users.ndjson';
+COPY users FROM '/path/to/users.csv' WITH (FORMAT csv);
+```

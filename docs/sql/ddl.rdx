@@ -1,0 +1,130 @@
+---
+title: DDL
+description: CREATE, ALTER, and DROP statements for collections, indexes, triggers, functions, and more.
+---
+
+# DDL (Data Definition Language)
+
+## Collections
+
+```sql
+-- Schemaless document (default)
+CREATE COLLECTION users;
+
+-- Strict document
+CREATE COLLECTION orders TYPE DOCUMENT STRICT (
+    id TEXT PRIMARY KEY, customer_id TEXT, total FLOAT, status TEXT, created_at TIMESTAMP
+);
+
+-- Key-Value
+CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);
+
+-- Columnar (plain, timeseries, spatial)
+CREATE COLLECTION logs TYPE COLUMNAR (ts TIMESTAMP TIME_KEY, host VARCHAR, level VARCHAR, message VARCHAR);
+CREATE COLLECTION metrics TYPE COLUMNAR (ts TIMESTAMP TIME_KEY, host VARCHAR, cpu FLOAT)
+    WITH profile = 'timeseries', partition_by = '1h', retention = '90d';
+CREATE COLLECTION locations TYPE COLUMNAR (geom GEOMETRY SPATIAL_INDEX, name VARCHAR);
+
+-- Convenience alias
+CREATE TIMESERIES metrics;
+
+DROP COLLECTION users;
+SHOW COLLECTIONS;
+DESCRIBE users;
+```
+
+## Schema Evolution
+
+```sql
+ALTER TABLE orders ADD COLUMN priority INT;
+ALTER COLLECTION orders ADD COLUMN region STRING DEFAULT 'us-east';
+ALTER COLLECTION orders DROP COLUMN region;
+```
+
+## Storage Conversion
+
+```sql
+CONVERT COLLECTION cache TO STORAGE='kv';
+CONVERT COLLECTION users TO STORAGE='strict';
+CONVERT COLLECTION logs TO STORAGE='columnar' WITH (profile = 'timeseries');
+```
+
+## Indexes
+
+```sql
+CREATE INDEX idx_email ON users(email);
+CREATE UNIQUE INDEX ON users(username);
+CREATE VECTOR INDEX ON articles METRIC cosine DIM 384 M 16 EF_CONSTRUCTION 200;
+CREATE SEARCH INDEX ON articles FIELDS title, body ANALYZER 'english' FUZZY true;
+CREATE SPATIAL INDEX ON locations(geom);
+CREATE SORTED INDEX lb ON scores (score DESC) KEY player_id;
+DROP INDEX idx_email;
+```
+
+## Triggers
+
+```sql
+-- ASYNC (default): Event Plane, zero write-latency impact
+CREATE TRIGGER notify AFTER INSERT ON orders FOR EACH ROW $$
+BEGIN INSERT INTO notifications (user_id, message) VALUES (NEW.customer_id, 'Order placed'); END; $$;
+
+-- SYNC: same transaction, ACID
+CREATE TRIGGER enforce AFTER UPDATE ON accounts FOR EACH ROW WITH (EXECUTION = SYNC) $$
+BEGIN IF NEW.balance < 0 THEN RAISE EXCEPTION 'Negative balance'; END IF; END; $$;
+
+DROP TRIGGER notify ON orders;
+SHOW TRIGGERS;
+```
+
+## Functions & Procedures
+
+```sql
+-- SQL expression (inlined, zero overhead)
+CREATE FUNCTION full_name(first VARCHAR, last VARCHAR) RETURNS VARCHAR
+LANGUAGE SQL IMMUTABLE AS $$ first || ' ' || last $$;
+
+-- Procedural
+CREATE PROCEDURE transfer_funds(from_id UUID, to_id UUID, amount DECIMAL) BEGIN
+    UPDATE accounts SET balance = balance - amount WHERE id = from_id;
+    UPDATE accounts SET balance = balance + amount WHERE id = to_id;
+END;
+
+CALL transfer_funds('acc_a', 'acc_b', 50.00);
+```
+
+## Change Streams & Topics
+
+```sql
+CREATE CHANGE STREAM order_events ON orders WITH (URL = 'https://hooks.example.com/orders');
+CREATE CONSUMER GROUP processors ON order_events;
+CREATE TOPIC alerts WITH (RETENTION = '1 hour');
+PUBLISH TO alerts 'message';
+```
+
+## Materialized Views
+
+```sql
+CREATE MATERIALIZED VIEW order_stats AS SELECT status, COUNT(*), SUM(total) FROM orders GROUP BY status;
+REFRESH MATERIALIZED VIEW order_stats;
+
+CREATE CONTINUOUS AGGREGATE cpu_hourly ON cpu_metrics AS
+    SELECT time_bucket('1 hour', ts) AS hour, host, AVG(cpu) FROM cpu_metrics GROUP BY hour, host
+WITH (refresh_interval = '1m');
+```
+
+## Cron Scheduler
+
+```sql
+CREATE SCHEDULE nightly_cleanup CRON '0 2 * * *' AS BEGIN
+    DELETE FROM sessions WHERE expires_at < now();
+END;
+```
+
+## Backup & Restore
+
+```sql
+BACKUP TENANT acme TO '/backups/acme.bak';
+RESTORE TENANT acme FROM '/backups/acme.bak';
+RESTORE TENANT acme FROM '/backups/acme.bak' DRY RUN;
+PURGE TENANT acme CONFIRM;
+```

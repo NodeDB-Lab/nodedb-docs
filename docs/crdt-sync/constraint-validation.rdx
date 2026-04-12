@@ -1,0 +1,38 @@
+---
+title: Constraint Validation
+description: SQL constraints enforced at sync time on Origin with typed compensation hints.
+---
+
+# Constraint Validation
+
+SQL constraints are checked on Origin at sync time, not on the device. This keeps local writes fast (no network round-trip) while preserving global consistency.
+
+## Enforced Constraints
+
+- **UNIQUE** — Duplicate key → `CompensationHint::Rename` or `CompensationHint::Merge`
+- **FOREIGN KEY** — Dangling reference → `CompensationHint::CreateParent` or `CompensationHint::Discard`
+- **CHECK** — Constraint violation → `CompensationHint::Adjust`
+
+## Compensation Hints
+
+When a local write violates a constraint on Origin, a typed `CompensationHint` is sent back to the device. The application handles the conflict:
+
+- **Rename** — The document ID or key already exists. Offer the user to rename.
+- **Merge** — Concurrent edits to the same document. Offer to merge.
+- **CreateParent** — A FK target doesn't exist. Offer to create it or discard the child.
+- **Adjust** — A CHECK constraint failed. Show the violation and let the user fix it.
+
+No silent data loss — the application always decides.
+
+## State Constraints
+
+```sql
+ALTER COLLECTION invoices ADD CONSTRAINT invoice_flow
+    ON COLUMN status TRANSITIONS (
+        'draft'     -> 'submitted',
+        'submitted' -> 'approved' BY ROLE 'manager',
+        'approved'  -> 'issued'   BY ROLE 'accountant'
+    );
+```
+
+State transitions are validated at sync time. Invalid transitions (e.g., `draft -> issued`) are rejected with a compensation hint.

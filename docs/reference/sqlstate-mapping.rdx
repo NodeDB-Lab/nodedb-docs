@@ -1,0 +1,24 @@
+---
+title: SQLSTATE Mapping
+description: PostgreSQL-compatible SQLSTATE codes returned over pgwire.
+---
+
+# SQLSTATE Mapping
+
+NodeDB maps internal error codes to PostgreSQL SQLSTATE codes for pgwire compatibility.
+
+| NodeDB Error          | SQLSTATE | PostgreSQL Meaning           |
+| --------------------- | -------- | ---------------------------- |
+| Syntax error          | 42601    | Syntax error                 |
+| Collection not found  | 42P01    | Undefined table              |
+| Column not found      | 42703    | Undefined column             |
+| Type mismatch         | 42846    | Cannot coerce                |
+| Unique violation      | 23505    | Unique violation             |
+| FK violation          | 23503    | Foreign key violation        |
+| Check violation       | 23514    | Check violation              |
+| Not null violation    | 23502    | Not null violation           |
+| Permission denied     | 42501    | Insufficient privilege       |
+| Numeric overflow      | 22003    | Numeric value out of range   |
+| Division by zero      | 22012    | Division by zero             |
+| Rate limit exceeded   | 54001    | Too many resources           |
+| Internal error        | XX000    | Internal error               |

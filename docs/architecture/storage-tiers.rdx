@@ -1,0 +1,43 @@
+---
+title: Storage Tiers
+description: Three-tier storage hierarchy — RAM, NVMe, and S3 — with temperature-aware data placement.
+---
+
+# Storage Tiers
+
+NodeDB uses tiered storage to match data temperature to the right medium.
+
+## Tiers
+
+| Tier      | Medium | Contents                                        | I/O Method            |
+| --------- | ------ | ----------------------------------------------- | --------------------- |
+| L0 (hot)  | RAM    | Memtables, active CRDT states, incoming metrics | None (in-memory)      |
+| L1 (warm) | NVMe   | HNSW graphs, metadata indexes, segment files    | mmap + madvise        |
+| L2 (cold) | S3     | Historical logs, compressed vector layers       | Parquet + HTTP range  |
+| WAL       | NVMe   | Write-ahead log                                 | O_DIRECT via io_uring |
+
+## Critical Rules
+
+**WAL uses O_DIRECT.** Bypasses the kernel page cache entirely for deterministic write latency. Group commit batches multiple writes per io_uring submission for NVMe IOPS efficiency.
+
+**L1 indexes use mmap.** Zero-copy deserialization. SIMD reads directly from mapped pages. `madvise(MADV_WILLNEED)` pre-fetches before compute touches the data.
+
+**WAL and L1 never share page cache.** O_DIRECT (WAL) and mmap (L1) use fundamentally different I/O paths. Mixing them would cause cache coherency issues.
+
+## Per-Core Memory
+
+Each Data Plane core is pinned to a dedicated jemalloc arena via `nodedb-mem`. This eliminates allocator lock contention in the TPC architecture. Memory budgets are enforced per engine — no single engine can starve others.
+
+## Compaction
+
+L1 segment files undergo three-phase crash-safe compaction:
+
+1. Write new merged segments to temporary files
+2. Atomically swap file references in the catalog
+3. Delete old segments after all readers have released them
+
+Compaction preserves monotonic LSN ordering. Delete bitmaps (Roaring) track removed rows without rewriting segments.
+
+## Cold Storage
+
+L2 uses Parquet format with predicate pushdown. A packed single-file format enables HTTP range requests for minimal egress from S3/GCS/Azure.

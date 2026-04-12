@@ -1,0 +1,32 @@
+---
+title: B-tree Index
+description: redb B-Tree indexes for metadata lookups and secondary indexes on document collections.
+---
+
+# B-tree Index
+
+B-tree indexes power metadata lookups and secondary indexes on document collections. Backed by redb's ACID B-Tree storage.
+
+## Creating Indexes
+
+```sql
+-- Secondary index on a document collection
+CREATE INDEX ON users FIELDS email;
+
+-- Compound index
+CREATE INDEX ON orders FIELDS customer_id, status;
+
+-- Unique index
+CREATE UNIQUE INDEX ON users FIELDS email;
+```
+
+## When Used
+
+- Point lookups on document collections (`WHERE email = 'alice@example.com'`)
+- Range scans (`WHERE age > 25 AND age < 40`)
+- Sorting (`ORDER BY created_at DESC`)
+- Constraint enforcement (UNIQUE)
+
+## Graph Edge Storage
+
+Graph edges are persisted in redb B-Trees with forward and reverse indexes. The key format (`src_id\x00label\x00dst_id`) enables efficient prefix scans for outbound traversal.

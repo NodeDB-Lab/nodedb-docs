@@ -1,0 +1,57 @@
+---
+title: UPDATE & DELETE
+description: Point and bulk mutations, transactions, and limitations.
+---
+
+# UPDATE & DELETE
+
+## UPDATE
+
+```sql
+UPDATE users SET role = 'admin' WHERE id = 'u1';
+UPDATE users SET status = 'inactive' WHERE last_login < '2025-01-01';
+```
+
+## DELETE
+
+```sql
+DELETE FROM users WHERE id = 'u1';
+DELETE FROM orders WHERE status = 'cancelled';
+TRUNCATE users;
+```
+
+## Transactions
+
+```sql
+BEGIN;
+INSERT INTO orders (id, total) VALUES ('o1', 99.99);
+UPDATE inventory SET stock = stock - 1 WHERE id = 'item1';
+COMMIT;
+
+-- Rollback
+BEGIN;
+DELETE FROM users WHERE id = 'u1';
+ROLLBACK;
+
+-- Savepoints
+BEGIN;
+SAVEPOINT sp1;
+INSERT INTO users (id, name) VALUES ('u1', 'Alice');
+ROLLBACK TO sp1;
+COMMIT;
+```
+
+## Atomic Transfers
+
+```sql
+-- Fungible (currency, resources)
+SELECT TRANSFER('wallets', 'player-A', 'player-B', 'gold', 500);
+
+-- Non-fungible (unique items)
+SELECT TRANSFER_ITEM('inventory', 'inventory', 'sword-of-doom', 'player-A', 'player-B');
+```
+
+## Limitations
+
+- `UPDATE/DELETE ... JOIN` is not supported. Rewrite as subquery: `DELETE FROM orders WHERE user_id IN (SELECT id FROM users WHERE ...)`
+- `UPDATE/DELETE` on timeseries collections is not supported (append-only). Use retention policies.

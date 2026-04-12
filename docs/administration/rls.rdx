@@ -1,0 +1,48 @@
+---
+title: Row-Level Security
+description: Per-row filtering based on authenticated user context. Works across all seven engines.
+---
+
+# Row-Level Security (RLS)
+
+RLS policies filter rows transparently on every query. No application code changes needed.
+
+```sql
+CREATE RLS POLICY user_orders ON orders FOR READ USING (customer_id = $auth.id);
+CREATE RLS POLICY user_write ON orders FOR WRITE USING (customer_id = $auth.id);
+CREATE RLS POLICY admin_bypass ON orders FOR READ USING ($auth.role = 'admin' OR customer_id = $auth.id);
+CREATE RLS POLICY org_access ON projects FOR ALL USING (org_id = $auth.org_id);
+```
+
+## Policy Types
+
+| Type    | Applies to             |
+| ------- | ---------------------- |
+| `READ`  | SELECT                 |
+| `WRITE` | INSERT, UPDATE, DELETE |
+| `ALL`   | Both                   |
+
+## Permissive vs Restrictive
+
+Multiple policies: permissive (default, OR-combined) or restrictive (AND-combined):
+
+```sql
+CREATE RLS POLICY org_filter ON docs FOR READ USING (org_id = $auth.org_id) RESTRICTIVE;
+CREATE RLS POLICY not_deleted ON docs FOR READ USING (status != 'deleted') RESTRICTIVE;
+```
+
+## Cross-Engine Behavior
+
+RLS filters are injected at plan time, before engine dispatch:
+
+- **Vector search** — unauthorized vectors excluded from results
+- **Graph traversal** — edges to invisible nodes are skipped
+- **FTS** — only matching documents passing RLS are returned
+- **KV** — blocked rows return empty
+
+## Managing
+
+```sql
+SHOW RLS POLICIES;
+DROP RLS POLICY user_orders ON orders;
+```

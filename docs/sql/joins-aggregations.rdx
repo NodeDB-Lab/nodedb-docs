@@ -1,0 +1,54 @@
+---
+title: JOINs & Aggregations
+description: Inner, outer, semi, and anti joins. Aggregate functions and GROUP BY.
+---
+
+# JOINs & Aggregations
+
+## JOINs
+
+```sql
+-- Inner join
+SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id;
+
+-- Left join
+SELECT u.name, o.total FROM users u LEFT JOIN orders o ON u.id = o.user_id;
+
+-- Cross join
+SELECT * FROM sizes CROSS JOIN colors;
+
+-- Semi join (EXISTS)
+SELECT * FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id);
+
+-- Anti join (NOT EXISTS)
+SELECT * FROM users u WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id);
+```
+
+JOINs work across collections of different storage types — you can join a KV collection with a strict document collection.
+
+## Aggregate Functions
+
+| Function                | Description             |
+| ----------------------- | ----------------------- |
+| `COUNT(*)`              | Row count               |
+| `COUNT(DISTINCT col)`   | Distinct count          |
+| `SUM(col)`              | Sum                     |
+| `AVG(col)`              | Average                 |
+| `MIN(col)` / `MAX(col)` | Minimum / Maximum       |
+
+## Approximate Aggregates
+
+Mergeable across shards, usable in continuous aggregation:
+
+| Function                        | Description        |
+| ------------------------------- | ------------------ |
+| `approx_count_distinct(col)`    | HyperLogLog        |
+| `approx_percentile(col, p)`     | t-digest           |
+| `approx_topk(col, k)`          | SpaceSaving        |
+
+## Weighted Random Selection
+
+```sql
+SELECT * FROM WEIGHTED_PICK('loot_table', weight => 'drop_rate', count => 1);
+SELECT * FROM WEIGHTED_PICK('gacha_pool', weight => 'probability', count => 10, SEED => 'player:pull');
+```

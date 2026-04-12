@@ -1,0 +1,29 @@
+---
+title: Feature Flags
+description: Compile-time feature gates for optional capabilities.
+---
+
+# Feature Flags
+
+NodeDB uses Cargo feature flags for optional capabilities.
+
+| Feature      | What it enables                                        |
+| ------------ | ------------------------------------------------------ |
+| `promql`     | PromQL query engine at `/obsv/api`                     |
+| `otel`       | OpenTelemetry OTLP ingest and export                   |
+| `grafana`    | Grafana data source endpoints                          |
+| `monitoring` | Meta-feature: enables `promql` + `otel` + `grafana`    |
+| `kafka`      | Kafka bridge for change stream delivery                |
+
+The `nodedb-fts` crate defines additional language features (`lang-ja`, `lang-zh`, `lang-ko`, `lang-th`) for dictionary-based CJK/Thai segmentation. These are crate-level features, not workspace-level.
+
+## Building with Features
+
+```bash
+cargo build --release --features promql,otel,monitoring
+cargo build --release --all-features
+```
+
+## Runtime Configuration
+
+Feature-gated capabilities are configurable at runtime via `nodedb.toml` and environment variables once compiled in.

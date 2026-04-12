@@ -1,0 +1,50 @@
+---
+title: CRDT Engine
+description: Loro-backed conflict-free replicated data types for offline-first edge sync with cloud consistency.
+---
+
+# CRDT Engine
+
+The CRDT engine provides conflict-free replication for offline-first applications. Locally, writes are available immediately (AP). Globally, deltas are committed through Multi-Raft consensus (CP). SQL constraints are enforced at sync time.
+
+## How It Works
+
+1. Device writes locally — available immediately, no network required
+2. Write produces a CRDT delta (Loro)
+3. When connectivity returns, delta syncs to Origin via WebSocket
+4. Origin validates SQL constraints (UNIQUE, FK, CHECK) at Raft commit
+5. If constraints pass, delta is committed and replicated
+6. If constraints fail, Origin sends a typed `CompensationHint` back to the device
+
+## Conflict Resolution
+
+Declarative conflict policies per collection:
+
+```sql
+-- Last-writer-wins (default)
+CREATE COLLECTION notes WITH (conflict_policy = 'lww');
+
+-- Rename suffix for UNIQUE conflicts
+CREATE COLLECTION profiles WITH (conflict_policy = 'rename_suffix');
+```
+
+The `PolicyRegistry` stores per-collection resolution strategies. Available policies: `lww` (last-writer-wins), `rename_suffix` (append suffix on UNIQUE conflict), `cascade_defer` (retry with backoff for FK violations), `custom` (webhook), `escalate_to_dlq` (send to dead-letter queue).
+
+## Constraint Validation
+
+SQL constraints are checked on Origin at sync time, not on the device:
+
+- **UNIQUE** — duplicate key → `CompensationHint::Rename` or `CompensationHint::Merge`
+- **FK** — dangling reference → `CompensationHint::CreateParent` or `CompensationHint::Discard`
+- **CHECK** — constraint violation → `CompensationHint::Adjust`
+
+The application handles compensation — no silent data loss.
+
+## Dead-Letter Queue
+
+Deltas that persistently fail constraint validation are routed to a dead-letter queue with diagnostic metadata. Operators can inspect, replay, or discard them.
+
+## Related
+
+- [CRDT Sync](/docs/crdt-sync/overview) — Full sync protocol and offline patterns
+- [Document Engine](/docs/data-modeling/document) — Schemaless documents with CRDT sync

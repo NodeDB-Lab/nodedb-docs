@@ -1,0 +1,38 @@
+---
+title: ILP (InfluxDB Line Protocol)
+description: High-throughput timeseries ingest via InfluxDB Line Protocol. Disabled by default.
+---
+
+# ILP (InfluxDB Line Protocol)
+
+NodeDB accepts metrics via InfluxDB Line Protocol over TCP for high-throughput timeseries ingest.
+
+## Enable
+
+```toml
+[server.ports]
+ilp = 8086
+```
+
+Or: `NODEDB_PORT_ILP=8086`
+
+## Usage
+
+```bash
+echo "cpu,host=web-01,region=us-east usage=72.5,mem=84.2 1609459200000000000" | nc localhost 8086
+```
+
+## Telegraf Integration
+
+```toml
+# telegraf.conf
+[[outputs.socket_writer]]
+address = "tcp://localhost:8086"
+data_format = "influx"
+```
+
+Any ILP-compatible client (Telegraf, Vector, InfluxDB client libraries) works.
+
+## Adaptive Batching
+
+NodeDB auto-tunes batch sizes based on ingest rate. Per-series core routing eliminates cross-core contention. No configuration needed.

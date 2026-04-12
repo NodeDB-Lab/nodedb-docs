@@ -1,0 +1,44 @@
+---
+title: Cluster Operations
+description: Cluster setup, node management, shard rebalancing, and rolling upgrades.
+---
+
+# Cluster Operations
+
+## Introspection
+
+```sql
+SHOW CLUSTER;
+SHOW NODES;
+SHOW RAFT GROUPS;
+```
+
+## Adding Nodes
+
+New nodes join the cluster and receive vShard assignments during rebalancing.
+
+## Shard Rebalancing
+
+When nodes join or leave, vShards redistribute automatically:
+
+1. Coordinator selects vShards based on load metrics
+2. Target node replicates the vShard's data
+3. Ownership transfers atomically
+4. Old node drops the vShard data
+
+Transparent to clients — requests forward during migration.
+
+## Rolling Upgrades
+
+1. Drain a node (move its vShard leadership to other nodes)
+2. Upgrade the binary
+3. Restart the node
+4. Repeat for each node
+
+Raft leader election handles temporary unavailability.
+
+## Failure Recovery
+
+- **Single node failure** — Raft elects new leaders for affected vShards
+- **Minority failure** — Cluster remains available with quorum
+- **Majority failure** — Cluster becomes read-only until quorum restores

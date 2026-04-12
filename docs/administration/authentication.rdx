@@ -1,0 +1,63 @@
+---
+title: Authentication
+description: Password auth (SCRAM-SHA-256), API keys, JWKS (JWT), and mTLS.
+---
+
+# Authentication
+
+NodeDB supports multiple authentication methods simultaneously.
+
+## Password Auth (SCRAM-SHA-256)
+
+```sql
+CREATE USER alice WITH PASSWORD 'strong_password';
+CREATE USER bob WITH PASSWORD 'secret' ROLE readonly;
+```
+
+```bash
+psql -h localhost -p 6432 -U alice
+```
+
+## API Keys
+
+```sql
+CREATE API KEY 'my-service' ROLE readwrite;
+DROP API KEY 'my-service';
+```
+
+```bash
+curl -H "Authorization: Bearer <api-key>" http://localhost:6480/query
+```
+
+## JWKS (JWT)
+
+Multi-provider support (Auth0, Clerk, Supabase, Firebase, Keycloak, Cognito):
+
+```toml
+[auth.jwt]
+providers = [{ issuer = "https://your-domain.auth0.com/", audience = "your-api" }]
+```
+
+JWT claims map to `$auth.*` session variables for RLS:
+
+| Claim     | Variable         | Usage                          |
+| --------- | ---------------- | ------------------------------ |
+| `sub`     | `$auth.id`       | `WHERE user_id = $auth.id`     |
+| `role`    | `$auth.role`     | `WHERE $auth.role = 'admin'`   |
+| `org_id`  | `$auth.org_id`   | `WHERE org_id = $auth.org_id`  |
+| `scope`   | `$auth.scopes`   | Scope-based access control     |
+
+Supported algorithms: RS256, ES256.
+
+## mTLS
+
+```toml
+[tls]
+cert = "/path/to/server.crt"
+key = "/path/to/server.key"
+client_ca = "/path/to/ca.crt"     # enables mTLS
+```
+
+## Auth Priority
+
+1. mTLS → 2. JWT Bearer → 3. API key → 4. SCRAM-SHA-256

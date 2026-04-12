@@ -1,0 +1,33 @@
+---
+title: Inverted Index
+description: LSM-based inverted index for full-text search with Block-Max WAND scoring.
+---
+
+# Inverted Index
+
+The inverted index maps terms to document IDs for full-text search. It uses an LSM architecture with posting compression and Block-Max WAND scoring.
+
+## Creating a Search Index
+
+```sql
+CREATE SEARCH INDEX ON articles FIELDS title, body ANALYZER 'english' FUZZY true;
+```
+
+## Architecture
+
+**Memtable** — Writes accumulate in-memory (`HashMap<String, Vec<CompactPosting>>`). When the memtable exceeds the threshold (32M posting entries or 100K unique terms), it flushes to an immutable segment.
+
+**Segments** — Compressed on-disk segments with delta-encoded, bitpacked posting lists. Level-based compaction (8 levels, 8 segments per level).
+
+**Query merge** — Searches merge the active memtable with all persisted segments.
+
+## Posting Compression
+
+- Delta encoding for sorted doc IDs
+- Variable-width bitpacking (3-byte header: `[count: u16][bit_width: u8]`)
+- SIMD-accelerated unpack (SSE2 on x86_64, NEON on AArch64)
+- SmallFloat fieldnorms (1 byte per document, 4x space reduction)
+
+## Block-Max WAND
+
+Posting lists are split into 128-document blocks with precomputed `block_max_tf` and `block_min_fieldnorm`. During scoring, blocks that can't beat the current top-k threshold are skipped entirely.

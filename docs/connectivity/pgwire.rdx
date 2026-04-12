@@ -1,0 +1,32 @@
+---
+title: pgwire (PostgreSQL Protocol)
+description: Standard PostgreSQL wire protocol. Any Postgres-compatible tool works with NodeDB.
+---
+
+# pgwire
+
+NodeDB speaks the PostgreSQL wire protocol on port 6432. Any tool that speaks Postgres works.
+
+```bash
+psql -h localhost -p 6432
+```
+
+## Supported Features
+
+- Simple Query protocol
+- Extended Query protocol (prepared statements: Parse, Bind, Describe, Execute)
+- `COPY FROM` (bulk import)
+- `LISTEN/NOTIFY` (cluster-wide)
+- SCRAM-SHA-256 authentication
+- TLS
+- Session variables
+- Server-side cursors (SCROLL, BACKWARD, MOVE, WITH HOLD)
+- Temporary tables (session-scoped)
+
+## Compatible Clients
+
+Any PostgreSQL client library: libpq, JDBC, psycopg2, node-postgres, SQLAlchemy, Prisma, Diesel, tokio-postgres, and more.
+
+## GUI Tools
+
+DBeaver and pgAdmin connect directly. Configure as a PostgreSQL connection to `localhost:6432`.

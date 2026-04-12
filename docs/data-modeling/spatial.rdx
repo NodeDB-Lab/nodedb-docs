@@ -1,0 +1,75 @@
+---
+title: Spatial Profile
+description: R*-tree index, OGC predicates, geohash, H3 hexagonal indexing, and hybrid spatial-vector search.
+---
+
+# Spatial Profile
+
+Spatial is a columnar profile. Collections with a `SPATIAL_INDEX` column modifier get automatic R*-tree indexing over the geometry column.
+
+## DDL
+
+```sql
+-- Columnar with spatial index
+CREATE COLLECTION restaurants TYPE COLUMNAR (
+    location GEOMETRY SPATIAL_INDEX,
+    name VARCHAR,
+    cuisine VARCHAR,
+    rating FLOAT
+);
+
+-- Or add a spatial index to any collection
+CREATE COLLECTION restaurants;
+CREATE SPATIAL INDEX ON restaurants FIELDS location;
+```
+
+## Queries
+
+```sql
+-- Find within 1km
+SELECT name, ST_Distance(location, ST_Point(-73.990, 40.750)) AS dist
+FROM restaurants
+WHERE ST_DWithin(location, ST_Point(-73.990, 40.750), 1000)
+ORDER BY dist;
+
+-- Geofencing (point-in-polygon)
+SELECT name FROM restaurants
+WHERE ST_Within(location, ST_GeomFromGeoJSON('{
+    "type": "Polygon",
+    "coordinates": [[[-74.0, 40.7], [-73.9, 40.7], [-73.9, 40.8], [-74.0, 40.8], [-74.0, 40.7]]]
+}'));
+
+-- H3 hexagonal binning
+SELECT h3_to_string(h3_encode(40.748, -73.985, 9)) AS hex;
+
+-- Spatial join
+SELECT r.name, z.zone_name
+FROM restaurants r, delivery_zones z
+WHERE ST_Contains(z.boundary, r.location);
+
+-- Hybrid spatial-vector: nearby AND semantically similar
+SELECT name, vector_distance(embedding, $query_vec) AS similarity
+FROM restaurants
+WHERE ST_DWithin(location, ST_Point(-73.990, 40.750), 2000) AND embedding <-> $query_vec
+LIMIT 10;
+```
+
+## OGC Predicates
+
+`ST_Contains`, `ST_Intersects`, `ST_Within`, `ST_DWithin`, `ST_Distance`, `ST_Intersection`, `ST_Buffer`, `ST_Envelope`, `ST_Union`.
+
+## Format Support
+
+WKB, WKT, and GeoJSON interchange. GeoParquet v1.1.0 and GeoArrow metadata for bulk export.
+
+## Combined with Timeseries
+
+```sql
+-- Fleet tracking: spatial + time
+CREATE COLLECTION fleet TYPE COLUMNAR (
+    ts TIMESTAMP TIME_KEY,
+    vehicle_id VARCHAR,
+    position GEOMETRY SPATIAL_INDEX,
+    speed FLOAT
+) WITH profile = 'timeseries', partition_by = '1d';
+```

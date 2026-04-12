@@ -1,0 +1,50 @@
+---
+title: Limits & Defaults
+description: System limits, default values, and capacity constraints.
+---
+
+# Limits & Defaults
+
+## Connection Limits
+
+| Setting          | Default | Max        |
+| ---------------- | ------- | ---------- |
+| Max connections   | 1024    | Configurable |
+| Data Plane cores  | CPUs-1  | CPU count  |
+
+## Collection Limits
+
+| Limit                | Value          |
+| -------------------- | -------------- |
+| Collection name      | 255 chars      |
+| Field name           | 255 chars      |
+| Document size        | 16 MiB         |
+| Vector dimensions    | 65536          |
+| Edge properties size | 16 MiB         |
+
+## Query Limits
+
+| Limit                   | Value       |
+| ----------------------- | ----------- |
+| SQL text length          | 1 MiB       |
+| Result set (default)     | No limit    |
+| MATCH MAX_DEPTH default  | 10          |
+| BFS MAX_VISITED default  | 10000       |
+
+## Default Ports
+
+| Protocol | Port |
+| -------- | ---- |
+| pgwire   | 6432 |
+| NDB      | 6433 |
+| HTTP     | 6480 |
+| Sync     | 9090 |
+| RESP     | off  |
+| ILP      | off  |
+
+## Default Memory
+
+| Setting      | Default      |
+| ------------ | ------------ |
+| memory_limit | 1 GiB        |
+| Docker       | 75% of RAM   |

@@ -1,0 +1,62 @@
+---
+title: SPSC Bridge
+description: Bounded lock-free ring buffers connecting the Control Plane and Data Plane.
+---
+
+# SPSC Bridge
+
+The SPSC (Single-Producer, Single-Consumer) bridge is the only communication path between the Control Plane and Data Plane. No `Arc<Mutex<T>>`, no shared state — only bounded, lock-free ring buffers.
+
+## Request Envelope
+
+Control Plane → Data Plane:
+
+| Field              | Type             | Purpose                            |
+| ------------------ | ---------------- | ---------------------------------- |
+| `request_id`       | u64              | Correlates request with response   |
+| `tenant_id`        | u32              | Tenant scoping                     |
+| `vshard_id`        | u16              | Routes to the correct core         |
+| `plan`             | PhysicalPlan     | The physical execution plan        |
+| `deadline_ns`      | u64              | Absolute deadline (monotonic clock)|
+| `priority`         | u8               | Scheduling priority                |
+| `trace_id`         | u64              | Distributed trace propagation      |
+| `consistency`      | ReadConsistency  | Read consistency level             |
+| `idempotency_key`  | Option\<u64\>    | Dedup key for non-idempotent writes|
+| `event_source`     | EventSource      | User, Trigger, Raft, or CrdtSync   |
+| `user_roles`       | Vec\<String\>    | Caller's RBAC roles                |
+
+## Response Envelope
+
+Data Plane → Control Plane:
+
+| Field            | Type     | Purpose                          |
+| ---------------- | -------- | -------------------------------- |
+| `request_id`     | u64      | Matches the originating request  |
+| `status`         | u8       | Success, error, partial          |
+| `attempt`        | u32      | Retry attempt counter            |
+| `partial`        | bool     | Whether more results follow      |
+| `payload`        | Payload  | Response data                    |
+| `watermark_lsn`  | u64      | Latest committed LSN             |
+| `error_code`     | u16      | Typed error (if status != ok)    |
+
+## Memory Ownership
+
+- Cross-plane payloads use `Arc<[u8]>` or slab IDs with explicit reclaim ACK
+- Producer owns buffer until ACK/NACK received
+- Zero-copy buffers remain valid until consumer ACK
+
+## Ordering
+
+- Strict FIFO per `(connection_id, vshard_id)` stream
+- Best-effort ordering across streams
+- Cancellation is cooperative: Control Plane emits `CANCEL(request_id)`, Data Plane stops at the next safe point
+
+## Backpressure
+
+| Queue utilization | Action                         |
+| ----------------- | ------------------------------ |
+| < 85%             | Normal operation               |
+| 85% - 95%         | Reduce read depth              |
+| > 95%             | Suspend new reads              |
+
+All transitions are observable via metrics and trace spans.

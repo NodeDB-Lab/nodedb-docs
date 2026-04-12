@@ -1,0 +1,47 @@
+---
+title: Full-Text Search Queries
+description: BM25 text matching, fuzzy search, highlighting, and synonyms in SQL.
+---
+
+# Full-Text Search Queries
+
+## Basic Search
+
+```sql
+SELECT title, bm25_score(body, 'distributed database rust') AS score
+FROM articles
+WHERE text_match(body, 'distributed database rust')
+ORDER BY score DESC LIMIT 20;
+```
+
+## Fuzzy Search
+
+```sql
+SELECT title FROM articles WHERE text_match(title, 'databse', { fuzzy: true, distance: 2 });
+```
+
+## Synonyms
+
+```sql
+CREATE SYNONYM GROUP db_terms AS ('database', 'db', 'datastore');
+-- Searching for 'db performance' now also matches 'database performance'
+```
+
+## CJK Search
+
+CJK text is automatically tokenized via character bigrams:
+
+```sql
+SELECT title FROM articles WHERE text_match(body, '全文検索');
+```
+
+## Hybrid Search (BM25 + Vector)
+
+```sql
+SELECT title, rrf_score(
+    vector_distance(embedding, $query_vec),
+    bm25_score(body, 'distributed systems')
+) AS score
+FROM articles
+LIMIT 10;
+```

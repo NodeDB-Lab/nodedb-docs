@@ -1,0 +1,34 @@
+---
+title: Consumer Groups
+description: Independent offset tracking for multiple consumers on the same stream or topic.
+---
+
+# Consumer Groups
+
+Consumer groups track read positions independently, enabling multiple consumers to process the same stream at their own pace.
+
+```sql
+-- Create consumer groups
+CREATE CONSUMER GROUP analytics ON order_changes;
+CREATE CONSUMER GROUP billing ON order_changes;
+
+-- Commit offset for a specific partition
+COMMIT OFFSET PARTITION 0 AT 42 ON order_changes CONSUMER GROUP analytics;
+
+-- Batch commit all partitions
+COMMIT OFFSETS ON order_changes CONSUMER GROUP analytics;
+
+DROP CONSUMER GROUP analytics ON order_changes;
+```
+
+## On Topics
+
+Consumer groups also work with durable topics:
+
+```sql
+CREATE CONSUMER GROUP processors ON order_events;
+SELECT * FROM TOPIC order_events CONSUMER GROUP processors LIMIT 100;
+COMMIT OFFSETS ON order_events CONSUMER GROUP processors;
+```
+
+Consumers resume from their last committed offset after disconnect.

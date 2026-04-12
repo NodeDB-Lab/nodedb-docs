@@ -1,0 +1,55 @@
+---
+title: Engine Configuration
+description: Per-engine configuration options for memory budgets, index parameters, and compression.
+---
+
+# Engine Configuration
+
+## Vector Engine
+
+| Parameter         | Default | Description                             |
+| ----------------- | ------- | --------------------------------------- |
+| M                 | 16      | Max HNSW connections per node per layer |
+| EF_CONSTRUCTION   | 200     | Search width during index build         |
+| Memory budget     | 30%     | Percentage of total memory              |
+
+## Graph Engine
+
+Graph, KV, and FTS engines do not have dedicated budget config fields. They draw from the sparse budget.
+
+| Parameter  | Default | Description            |
+| ---------- | ------- | ---------------------- |
+| Compaction | 10%     | Buffer merge threshold |
+
+## FTS Engine
+
+| Parameter          | Default     | Description                |
+| ------------------ | ----------- | -------------------------- |
+| Memtable threshold | 32M entries | Flush to segment threshold |
+| Compaction levels  | 8x8         | Level-based compaction     |
+
+## Columnar Engine
+
+The Timeseries profile uses `timeseries_budget_fraction` (default 10%).
+
+| Parameter    | Default | Description                |
+| ------------ | ------- | -------------------------- |
+| Block size   | 1024    | Rows per block             |
+| partition_by | none    | Time partition interval    |
+| retention    | none    | Data retention period      |
+
+## KV Engine
+
+KV draws from the sparse budget. There is no dedicated `kv_budget_fraction` config field.
+
+## Memory Budget Fields
+
+These are the actual config fields controlling memory allocation:
+
+| Config field                | Default | Controls                          |
+| --------------------------- | ------- | --------------------------------- |
+| `vector_budget_fraction`    | 0.30    | HNSW index and vector data        |
+| `sparse_budget_fraction`    | 0.15    | Graph, KV, FTS, and metadata      |
+| `crdt_budget_fraction`      | 0.10    | CRDT state and sync buffers       |
+| `timeseries_budget_fraction`| 0.10    | Columnar timeseries profile       |
+| `query_budget_fraction`     | 0.20    | Query execution working memory    |

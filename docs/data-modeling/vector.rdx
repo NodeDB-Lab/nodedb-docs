@@ -1,0 +1,64 @@
+---
+title: Vector Engine
+description: HNSW index with quantization, adaptive pre-filtering, and SIMD-accelerated distance math for semantic search.
+---
+
+# Vector Engine
+
+The vector engine powers semantic search — nearest-neighbor retrieval over high-dimensional embeddings. It uses a custom HNSW index with multiple quantization levels and hardware-accelerated distance math.
+
+## When to Use
+
+- Semantic search over embeddings (text, images, audio)
+- RAG pipelines for AI agents
+- Recommendation systems
+- Similarity matching and deduplication
+
+## Key Features
+
+- **HNSW index** — Multi-layer proximity graph. Construction at full precision (FP32/FP16) for structural integrity; traversal on quantized payloads for cache residency.
+- **Quantization** — SQ8 (~4x memory reduction), PQ (~4-8x), IVF-PQ (~16 bytes/vector for 100M+ datasets).
+- **Adaptive pre-filtering** — Roaring Bitmap-based filtering. Automatic strategy selection: pre-filter (selective), post-filter (broad), or brute-force.
+- **Distance metrics** — L2, cosine, inner product, Manhattan, Chebyshev, Hamming, Jaccard, Pearson.
+- **Cross-engine fusion** — Combine with graph (GraphRAG), full-text (hybrid BM25+vector), or spatial filtering.
+
+## SQL Usage
+
+```sql
+-- Create a collection with a vector index
+CREATE COLLECTION articles;
+CREATE VECTOR INDEX idx_embed ON articles METRIC cosine DIM 384;
+
+-- Insert with embedding
+INSERT INTO articles { title: 'Understanding Transformers', embedding: [0.12, -0.34, 0.56, ...] };
+
+-- Nearest neighbor search
+SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, -0.2, ...], 10);
+
+-- Filtered vector search
+SELECT title, vector_distance(embedding, ARRAY[0.1, 0.3, ...]) AS score
+FROM articles
+WHERE category = 'machine-learning'
+  AND id IN (SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, ...], 10));
+
+-- Hybrid BM25 + vector (RRF fusion)
+SELECT title, rrf_score(
+    vector_distance(embedding, $query_vec),
+    bm25_score(body, 'transformer attention')
+) AS score
+FROM articles
+LIMIT 10;
+```
+
+## Quantization Selection
+
+| Type        | Memory (384d) | Recall  | Best for                   |
+| ----------- | ------------- | ------- | -------------------------- |
+| HNSW (FP32) | ~1.5 KB       | ~99%    | < 1M vectors, max accuracy |
+| HNSW + SQ8  | ~384 B        | ~98%    | 1-10M vectors              |
+| HNSW + PQ   | ~96 B         | ~95%    | 10-50M vectors             |
+| IVF-PQ      | ~16 B         | ~85-95% | 50M+ vectors               |
+
+## How It Works
+
+Vectors are indexed in the HNSW graph at full precision. During search, quantized copies are traversed for speed, then top candidates are re-ranked against full-precision vectors. When metadata filters are present, the engine builds a Roaring Bitmap of matching IDs and selects the optimal strategy based on selectivity.

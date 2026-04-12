@@ -1,0 +1,40 @@
+---
+title: R*-tree Index
+description: Spatial index for range queries, nearest neighbor, and OGC predicate evaluation.
+---
+
+# R*-tree Index
+
+The R*-tree is the spatial engine's primary index. It supports range queries, nearest neighbor search, and spatial predicate evaluation.
+
+## Creating a Spatial Index
+
+```sql
+-- Automatic via SPATIAL_INDEX column modifier
+CREATE COLLECTION locations TYPE COLUMNAR (
+    geom GEOMETRY SPATIAL_INDEX,
+    name VARCHAR
+);
+
+-- Or add to any collection
+CREATE SPATIAL INDEX ON restaurants FIELDS location;
+```
+
+## Operations
+
+- **Range query** — `ST_DWithin`, `ST_Within`, `ST_Intersects`
+- **Nearest neighbor** — `ORDER BY ST_Distance(geom, point) LIMIT k`
+- **Bulk load** — Optimized for batch inserts
+- **Spatial join** — R*-tree probe join between two collections
+
+## Query Execution
+
+When a spatial predicate is present, the R*-tree narrows the candidate set before the columnar sparse index does final refinement. Queries without spatial predicates read directly from the columnar memtable — the R*-tree is not involved.
+
+```sql
+-- R*-tree lookup → sparse refinement → result
+SELECT name FROM locations WHERE ST_DWithin(geom, ST_Point(-73.98, 40.75), 500);
+
+-- No spatial predicate → direct columnar scan
+SELECT name FROM locations WHERE name LIKE 'Park%';
+```

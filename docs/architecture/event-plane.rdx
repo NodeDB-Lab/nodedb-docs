@@ -1,0 +1,41 @@
+---
+title: Event Plane
+description: Async event processing for triggers, CDC, cron scheduling, and durable pub/sub.
+---
+
+# Event Plane
+
+The Event Plane is the third architectural layer. It runs on Tokio (`Send + Sync`) and handles all asynchronous, event-driven work. It never does storage I/O and never spawns TPC tasks.
+
+## Responsibilities
+
+**AFTER trigger dispatch** — Trigger bodies execute asynchronously after the write commits. Retry with exponential backoff. Persistent failures go to a dead-letter queue. `EventSource` tagging prevents trigger cascades — the Event Plane skips non-User events.
+
+**CDC / change streams** — Routes `WriteEvent` records to matching change stream consumers. Per-partition offsets, consumer groups with rebalancing, and exactly-once transactional consumption.
+
+**Cron scheduler** — 1-second evaluation loop. Scheduled SQL is dispatched back through the Control Plane → Data Plane path. Per-collection affinity runs jobs on the collection's shard leader.
+
+**Durable pub/sub** — Named topics with consumer groups, offset tracking, and configurable retention. Consumers resume from last committed offset after disconnect.
+
+**Webhook delivery** — HTTP POST with exponential backoff retry and idempotency headers.
+
+## Event Bus (Data → Event)
+
+The Event Bus consists of one bounded ring buffer per Data Plane core — no cross-core contention.
+
+- Data Plane emits `WriteEvent` records after WAL commit
+- Fire-and-forget: Data Plane never blocks on Event Plane
+- WAL-backed: if a ring buffer overflows, the Event Plane replays from the WAL LSN watermark
+
+## Backpressure
+
+All Event Bus queues are bounded:
+
+- **> 85% utilization** — throttled, Data Plane continues but Event Plane signals pressure
+- **> 95% utilization** — suspended, Event Plane enters WAL Catchup Mode (replays from WAL instead of ring buffer)
+
+All backpressure transitions emit metrics and trace events.
+
+## Side Effects
+
+When a trigger body or scheduled job produces a write, the Event Plane dispatches it back through the normal Control Plane → Data Plane path. The Event Plane handles routing and delivery, not compute.

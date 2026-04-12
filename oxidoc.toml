@@ -3,286 +3,169 @@ name = "NodeDB"
 description = "Distributed hybrid database for multi-modal AI and agentic workloads"
 logo = "/assets/logo.svg"
 favicon = "/assets/logo.svg"
-# base_url = "https://docs.nodedb.dev"
-# edit_url = "https://github.com/NodeDB/nodedb-docs/blob/main"
+base_url = "https://nodedb.dev"
+edit_url = "https://github.com/NodeDB-Lab/nodedb-docs/blob/main"
 
 [theme]
 primary = "#3b82f6"
+accent = "#2dd4bf"
+code_font = "JetBrains Mono"
 dark_mode = "system"
+custom_css = ["assets/custom.css"]
 
 [routing.root]
 homepage = "home.rdx"
 
 [routing]
-header_links = [
-  { label = "Getting Started", href = "/getting-started" },
-  { label = "Concepts", href = "/concepts" },
-  { label = "Engines", href = "/engines" },
-  { label = "Query", href = "/query" },
-  { label = "Drivers", href = "/drivers" },
-  { label = "Operations", href = "/operations" },
-  { label = "Reference", href = "/reference" },
-  { label = "NodeDB-Lite", href = "/nodedb-lite" },
-]
+header_links = [{ label = "Docs", href = "/docs" }]
 navigation = [
+  { path = "/docs", dir = "docs", groups = [
 
-  # ── Getting Started ──────────────────────────────────────────────
-  { path = "/getting-started", dir = "getting-started", groups = [
-    { group = "Install & Run", pages = [
-      "installation",
-      "quickstart",
-      "docker",
+    # ── Introduction ───────────────────────────────────────────────
+    { group = "Getting Started", pages = [
+      "introduction/what-is-nodedb",
+      "introduction/quickstart",
+      "introduction/installation",
+      "introduction/docker",
     ] },
-    { group = "First Steps", pages = [
-      "create-collection",
-      "insert-data",
-      "query-data",
-      "vector-search-intro",
-    ] },
-    { group = "Configuration", pages = [
-      "server-config",
-      "engine-tuning",
-      "memory-budgets",
-    ] },
-  ] },
 
-  # ── Concepts ─────────────────────────────────────────────────────
-  { path = "/concepts", dir = "concepts", groups = [
+    # ── Architecture ───────────────────────────────────────────────
     { group = "Architecture", pages = [
-      "overview",
-      "hybrid-execution",
-      "control-plane",
-      "data-plane",
-      "spsc-bridge",
-    ] },
-    { group = "Data Model", pages = [
-      "documents-collections",
-      "tenants",
-      "schemas",
-      "data-types",
+      "architecture/overview",
+      "architecture/control-plane",
+      "architecture/data-plane",
+      "architecture/event-plane",
+      "architecture/spsc-bridge",
     ] },
     { group = "Storage", pages = [
-      "storage-tiers",
-      "wal",
-      "segments",
-      "compaction",
+      "architecture/storage-tiers",
+      "architecture/wal",
+      "architecture/consistency",
     ] },
-    { group = "Consistency & Transactions", pages = [
-      "consistency-model",
-      "read-consistency-levels",
-      "write-path",
-      "snapshot-isolation",
+    { group = "Cluster & Replication", pages = [
+      "architecture/cluster-topology",
+      "architecture/multi-raft",
+      "architecture/vshards",
+      "architecture/replication",
     ] },
-    { group = "Distributed", pages = [
-      "cluster-topology",
-      "multi-raft",
-      "vshards",
-      "shard-migration",
-      "replication",
-    ] },
-  ] },
 
-  # ── Engines ──────────────────────────────────────────────────────
-  { path = "/engines", dir = "engines", groups = [
-    { group = "Vector Engine", pages = [
-      "vector/overview",
-      "vector/hnsw",
-      "vector/distance-metrics",
-      "vector/quantization",
-      "vector/pre-filtering",
-      "vector/indexing-params",
+    # ── Data Modeling ──────────────────────────────────────────────
+    { group = "Data Modeling", pages = [
+      "data-modeling/collections",
+      "data-modeling/schemas-types",
     ] },
-    { group = "Graph Engine", pages = [
-      "graph/overview",
-      "graph/csr-index",
-      "graph/traversal",
-      "graph/graphrag",
+    { group = "Storage Engines", pages = [
+      "data-modeling/vector",
+      "data-modeling/graph",
+      "data-modeling/document",
+      "data-modeling/columnar",
+      "data-modeling/kv",
+      "data-modeling/fts",
+      "data-modeling/crdt",
     ] },
-    { group = "Document Engine", pages = [
-      "document/overview",
-      "document/secondary-indexes",
-      "document/json-functions",
+    { group = "Columnar Profiles", pages = [
+      "data-modeling/timeseries",
+      "data-modeling/spatial",
     ] },
-    { group = "Sparse & Metadata Engine", pages = [
-      "sparse/overview",
-      "sparse/btree-indexes",
-      "sparse/fulltext-bm25",
-      "sparse/schema-management",
-      "sparse/range-queries",
+    { group = "Indexes", pages = [
+      "data-modeling/hnsw-index",
+      "data-modeling/csr-index",
+      "data-modeling/rtree-index",
+      "data-modeling/btree-index",
+      "data-modeling/inverted-index",
+      "data-modeling/hash-index",
     ] },
-    { group = "CRDT Engine", pages = [
-      "crdt/overview",
-      "crdt/conflict-resolution",
-      "crdt/merge-semantics",
-      "crdt/constraint-validation",
-      "crdt/dead-letter-queue",
-    ] },
-    { group = "Timeseries Engine", pages = [
-      "timeseries/overview",
-      "timeseries/metrics-ingestion",
-      "timeseries/log-ingestion",
-      "timeseries/retention-tiering",
-      "timeseries/compression",
-    ] },
-    { group = "Cross-Engine", pages = [
-      "fusion-search",
-      "engine-budgets",
-      "engine-isolation",
-    ] },
-  ] },
 
-  # ── Query Language ───────────────────────────────────────────────
-  { path = "/query", dir = "query", groups = [
-    { group = "SQL", pages = [
-      "sql-overview",
-      "select",
-      "insert-upsert",
-      "update-delete",
-      "joins",
-      "aggregations",
-      "ddl",
-      "explain",
-      "functions",
+    # ── SQL Reference ──────────────────────────────────────────────
+    { group = "Core SQL", pages = [
+      "sql/overview",
+      "sql/ddl",
+      "sql/select",
+      "sql/insert-upsert",
+      "sql/update-delete",
+      "sql/joins-aggregations",
+      "sql/functions",
     ] },
-    { group = "Vector Search", pages = [
-      "vector-search",
-      "filtered-search",
-      "multi-vector",
+    { group = "Engine Queries", pages = [
+      "sql/vector-search",
+      "sql/fulltext-search",
+      "sql/graph-queries",
+      "sql/spatial-queries",
+      "sql/crdt-operations",
+      "sql/fusion-rrf",
     ] },
-    { group = "Fusion & Hybrid", pages = [
-      "rrf-fusion",
-      "graph-rag",
-      "cross-model-queries",
+    { group = "Diagnostics", pages = [
+      "sql/explain",
     ] },
-    { group = "CRDT Operations", pages = [
-      "crdt-read",
-      "crdt-apply",
-      "crdt-policy",
-    ] },
-    { group = "Advanced", pages = [
-      "prepared-statements",
-      "copy-protocol",
-      "change-streams",
-    ] },
-  ] },
 
-  # ── Drivers & Connectivity ──────────────────────────────────────
-  { path = "/drivers", dir = "drivers", groups = [
-    { group = "PostgreSQL Wire Protocol", pages = [
-      "pgwire/overview",
-      "pgwire/supported-features",
-      "pgwire/type-mapping",
-      "pgwire/session-variables",
-      "pgwire/compatibility",
+    # ── Real-Time ─────────────────────────────────────────────────
+    { group = "Real-Time", pages = [
+      "real-time/live-select",
+      "real-time/change-streams",
+      "real-time/consumer-groups",
+      "real-time/webhooks",
+      "real-time/cron-scheduler",
     ] },
-    { group = "HTTP API", pages = [
-      "http/overview",
-      "http/query-endpoint",
-      "http/document-api",
-      "http/search-api",
-      "http/health-metrics",
+
+    # ── Connectivity ───────────────────────────────────────────────
+    { group = "Wire Protocols", pages = [
+      "connectivity/pgwire",
+      "connectivity/http-api",
+      "connectivity/native-protocol",
+      "connectivity/resp",
+      "connectivity/ilp",
+      "connectivity/sync-protocol",
     ] },
-    { group = "Native Clients", pages = [
-      "rust-client",
-      "python-driver",
+    { group = "Client Libraries", pages = [
+      "connectivity/rust-client",
+      "connectivity/python-driver",
     ] },
     { group = "Ecosystem", pages = [
-      "psql",
-      "orms",
-      "dbeaver-pgadmin",
-      "connection-poolers",
+      "connectivity/ecosystem",
     ] },
-  ] },
 
-  # ── Operations ───────────────────────────────────────────────────
-  { path = "/operations", dir = "operations", groups = [
-    { group = "Deployment", pages = [
-      "production-checklist",
-      "docker-deployment",
-      "kubernetes",
-      "systemd",
-    ] },
-    { group = "Monitoring", pages = [
-      "prometheus-metrics",
-      "opentelemetry",
-      "health-checks",
-      "slow-query-log",
-      "key-metrics",
+    # ── Administration ─────────────────────────────────────────────
+    { group = "Configuration", pages = [
+      "administration/configuration",
     ] },
     { group = "Security", pages = [
-      "authentication",
-      "authorization-rbac",
-      "tls",
-      "tenant-isolation",
-      "audit-logging",
+      "administration/authentication",
+      "administration/rbac",
+      "administration/rls",
+      "administration/tls",
+      "administration/audit-logging",
+      "administration/multi-tenancy",
     ] },
-    { group = "Backup & Recovery", pages = [
-      "online-backup",
-      "pitr",
-      "wal-archiving",
-      "restore",
+    { group = "Operations", pages = [
+      "administration/monitoring",
+      "administration/backup-recovery",
+      "administration/cluster-operations",
+      "administration/memory-management",
+      "administration/performance-tuning",
+      "administration/production-checklist",
     ] },
-    { group = "Cluster Operations", pages = [
-      "cluster-setup",
-      "node-management",
-      "shard-rebalancing",
-      "rolling-upgrades",
-      "failure-recovery",
-    ] },
-    { group = "Performance", pages = [
-      "tuning-guide",
-      "memory-management",
-      "io-uring-tuning",
-      "benchmarking",
-    ] },
-  ] },
 
-  # ── Reference ────────────────────────────────────────────────────
-  { path = "/reference", dir = "reference", groups = [
-    { group = "Configuration", pages = [
-      "server-toml",
-      "engine-config",
-      "cluster-config",
-      "feature-flags",
+    # ── CRDT Sync ─────────────────────────────────────────────────
+    { group = "Edge Sync", pages = [
+      "crdt-sync/overview",
+      "crdt-sync/conflict-policies",
+      "crdt-sync/constraint-validation",
+      "crdt-sync/dead-letter-queue",
+      "crdt-sync/offline-sync",
     ] },
-    { group = "Wire Protocols", pages = [
-      "native-protocol-spec",
-      "pgwire-extensions",
-      "http-api-spec",
-    ] },
-    { group = "Error Reference", pages = [
-      "error-codes",
-      "sqlstate-mapping",
-      "bridge-errors",
-    ] },
-    { group = "Internals", pages = [
-      "wal-format",
-      "segment-format",
-      "spsc-envelope",
-      "type-oids",
-    ] },
-    { group = "Limits & Defaults", pages = [
-      "limits",
-      "defaults",
-    ] },
-  ] },
 
-  # ── NodeDB-Lite ──────────────────────────────────────────────
-  { path = "/nodedb-lite", dir = "nodedb-lite", groups = [
-    { group = "Overview", pages = [
-      "overview",
-      "quickstart",
+    # ── Reference ─────────────────────────────────────────────────
+    { group = "Reference", pages = [
+      "reference/error-codes",
+      "reference/sqlstate-mapping",
+      "reference/type-oids",
+      "reference/wire-protocol-specs",
+      "reference/wal-segment-formats",
+      "reference/engine-config",
+      "reference/limits-defaults",
+      "reference/feature-flags",
     ] },
-    { group = "SDKs", pages = [
-      "rust-sdk",
-      "javascript-sdk",
-      "ios-android",
-    ] },
-    { group = "Sync", pages = [
-      "sync",
-      "shapes",
-      "compensation",
-    ] },
+
   ] },
 ]
 
@@ -290,7 +173,8 @@ navigation = [
 # semantic = true
 
 [social]
-github = "https://github.com/NodeDB/nodedb"
+github = "https://github.com/NodeDB-Lab/nodedb"
+discord = "https://discord.gg/s54gDMVc7B"
 
 [footer]
 copyright_owner = "NodeDB"

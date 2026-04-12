@@ -1,0 +1,41 @@
+---
+title: Error Codes
+description: Numeric error codes returned by NodeDB with descriptions and resolution hints.
+---
+
+# Error Codes
+
+NodeDB uses `NodeDbError` — a struct with numeric `ErrorCode`, human-readable `message`, machine-matchable `ErrorDetails`, and optional chained `cause`.
+
+## Error Categories
+
+| Code Range | Category   | Examples                          |
+| ---------- | ---------- | --------------------------------- |
+| 1000–1099  | Write path | Constraint violation, deadline    |
+| 1100–1199  | Read path  | Collection not found              |
+| 1200–1299  | Query      | Parse error, plan error           |
+| 2000–2099  | Auth       | Authorization denied              |
+| 3000–3099  | Sync       | Delta rejected, sync error        |
+| 4000–4099  | Storage    | Segment corrupted, WAL error      |
+| 5000–5099  | Config     | Bad request, invalid config       |
+| 6000–6099  | Cluster    | No quorum, shard unavailable      |
+| 7000–7099  | Memory     | Budget exceeded                   |
+| 8000–8099  | Encryption | Key error, decrypt failure        |
+| 9000–9099  | Internal   | Unexpected internal error         |
+
+## Common Errors
+
+| Error                  | Code | Resolution                  |
+| ---------------------- | ---- | --------------------------- |
+| `COLLECTION_NOT_FOUND` | 1100 | Check collection name       |
+| `TYPE_MISMATCH`        | 1020 | Check data types in query   |
+| `CONSTRAINT_VIOLATION` | 1000 | Duplicate key — use UPSERT  |
+| `DEADLINE_EXCEEDED`    | 1002 | Query took too long         |
+| `INSUFFICIENT_BALANCE` | 1022 | Not enough for TRANSFER     |
+| `OVERFLOW`             | 1021 | i64 overflow on INCR        |
+| `AUTHORIZATION_DENIED` | 2000 | Check RBAC grants           |
+| `SYNC_DELTA_REJECTED`  | 3001 | CRDT sync constraint failed |
+
+## Error Construction
+
+Errors are created via constructors: `NodeDbError::storage("detail")`, `NodeDbError::collection_not_found("users")`, etc.

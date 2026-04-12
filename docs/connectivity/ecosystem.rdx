@@ -1,0 +1,36 @@
+---
+title: Ecosystem (psql, ORMs, GUI Tools)
+description: Compatible tools, ORMs, connection poolers, and GUI clients.
+---
+
+# Ecosystem
+
+NodeDB's pgwire compatibility means most PostgreSQL tools work out of the box.
+
+## psql
+
+```bash
+psql -h localhost -p 6432
+```
+
+Full support for `\d`, `\dt`, prepared statements, COPY, and LISTEN/NOTIFY.
+
+## GUI Tools
+
+**DBeaver** — Connect as PostgreSQL to `localhost:6432`. Schema browser, query editor, and result export work.
+
+**pgAdmin** — Connect as PostgreSQL. Dashboard and query tool work. Some admin features may not apply.
+
+## ORMs
+
+| Framework    | Connection string                              |
+| ------------ | ---------------------------------------------- |
+| SQLAlchemy   | `postgresql://localhost:6432/nodedb`            |
+| Django       | `HOST=localhost PORT=6432 ENGINE=django.db.backends.postgresql` |
+| Prisma       | `postgresql://localhost:6432/nodedb`            |
+| Diesel       | `postgres://localhost:6432/nodedb`              |
+| GORM (Go)    | `host=localhost port=6432 dbname=nodedb`        |
+
+## Connection Poolers
+
+PgBouncer and pgcat work with NodeDB. Configure them to connect to `localhost:6432`. Use transaction-level pooling for best results with NodeDB's session variable support.

@@ -1,0 +1,51 @@
+---
+title: Write-Ahead Log
+description: O_DIRECT WAL with group commit, CRC32C checksums, and AES-256-GCM encryption.
+---
+
+# Write-Ahead Log
+
+The WAL ensures durability. Every write is persisted to the WAL before being acknowledged. On crash recovery, the WAL replays to reconstruct any state not yet flushed to segments.
+
+## Record Format
+
+```
+┌──────────┬─────────────────┬────────────┬─────┬───────────┬───────────┬─────────────┬─────────┐
+│  magic   │ format_version  │ record_type│ lsn │ tenant_id │ vshard_id │ payload_len │ crc32c  │
+│  4 bytes │    2 bytes      │   2 bytes  │ 8B  │   4 bytes │  2 bytes  │   4 bytes   │ 4 bytes │
+└──────────┴─────────────────┴────────────┴─────┴───────────┴───────────┴─────────────┴─────────┘
+```
+
+## Properties
+
+**O_DIRECT** — Bypasses the kernel page cache. Writes go directly to NVMe via io_uring. This provides deterministic write latency — no interference from page cache eviction or writeback.
+
+**Page size** — 4 KiB or 16 KiB, alignment-compatible with O_DIRECT requirements.
+
+**CRC32C** — Every page has a checksum for silent bit-rot detection.
+
+**Group commit** — Multiple writes batch into a single io_uring submission for NVMe IOPS efficiency. A double-write buffer ensures atomicity.
+
+**Segmented** — The WAL rolls over to a new segment file automatically. Old segments are eligible for cleanup once all records have been flushed to L1 segments.
+
+**Encryption** — Optional AES-256-GCM encryption at the page level. Key management is external.
+
+## Crash Recovery
+
+On startup, NodeDB:
+
+1. Scans WAL segments from the last known checkpoint
+2. Validates CRC32C checksums on each page
+3. Replays valid records to reconstruct in-memory state
+4. Discards any partially written records (torn writes)
+
+The Event Plane uses WAL LSN watermarks to resume event processing from the correct position after a crash.
+
+## Write Path
+
+A write is acknowledged only after:
+
+1. WAL append is persisted (O_DIRECT + fsync)
+2. Raft quorum commit (for replicated namespaces)
+
+Single-node mode: linearizable writes for shard leader. Replicated mode: linearizable writes within each Raft group.

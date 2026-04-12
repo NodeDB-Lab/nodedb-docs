@@ -1,0 +1,79 @@
+---
+title: SELECT
+description: Query data with filtering, aggregation, window functions, CTEs, and subqueries.
+---
+
+# SELECT
+
+```sql
+SELECT [DISTINCT] <columns>
+FROM <collection>
+[WHERE <predicate>]
+[GROUP BY <fields>] [HAVING <predicate>]
+[ORDER BY <field> [ASC|DESC], ...]
+[LIMIT <n>] [OFFSET <m>]
+```
+
+## Filtering
+
+```sql
+SELECT * FROM users WHERE age > 30 AND status = 'active';
+SELECT * FROM users WHERE name LIKE 'Ali%';
+SELECT * FROM users WHERE email ILIKE '%@EXAMPLE.COM';
+SELECT * FROM orders WHERE total BETWEEN 10 AND 100;
+SELECT * FROM users WHERE role IN ('admin', 'editor');
+SELECT * FROM users WHERE deleted_at IS NULL;
+```
+
+## Aggregates
+
+```sql
+SELECT status, COUNT(*), AVG(age), MIN(salary), MAX(salary)
+FROM employees WHERE department = 'sales'
+GROUP BY status HAVING COUNT(*) > 5;
+
+SELECT COUNT(DISTINCT user_id) FROM orders;
+```
+
+## Window Functions
+
+```sql
+SELECT id,
+    ROW_NUMBER() OVER (ORDER BY created_at) AS rn,
+    RANK() OVER (PARTITION BY dept ORDER BY salary DESC) AS rank,
+    LAG(salary, 1) OVER (ORDER BY created_at) AS prev_salary,
+    SUM(amount) OVER (ORDER BY created_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total
+FROM employees;
+```
+
+## CTEs & Subqueries
+
+```sql
+WITH active AS (SELECT id FROM users WHERE status = 'active')
+SELECT * FROM orders WHERE user_id IN (SELECT id FROM active);
+
+-- Recursive CTE
+WITH RECURSIVE subordinates AS (
+    SELECT id, name, manager_id FROM employees WHERE id = 'emp_root'
+    UNION ALL
+    SELECT e.id, e.name, e.manager_id FROM employees e JOIN subordinates s ON e.manager_id = s.id
+)
+SELECT * FROM subordinates;
+```
+
+## Set Operations
+
+```sql
+SELECT id FROM collection_a UNION ALL SELECT id FROM collection_b;
+SELECT id FROM collection_a INTERSECT SELECT id FROM collection_b;
+SELECT id FROM collection_a EXCEPT SELECT id FROM collection_b;
+```
+
+## Computed Columns
+
+```sql
+SELECT price * qty AS total,
+       UPPER(name) AS name_upper,
+       CASE WHEN price > 100 THEN 'expensive' ELSE 'cheap' END AS tier
+FROM orders;
+```

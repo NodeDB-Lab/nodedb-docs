@@ -1,0 +1,68 @@
+---
+title: Offline Sync Patterns
+description: Patterns for provisional numbering, state machines, and offline-first workflows.
+---
+
+# Offline Sync Patterns
+
+## Provisional Numbering
+
+Official document numbers (invoices, receipts) must be sequential and gap-free. Offline devices can't reserve numbers from Origin.
+
+**Pattern:**
+
+1. Create documents with provisional ULID-based identifiers (`DRAFT-01JXQ3...`)
+2. Sync to Origin via CRDT
+3. Origin assigns official sequential number via `nextval('invoice_seq')`
+4. Official number syncs back to device
+
+```sql
+-- Device (offline)
+INSERT INTO invoices (invoice_number, customer_id, amount, status)
+VALUES ('DRAFT-01JXQ3...', 'cust-005', 750.00, 'draft');
+
+-- Origin (on sync) — trigger assigns official number
+-- Invoice becomes INV-26-04-00024
+```
+
+## State Machine Transitions
+
+```sql
+ALTER COLLECTION invoices ADD CONSTRAINT invoice_flow
+    ON COLUMN status TRANSITIONS (
+        'draft'     -> 'submitted',
+        'submitted' -> 'approved' BY ROLE 'manager',
+        'approved'  -> 'issued'   BY ROLE 'accountant',
+        'issued'    -> 'voided'   BY ROLE 'controller'
+    );
+```
+
+Devices can create drafts and submit them. Approval requires `manager` role — only available on Origin.
+
+## Tax Rate Sync
+
+Sync relevant jurisdiction rates to devices via shape subscriptions:
+
+```sql
+SUBSCRIBE SHAPE ON tax_rates WHERE jurisdiction IN ('US-CA', 'US-NY');
+```
+
+Lookup at invoice time with temporal query. Reconcile on sync if rates changed.
+
+## NodeDB-Lite Usage
+
+```swift
+// iOS
+let db = NodeDbLite.open(path: "invoices.db")
+db.execute("INSERT INTO invoices ...")
+db.sync(url: "wss://origin.example.com/sync", token: authToken)
+```
+
+```javascript
+// Browser (WASM)
+const db = await NodeDbLite.open("invoices");
+await db.execute("INSERT INTO invoices ...");
+await db.sync("wss://origin.example.com/sync");
+```
+
+All seven engines work locally with sub-millisecond reads. CRDT sync is transparent.

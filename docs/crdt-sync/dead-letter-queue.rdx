@@ -1,0 +1,22 @@
+---
+title: Dead-Letter Queue
+description: Handling persistently failing CRDT deltas with diagnostic metadata.
+---
+
+# Dead-Letter Queue
+
+Deltas that persistently fail constraint validation on Origin are routed to a dead-letter queue (DLQ). Each entry includes diagnostic metadata: the original delta, the constraint that failed, and the compensation hint.
+
+## Inspection
+
+Operators can inspect DLQ entries to understand why syncs are failing and take corrective action.
+
+## Resolution Options
+
+- **Replay** — Fix the constraint issue and replay the delta
+- **Discard** — Permanently discard the failed delta
+- **Manual merge** — Resolve the conflict manually and apply a corrected delta
+
+## Trigger DLQ
+
+AFTER triggers that persistently fail (after retry with exponential backoff) also route to the DLQ. This applies to both CRDT sync triggers and regular async triggers.

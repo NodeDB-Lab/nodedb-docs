@@ -1,0 +1,55 @@
+---
+title: EXPLAIN
+description: View query execution plans and introspect session state.
+---
+
+# EXPLAIN
+
+## Query Plan
+
+```sql
+EXPLAIN SELECT * FROM users WHERE age > 30;
+```
+
+Shows the logical and physical query plan. Useful for understanding how the query planner routes to engines and which indexes are used.
+
+## Session Variables
+
+```sql
+SET nodedb.consistency = 'eventual';
+SHOW nodedb.consistency;
+SHOW ALL;
+RESET nodedb.consistency;
+```
+
+## Change Tracking
+
+```sql
+SHOW CHANGES FOR users SINCE '2025-01-01' LIMIT 100;
+```
+
+## Introspection Commands
+
+```sql
+SHOW COLLECTIONS;
+DESCRIBE users;
+SHOW INDEXES;
+SHOW TRIGGERS;
+SHOW FUNCTIONS;
+SHOW PROCEDURES;
+SHOW CHANGE STREAMS;
+SHOW TOPICS;
+SHOW SCHEDULES;
+SHOW CONTINUOUS AGGREGATES;
+SHOW MATERIALIZED VIEWS;
+SHOW CONNECTIONS;
+SHOW USERS;
+SHOW CLUSTER;
+SHOW NODES;
+SHOW RAFT GROUPS;
+SHOW AUDIT LOG LIMIT 100;
+```
+
+## Limitations
+
+`EXPLAIN ANALYZE` is not yet supported. It requires instrumentation across the SPSC bridge to collect per-core execution stats from the Data Plane.

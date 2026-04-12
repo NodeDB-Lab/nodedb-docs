@@ -1,0 +1,32 @@
+---
+title: Multi-Raft Consensus
+description: Independent Raft groups per vShard for leader election, log replication, and snapshots.
+---
+
+# Multi-Raft Consensus
+
+NodeDB uses Multi-Raft — each vShard is its own independent Raft group with its own leader, log, and snapshot schedule. This avoids the bottleneck of a single Raft group for the entire cluster.
+
+## Per-vShard Raft
+
+Each Raft group handles:
+
+- **Leader election** — automatic failover when the current leader becomes unreachable
+- **Log replication** — WAL entries replicated to followers before acknowledgement
+- **Snapshots** — periodic state snapshots to truncate the Raft log
+
+## Write Path (Replicated)
+
+1. Client sends write to the vShard leader
+2. Leader appends to local WAL
+3. Leader replicates to Raft followers
+4. Quorum acknowledges (majority of replicas)
+5. Leader commits and responds to client
+
+Writes are linearizable within each Raft group.
+
+## Advantages of Multi-Raft
+
+- **Independent leaders** — different vShards can have leaders on different nodes, distributing write load
+- **Parallel commits** — vShards commit independently, no global ordering bottleneck
+- **Granular failover** — a node failure only triggers leader election for the vShards it led, not the entire cluster

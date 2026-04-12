@@ -1,0 +1,115 @@
+---
+title: Graph Engine
+description: CSR adjacency index with 13 algorithms, Cypher-subset MATCH, and GraphRAG fusion.
+---
+
+# Graph Engine
+
+The graph engine uses a native CSR (Compressed Sparse Row) adjacency index — not recursive JOINs. At 1 billion edges, CSR uses ~10 GB vs ~60 GB for naive adjacency lists. Sub-millisecond multi-hop traversals, 13 native algorithms, Cypher-subset pattern matching, and GraphRAG fusion.
+
+## When to Use
+
+- Knowledge graphs and entity relationships
+- Social networks and recommendation
+- Fraud detection (pattern matching)
+- Supply chain and dependency analysis
+- RAG pipelines with graph context (GraphRAG)
+
+## Graph is an Overlay
+
+Graph edges are an overlay on document collections. Any collection can have graph edges — you don't create a separate "graph collection."
+
+```sql
+CREATE COLLECTION people;
+INSERT INTO people (id, name) VALUES ('alice', 'Alice');
+INSERT INTO people (id, name) VALUES ('bob', 'Bob');
+
+GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020, weight: 0.9 };
+```
+
+## Traversal
+
+```sql
+-- BFS traversal
+GRAPH TRAVERSE FROM 'alice' DEPTH 3;
+GRAPH TRAVERSE FROM 'alice' DEPTH 2 LABEL 'follows' DIRECTION out;
+
+-- Immediate neighbors
+GRAPH NEIGHBORS OF 'bob' LABEL 'follows' DIRECTION both;
+
+-- Shortest path
+GRAPH PATH FROM 'alice' TO 'charlie' MAX_DEPTH 5 LABEL 'knows';
+```
+
+## MATCH Pattern Queries
+
+Cypher-subset pattern matching:
+
+```sql
+-- Friend-of-friend
+MATCH (a:Person)-[:knows]->(b:Person)-[:knows]->(c:Person)
+WHERE a.name = 'Alice'
+RETURN b.name, c.name;
+
+-- Variable-length paths
+MATCH (u:User)-[:follows*2..3]->(recommended:User)
+WHERE u.id = 'you'
+RETURN DISTINCT recommended.id LIMIT 10;
+
+-- Anti-join
+MATCH (a:User)-[:follows]->(b:User)
+WHERE NOT EXISTS { MATCH (b)-[:blocked_by]->(a) }
+RETURN a.id, b.id;
+
+-- OPTIONAL MATCH
+MATCH (a:Person)-[:knows]->(b:Person)
+OPTIONAL MATCH (b)-[:works_at]->(c:Company)
+RETURN a.name, b.name, c.name;
+```
+
+## 13 Algorithms
+
+```sql
+GRAPH ALGO PAGERANK ON social DAMPING 0.85 ITERATIONS 20 TOLERANCE 1e-7;
+GRAPH ALGO WCC ON knowledge_graph;
+GRAPH ALGO SSSP ON routes FROM 'city:chicago';
+GRAPH ALGO COMMUNITY ON products ITERATIONS 10 RESOLUTION 1.0;
+GRAPH ALGO BETWEENNESS ON network SAMPLE 500;
+GRAPH ALGO KCORE ON collaboration;
+GRAPH ALGO TRIANGLES ON social MODE global;
+GRAPH ALGO DIAMETER ON web;
+```
+
+| Algorithm         | Computes                                     |
+| ----------------- | -------------------------------------------- |
+| PageRank          | Node importance via link structure            |
+| WCC               | Weakly connected components                   |
+| Label Propagation | Community detection via label spreading        |
+| LCC               | Local clustering coefficient                  |
+| SSSP              | Single-source shortest path (Dijkstra)        |
+| Betweenness       | Bridge node identification                    |
+| Closeness         | How close a node is to all others             |
+| Harmonic          | Closeness for disconnected graphs             |
+| Degree            | Connection count (in/out/both)                |
+| Louvain           | Community detection via modularity             |
+| Triangles         | Triangle count (per-node or global)           |
+| Diameter          | Longest shortest path                         |
+| k-Core            | Coreness decomposition                        |
+
+## GraphRAG
+
+Combines vector similarity with graph traversal in one query:
+
+```sql
+GRAPH RAG FUSION ON entities
+  QUERY $embedding
+  VECTOR_TOP_K 50
+  EXPANSION_DEPTH 2
+  EDGE_LABEL 'related_to'
+  FINAL_TOP_K 10
+  RRF_K (60.0, 35.0);
+```
+
+1. Vector search finds semantically similar seed nodes
+2. BFS expands seeds along edges
+3. RRF merges vector rank with graph hop distance

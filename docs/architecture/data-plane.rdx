@@ -1,0 +1,52 @@
+---
+title: Data Plane
+description: Thread-per-Core execution with io_uring for physical query execution and storage I/O.
+---
+
+# Data Plane
+
+The Data Plane uses a Thread-per-Core (TPC) architecture. Each CPU core runs an isolated, shared-nothing shard. Types are `!Send` by design — no data crosses core boundaries.
+
+## Execution Model
+
+Each core owns:
+
+- A dedicated event loop (no Tokio — raw TPC)
+- io_uring submission and completion queues for NVMe I/O
+- A jemalloc arena (no allocator lock contention)
+- Lock-free telemetry ring buffers for metrics
+
+There are no locks, no atomics, and no cross-core sharing. The Data Plane achieves predictable latency by eliminating all sources of contention.
+
+## What the Data Plane Does
+
+- Executes `PhysicalPlan` nodes dispatched from the Control Plane
+- Reads from NVMe via io_uring
+- Runs SIMD-accelerated vector distance math
+- Appends to the WAL (O_DIRECT)
+- Evaluates BEFORE triggers (synchronous, same transaction)
+- Emits `WriteEvent` records to the Event Plane via per-core ring buffers
+
+## What the Data Plane Does Not Do
+
+- Spawn Tokio tasks
+- Handle HTTP or pgwire connections
+- Process AFTER triggers or CDC events
+- Coordinate across shards
+
+## WriteEvent Emission
+
+After each successful WAL commit, the Data Plane emits a `WriteEvent` containing:
+
+- `sequence` — monotonic per-core counter
+- `collection` — target collection name
+- `op` — Insert, Update, or Delete
+- `row_id`, `lsn`, `tenant_id`, `vshard_id`
+- `source` — User, Trigger, RaftFollower, or CrdtSync
+- `new_value`, `old_value` — for trigger and CDC consumption
+
+Events are fire-and-forget — the Data Plane never blocks waiting for the Event Plane. If the ring buffer overflows, the Event Plane replays from the WAL.
+
+## Page Fault Hazard
+
+A major page fault on an mmap region blocks the faulting TPC thread, stalling the entire shard's reactor. The Data Plane pre-fetches pages asynchronously via `io_uring IORING_OP_READ` or `madvise(MADV_WILLNEED)` before compute touches them.

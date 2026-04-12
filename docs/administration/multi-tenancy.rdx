@@ -1,0 +1,54 @@
+---
+title: Multi-Tenancy
+description: Tenant isolation, quotas, backup, and GDPR purge.
+---
+
+# Multi-Tenancy
+
+Each tenant has fully isolated storage, indexes, and security policies. Cross-tenant data access is impossible by design.
+
+## Creating Tenants
+
+```sql
+CREATE TENANT acme;
+CREATE USER alice WITH PASSWORD 'secret' ROLE readwrite TENANT 42;
+```
+
+## Quotas
+
+```sql
+ALTER TENANT acme SET QUOTA max_qps = 5000;
+ALTER TENANT acme SET QUOTA max_storage_bytes = 53687091200;
+ALTER TENANT acme SET QUOTA max_connections = 50;
+
+SHOW TENANT USAGE FOR acme;
+SHOW TENANT QUOTA FOR acme;
+EXPORT USAGE FOR TENANT acme PERIOD '2026-03' FORMAT 'json';
+```
+
+## Backup & Restore
+
+```sql
+BACKUP TENANT acme TO '/backups/acme.bak';
+RESTORE TENANT acme FROM '/backups/acme.bak' DRY RUN;
+RESTORE TENANT acme FROM '/backups/acme.bak';
+```
+
+Backups cover all 7 engines. Encrypted with AES-256-GCM using the tenant WAL key.
+
+## GDPR Purge
+
+```sql
+DROP TENANT acme;                -- catalog metadata only
+PURGE TENANT acme CONFIRM;      -- ALL data across all engines (permanent)
+```
+
+## Isolation Model
+
+| Layer   | Isolation                                     |
+| ------- | --------------------------------------------- |
+| Storage | Separate key prefixes per tenant              |
+| Indexes | Tenant-scoped, no cross-tenant overlap        |
+| WAL     | Per-tenant segments with per-tenant encryption |
+| Queries | Tenant ID injected at plan time               |
+| Audit   | Per-tenant audit entries                      |

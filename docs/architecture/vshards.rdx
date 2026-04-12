@@ -1,0 +1,29 @@
+---
+title: vShards
+description: Virtual sharding for data distribution, rebalancing, and per-shard replication.
+---
+
+# vShards
+
+Virtual shards (vShards) are NodeDB's unit of data distribution. Each collection's data is partitioned across vShards, and each vShard maps to a Raft group and a Data Plane core.
+
+## How vShards Work
+
+- Data is hashed to a vShard based on the document ID (or a configured shard key)
+- Each vShard is assigned to a node and a specific Data Plane core on that node
+- The assignment is tracked in the cluster catalog and updated during rebalancing
+
+## Rebalancing
+
+When nodes join or leave the cluster, vShards are redistributed:
+
+1. The coordinator selects vShards to move based on load metrics
+2. Target node begins replicating the vShard's data
+3. Once caught up, ownership transfers atomically in the catalog
+4. Old node drops the vShard data
+
+Rebalancing is transparent to clients — requests are forwarded to the new owner during migration. There is no downtime.
+
+## Shard Count
+
+The number of vShards is set at cluster creation and does not change. Choose a count that is several times the expected maximum number of cores across all nodes — this gives the rebalancer enough granularity to distribute evenly.

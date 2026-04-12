@@ -1,0 +1,46 @@
+---
+title: Python Driver
+description: Connect to NodeDB from Python using any PostgreSQL driver.
+---
+
+# Python Driver
+
+NodeDB speaks PostgreSQL's wire protocol, so any Python PostgreSQL driver works.
+
+## psycopg2
+
+```python
+import psycopg2
+
+conn = psycopg2.connect(host="localhost", port=6432, dbname="nodedb")
+cur = conn.cursor()
+
+cur.execute("SELECT * FROM users WHERE age > %s", (30,))
+rows = cur.fetchall()
+
+conn.close()
+```
+
+## asyncpg
+
+```python
+import asyncpg
+
+conn = await asyncpg.connect("postgresql://localhost:6432/nodedb")
+rows = await conn.fetch("SELECT * FROM users WHERE age > $1", 30)
+await conn.close()
+```
+
+## SQLAlchemy
+
+```python
+from sqlalchemy import create_engine
+
+engine = create_engine("postgresql://localhost:6432/nodedb")
+with engine.connect() as conn:
+    result = conn.execute("SELECT * FROM users LIMIT 10")
+```
+
+## ORMs
+
+Django, SQLAlchemy ORM, Prisma, and other PostgreSQL-compatible ORMs work with NodeDB's pgwire protocol.

@@ -1,0 +1,37 @@
+---
+title: Control Plane
+description: Tokio-based async runtime for SQL parsing, query planning, and connection handling.
+---
+
+# Control Plane
+
+The Control Plane runs on the standard Tokio thread pool. All types are `Send + Sync`. It handles three responsibilities:
+
+## Connection Handling
+
+Accepts connections on all wire protocols:
+
+- **pgwire** (port 6432) — PostgreSQL wire protocol
+- **HTTP** (port 6480) — REST, SSE, WebSocket
+- **NDB** (port 6433) — Native MessagePack protocol
+- **RESP** — Redis-compatible (optional)
+- **ILP** — InfluxDB Line Protocol (optional)
+- **Sync** (port 9090) — WebSocket for NodeDB-Lite clients
+
+Each connection is a Tokio task. Connection state (prepared statements, session variables, transaction context) lives on the connection task.
+
+## Query Planning
+
+SQL text arrives from any protocol and flows through:
+
+1. **sqlparser-rs** — parses SQL text into an AST
+2. **nodedb-sql EngineRules** — resolves the target engine and produces a `SqlPlan`
+3. **Plan conversion** — `SqlPlan` becomes a `PhysicalPlan` for the Data Plane
+
+`EngineRules` is the single source of truth for what each engine supports. One implementation per engine type (vector, graph, document, columnar, kv, fts, crdt). The compiler enforces exhaustive handling — adding a new engine or operation requires implementing every trait method.
+
+## Dispatch
+
+The Control Plane dispatches `PhysicalPlan` messages to Data Plane cores via the SPSC bridge. Routing is by vShard — each request targets a specific shard, which maps to a specific core.
+
+The Control Plane never touches storage, never runs SIMD math, and never processes events. Those responsibilities belong to the Data Plane and Event Plane respectively.

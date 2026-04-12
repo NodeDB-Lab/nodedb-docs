@@ -1,0 +1,117 @@
+---
+title: Docker
+description: Run NodeDB with a single docker run command or Docker Compose. Single binary, all ports exposed.
+---
+
+# Docker
+
+NodeDB is a single binary. One `docker run` command gets you a running server. Requires Linux kernel 5.1+ (for io_uring).
+
+## Quick Start
+
+```bash
+docker run -d --name nodedb \
+  -p 6432:6432 \
+  -p 6433:6433 \
+  -p 6480:6480 \
+  -p 9090:9090 \
+  -v nodedb-data:/data \
+  farhansyah/nodedb
+```
+
+That's it. Connect with `psql -h localhost -p 6432` or `curl http://localhost:6480/health`.
+
+## Ports
+
+| Port   | Protocol                          | Required |
+| ------ | --------------------------------- | -------- |
+| `6432` | PostgreSQL wire protocol (pgwire) | Yes      |
+| `6433` | Native MessagePack protocol (NDB) | Yes      |
+| `6480` | HTTP API (REST, SSE, WebSocket)   | Yes      |
+| `9090` | WebSocket sync (NodeDB-Lite)      | Yes      |
+
+RESP (Redis) and ILP (InfluxDB) are disabled by default. Enable via environment variables:
+
+```bash
+docker run -d --name nodedb \
+  -p 6432:6432 \
+  -p 6433:6433 \
+  -p 6480:6480 \
+  -p 9090:9090 \
+  -p 6381:6381 \
+  -p 8086:8086 \
+  -v nodedb-data:/data \
+  -e NODEDB_PORT_RESP=6381 \
+  -e NODEDB_PORT_ILP=8086 \
+  farhansyah/nodedb
+```
+
+## Docker Compose
+
+```yaml
+services:
+  nodedb:
+    image: farhansyah/nodedb
+    ports:
+      - "6432:6432"   # pgwire
+      - "6433:6433"   # native
+      - "6480:6480"   # HTTP
+      - "9090:9090"   # sync
+    volumes:
+      - nodedb-data:/data
+    environment:
+      NODEDB_MEMORY_LIMIT: "4GiB"
+      # NODEDB_PORT_RESP: "6381"    # uncomment to enable Redis protocol
+      # NODEDB_PORT_ILP: "8086"     # uncomment to enable ILP ingest
+
+volumes:
+  nodedb-data:
+```
+
+```bash
+docker compose up -d
+```
+
+## Stop
+
+```bash
+# Stop (data preserved)
+docker compose down
+
+# Stop and wipe all data
+docker compose down -v
+
+# Or with docker run
+docker stop nodedb && docker rm nodedb
+# Data persists in the nodedb-data volume
+```
+
+## Verify
+
+```bash
+curl http://localhost:6480/health
+```
+
+## Environment Variables
+
+| Variable                  | Default    | Description                  |
+| ------------------------- | ---------- | ---------------------------- |
+| `NODEDB_MEMORY_LIMIT`     | 75% of RAM | Total memory budget          |
+| `NODEDB_DATA_PLANE_CORES` | CPUs - 1   | Number of Data Plane threads |
+| `NODEDB_LOG_FORMAT`       | `text`     | `text` or `json`             |
+| `NODEDB_HOST`             | `0.0.0.0`  | Bind address                 |
+| `NODEDB_PORT_RESP`        | disabled   | Set to enable Redis protocol |
+| `NODEDB_PORT_ILP`         | disabled   | Set to enable ILP ingest     |
+| `NODEDB_DATA_DIR`         | `/data`    | Data directory inside container |
+
+## Custom Port Mapping
+
+Remap any port on the host side. The container always listens on the same internal ports:
+
+```bash
+docker run -d --name nodedb \
+  -p 5432:6432 \
+  -p 8080:6480 \
+  -v nodedb-data:/data \
+  farhansyah/nodedb
+```

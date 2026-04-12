@@ -1,0 +1,53 @@
+---
+title: Change Streams (CDC)
+description: Durable, cursor-tracked mutation streams with consumer groups and external delivery.
+---
+
+# Change Streams (CDC)
+
+Change streams provide durable access to the mutation log. Unlike LIVE SELECT, they survive reconnects, support consumer groups, and deliver to external systems.
+
+```sql
+CREATE CHANGE STREAM order_events ON orders;
+
+-- With webhook delivery
+CREATE CHANGE STREAM order_events ON orders
+WITH (URL = 'https://hooks.example.com/orders');
+
+-- With log compaction (keep only latest per key)
+CREATE CHANGE STREAM user_state ON users WITH (COMPACTION = 'key', KEY = 'id');
+
+DROP CHANGE STREAM order_events;
+SHOW CHANGE STREAMS;
+```
+
+## Pull-Based Consumption
+
+```sql
+SHOW CHANGES FOR orders SINCE '2024-01-15T00:00:00Z' LIMIT 1000;
+```
+
+## External Delivery
+
+**Webhook** — HTTP POST with retry, idempotency headers, and HMAC signing.
+
+**Kafka bridge** — Transactional exactly-once publishing (feature-gated `--features kafka`):
+
+```sql
+CREATE CHANGE STREAM order_events ON orders
+WITH (DELIVERY = 'kafka', BROKERS = 'localhost:9092', TOPIC = 'orders');
+```
+
+**SSE** — `GET /v1/streams/{stream}/events?group={group}` with `Accept: text/event-stream`.
+
+**HTTP long-poll** — `GET /v1/streams/{stream}/poll?group={group}&limit=100`.
+
+## Streaming Materialized Views
+
+```sql
+CREATE MATERIALIZED VIEW order_stats STREAMING AS
+SELECT time_bucket('5 minutes', event_time) AS bucket, count(*), sum(total)
+FROM order_changes WHERE event_type = 'INSERT' GROUP BY bucket;
+```
+
+O(1) per event. Supports COUNT, SUM, MIN, MAX, AVG. Watermark-driven finalization.

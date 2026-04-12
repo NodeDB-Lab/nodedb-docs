@@ -1,0 +1,23 @@
+---
+title: Type OIDs
+description: PostgreSQL type OID mappings for pgwire protocol compatibility.
+---
+
+# Type OIDs
+
+NodeDB maps its types to PostgreSQL OIDs for pgwire compatibility.
+
+| NodeDB Type | PostgreSQL Type | OID  |
+| ----------- | --------------- | ---- |
+| STRING      | text            | 25   |
+| INT         | int8            | 20   |
+| FLOAT       | float8          | 701  |
+| BOOL        | bool            | 16   |
+| TIMESTAMP   | timestamptz     | 1184 |
+| UUID        | uuid            | 2950 |
+| DECIMAL     | numeric         | 1700 |
+| ARRAY       | jsonb           | 3802 |
+| OBJECT      | jsonb           | 3802 |
+| GEOMETRY    | bytea           | 17   |
+
+Complex types (ARRAY, OBJECT) are serialized as JSONB over pgwire. GEOMETRY is serialized as WKB (bytea).

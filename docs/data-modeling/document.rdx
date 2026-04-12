@@ -1,0 +1,81 @@
+---
+title: Document Engine
+description: Two modes — schemaless (MessagePack, CRDT sync) and strict (Binary Tuples, O(1) field extraction).
+---
+
+# Document Engine
+
+NodeDB supports two document storage modes per collection. Choose based on your workload and convert at any time.
+
+## Schemaless Documents
+
+Flexible JSON-like documents stored as MessagePack. No schema required — fields can vary between documents.
+
+```sql
+CREATE COLLECTION users;
+
+INSERT INTO users { name: 'Alice', email: 'alice@example.com', age: 30 };
+INSERT INTO users { name: 'Bob', role: 'admin', tags: ['ops', 'dev'] };
+
+-- Standard SQL also works
+INSERT INTO users (id, name, email) VALUES ('u3', 'Charlie', 'charlie@example.com');
+
+CREATE INDEX ON users FIELDS email;
+SELECT * FROM users WHERE age > 25;
+```
+
+**Best for:** Prototyping, AI agent state, user profiles, nested data, CRDT sync.
+
+## Strict Documents
+
+Schema-enforced documents stored as Binary Tuples with O(1) field extraction. The engine jumps directly to the byte offset of any column — 3-4x better cache density than MessagePack or BSON.
+
+```sql
+CREATE COLLECTION orders TYPE DOCUMENT STRICT (
+    id UUID DEFAULT gen_uuid_v7(),
+    customer_id UUID NOT NULL,
+    total DECIMAL NOT NULL,
+    status STRING DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT now()
+);
+
+INSERT INTO orders (customer_id, total, status) VALUES ($cust_id, 149.99, 'shipped');
+SELECT * FROM orders WHERE id = '...';
+
+-- Schema evolution (zero-downtime)
+ALTER COLLECTION orders ADD COLUMN region STRING DEFAULT 'us-east';
+```
+
+**Best for:** OLTP, transactions, known schemas, HTAP with columnar materialized views.
+
+## Comparison
+
+|               | Schemaless                     | Strict                          |
+| ------------- | ------------------------------ | ------------------------------- |
+| Schema        | Flexible, evolves freely       | Fixed, enforced on write        |
+| Field access  | Parse MessagePack              | O(1) byte offset                |
+| Cache density | Good                           | 3-4x better                     |
+| CRDT sync     | Native                         | Via adapter                     |
+| HTAP          | No                             | Yes (materialized views)        |
+
+## Typeguards
+
+Add validation to schemaless collections without changing to strict mode:
+
+```sql
+CREATE TYPEGUARD ON users (
+    email STRING REQUIRED CHECK (email LIKE '%@%.%'),
+    age INT CHECK (age >= 0 AND age <= 150),
+    role STRING DEFAULT 'user'
+);
+```
+
+See [Schemas & Types](/docs/data-modeling/schemas-types) for full typeguard reference.
+
+## Converting
+
+```sql
+CONVERT COLLECTION users TO strict;      -- schemaless → strict
+CONVERT COLLECTION logs TO columnar;     -- document → columnar
+CONVERT COLLECTION cache TO kv;          -- document → key-value
+```

@@ -1,0 +1,49 @@
+---
+title: Production Checklist
+description: Pre-production checklist for deploying NodeDB in production.
+---
+
+# Production Checklist
+
+## Infrastructure
+
+- [ ] Linux kernel 5.11+ (full io_uring support)
+- [ ] NVMe storage for Data Plane I/O
+- [ ] Sufficient locked memory (`ulimit -l unlimited`)
+- [ ] Memory limit set appropriately (`NODEDB_MEMORY_LIMIT`)
+- [ ] Data Plane cores configured (`NODEDB_DATA_PLANE_CORES`)
+
+## Security
+
+- [ ] TLS enabled for all protocols
+- [ ] Authentication configured (SCRAM, JWT, API keys, or mTLS)
+- [ ] RBAC roles defined and assigned
+- [ ] RLS policies for multi-tenant data
+- [ ] Audit logging level set (at least `standard`)
+- [ ] Default passwords changed
+
+## Replication
+
+- [ ] Replication factor >= 3 for production data
+- [ ] Cluster has odd number of nodes (3, 5, 7) for Raft quorum
+- [ ] Cross-region learner replicas if needed
+
+## Monitoring
+
+- [ ] Prometheus scraping `/metrics`
+- [ ] Grafana dashboards configured
+- [ ] Health check endpoint monitored (`/health/ready`)
+- [ ] Alerting on key metrics (WAL fsync latency, replication lag, memory pressure)
+
+## Backup
+
+- [ ] Regular tenant backups scheduled
+- [ ] Backup validation (DRY RUN) tested
+- [ ] Restore procedure documented and tested
+- [ ] WAL archiving configured for PITR
+
+## Operations
+
+- [ ] Rolling upgrade procedure documented
+- [ ] Shard rebalancing tested
+- [ ] Failure recovery tested (single node, minority failure)

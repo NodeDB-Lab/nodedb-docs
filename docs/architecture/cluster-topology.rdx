@@ -1,0 +1,39 @@
+---
+title: Cluster Topology
+description: Multi-node deployment with vShards, Raft groups, and QUIC transport.
+---
+
+# Cluster Topology
+
+NodeDB scales horizontally by distributing data across multiple nodes using virtual shards (vShards).
+
+## Nodes and Roles
+
+Every node in a NodeDB cluster runs the same binary. Roles are determined by Raft group membership:
+
+- **Leader** — accepts writes and reads for its Raft groups
+- **Follower** — replicates from leader, serves stale reads (bounded staleness)
+- **Learner** — non-voting replica, used for read scaling or cross-region copies
+
+## vShards
+
+Data is partitioned into virtual shards (vShards). Each vShard is assigned to a Raft group. A single node may host multiple vShards.
+
+Benefits of virtual sharding:
+
+- **Rebalancing** — move a vShard to a different node without reshuffling the entire dataset
+- **Granular replication** — each vShard can have a different replication factor
+- **Independent failure domains** — a vShard failure affects only the data in that shard
+
+## Transport
+
+Cluster communication uses QUIC (via nexar + quinn). QUIC provides:
+
+- Multiplexed streams over a single connection
+- 0-RTT connection resumption
+- Built-in TLS 1.3
+- Connection migration (IP address changes)
+
+## Request Routing
+
+The Control Plane routes each request to the correct Data Plane core based on vShard assignment. If the local node does not own the target vShard, the request is forwarded to the correct node over QUIC.

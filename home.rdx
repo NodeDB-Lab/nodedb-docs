@@ -1,42 +1,123 @@
 ---
 title: NodeDB - Hybrid Database for AI Workloads
-description: Distributed hybrid database unifying vectors, metadata, CRDTs, and timeseries into a single binary.
+description: Distributed hybrid database with seven engines — Vector, Graph, Document, Columnar, Key-Value, Full-Text Search, and CRDT — in a single Rust binary.
 layout: landing
 ---
 
 <Hero title="NodeDB">
-<HeroAction label="Get Started" href="/getting-started/quickstart" variant="primary" />
-<HeroAction label="GitHub" href="https://github.com/NodeDB/nodedb" variant="secondary" />
+<HeroAction label="Get Started" href="/docs/introduction/quickstart" variant="primary" />
+<HeroAction label="GitHub" href="https://github.com/NodeDB-Lab/nodedb" variant="secondary" />
 
-One database for vectors, graphs, documents, metadata, state, and metrics. Built for multi-modal AI and agentic workloads.
+Seven data engines in one binary. Vectors, graphs, documents, columns, key-value, full-text search, and CRDT sync — with shared storage, shared memory, and zero network hops between engines.
 </Hero>
 
 <Section bg="muted">
 <FeatureGrid>
-<Feature icon="brain" title="Six Engines, One Binary">
-Vector (HNSW), Graph (CSR), Document (MessagePack/redb), Sparse/Metadata (B-Tree + BM25), CRDT (episodic state), and Timeseries — unified with shared storage and zero network hops.
+<Feature icon="🧠" title="Seven Engines, One Process">
+Vector (HNSW), Graph (CSR), Document (schemaless + strict), Columnar (timeseries + spatial profiles), Key-Value, Full-Text Search (BM25), and CRDT. Cross-engine queries execute in one process — no network hops, no application-level joins.
 </Feature>
-<Feature icon="zap" title="Hybrid Execution Model">
-Tokio Control Plane for query planning, Thread-per-Core Data Plane with io_uring for physical execution. Lock-free SPSC bridge between them.
+<Feature icon="⚡" title="Three-Plane Architecture">
+Control Plane (Tokio) for SQL planning, Data Plane (Thread-per-Core + io_uring) for storage I/O and SIMD math, Event Plane for CDC, triggers, and cron. Connected by lock-free SPSC ring buffers.
 </Feature>
-<Feature icon="smartphone" title="Edge-Native with NodeDB-Lite">
-Embedded SQLite-like client for phones, tablets, browsers, and desktops. Offline-first with vector search and CRDT sync via WebSocket to Origin.
+<Feature icon="🐘" title="PostgreSQL Compatible">
+Connect with psql, any PostgreSQL driver, or ORM. Six wire protocols: pgwire, HTTP, native MessagePack, RESP (Redis), ILP (InfluxDB), and WebSocket sync.
 </Feature>
-<Feature icon="globe" title="Graph Engine">
-Compressed Sparse Row (CSR) format for graph traversal. Low-latency neighborhood queries, multi-hop paths, and graph analytics without external tools.
+<Feature icon="📱" title="Edge to Cloud">
+NodeDB-Lite embeds all seven engines in phones, browsers (WASM), and desktops. Offline-first with sub-millisecond reads. CRDT sync to Origin via WebSocket when connectivity returns.
 </Feature>
-<Feature icon="file-text" title="Document Engine">
-MessagePack-encoded documents with full-text search. Store semi-structured JSON-like data with automatic indexing and BM25 ranking.
+<Feature icon="🔄" title="Real-Time Built In">
+LIVE SELECT, CDC change streams with consumer groups, durable pub/sub topics, webhook delivery, cron scheduler, and streaming materialized views. No Kafka or Redis Streams sidecar needed.
 </Feature>
-<Feature icon="shield" title="Production Grade">
-WAL with O_DIRECT, tiered storage (RAM/NVMe/S3), Multi-Raft consensus, mTLS, tenant isolation, and 1,253 tests across 92K+ lines in 12 crates.
+<Feature icon="🔒" title="Production Security">
+SCRAM-SHA-256, JWKS (multi-provider JWT), mTLS, RBAC, row-level security across all engines, hash-chained audit log, tenant isolation, and AES-256 encryption at rest.
 </Feature>
 </FeatureGrid>
 </Section>
 
 <Section>
-<CTA title="Ready to build?" description="Get NodeDB running in under a minute.">
-<HeroAction label="Quickstart" href="/getting-started/quickstart" variant="primary" />
-<HeroAction label="Architecture" href="/concepts/overview" variant="secondary" />
+
+## What NodeDB Replaces
+
+The combination of PostgreSQL + pgvector + Redis + Neo4j + ClickHouse + Elasticsearch — unified into one binary with shared storage and zero network hops.
+
+| Engine          | Purpose                        | Replaces           |
+| --------------- | ------------------------------ | ------------------ |
+| Vector          | Semantic search, RAG, recs     | pgvector, Qdrant   |
+| Graph           | Relationships, GraphRAG        | Neo4j              |
+| Document        | Flexible or strict schemas     | MongoDB, PostgreSQL|
+| Columnar        | Analytics, timeseries, spatial | ClickHouse, DuckDB |
+| Key-Value       | Sessions, counters, caches     | Redis, DragonflyDB |
+| Full-Text Search| BM25, fuzzy, hybrid fusion     | Elasticsearch      |
+| CRDT            | Offline sync, edge devices     | Custom sync layers |
+
+</Section>
+
+<Section bg="muted">
+
+## Choose Storage Per Collection
+
+Unlike most databases that lock you into one model, NodeDB lets you choose per collection — and convert at any time.
+
+```sql
+CREATE COLLECTION users;                                          -- schemaless document
+CREATE COLLECTION orders TYPE DOCUMENT STRICT (id UUID, ...);     -- strict (OLTP)
+CREATE COLLECTION metrics TYPE COLUMNAR (ts TIMESTAMP TIME_KEY, ...); -- timeseries
+CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);  -- key-value
+
+CONVERT COLLECTION users TO strict;  -- convert when schema stabilizes
+```
+
+</Section>
+
+<Section>
+
+## Cross-Engine Queries in Standard SQL
+
+```sql
+-- Vector search with metadata pre-filtering
+SELECT title, vector_distance(embedding, $query_vec) AS score
+FROM articles WHERE category = 'ml'
+  AND id IN (SEARCH articles USING VECTOR(embedding, $query_vec, 10));
+
+-- GraphRAG: vector seeds + graph expansion + RRF fusion
+GRAPH RAG FUSION ON entities
+  QUERY $embedding VECTOR_TOP_K 50 EXPANSION_DEPTH 2
+  EDGE_LABEL 'related_to' FINAL_TOP_K 10;
+
+-- Hybrid BM25 + vector
+SELECT title, rrf_score(
+    vector_distance(embedding, $query_vec),
+    bm25_score(body, 'distributed database')
+) AS score FROM articles LIMIT 10;
+
+-- Spatial + vector
+SELECT name FROM restaurants
+WHERE ST_DWithin(location, ST_Point(-73.99, 40.75), 2000)
+  AND embedding <-> $query_vec LIMIT 10;
+```
+
+</Section>
+
+<Section bg="muted">
+<CardGrid>
+<Card title="Quick Start" icon="⚡" href="/docs/introduction/quickstart">
+Start NodeDB and run your first queries across all seven engines in five minutes.
+</Card>
+<Card title="Architecture" icon="🧠" href="/docs/architecture/overview">
+How the three-plane execution model works — Control, Data, and Event planes.
+</Card>
+<Card title="Data Modeling" icon="📦" href="/docs/data-modeling/collections">
+Collections, schemas, storage engines, columnar profiles, and index types.
+</Card>
+<Card title="SQL Reference" icon="📖" href="/docs/sql/overview">
+Full query language reference — standard SQL plus engine-specific extensions.
+</Card>
+</CardGrid>
+</Section>
+
+<Section>
+<CTA title="Ready to build?" description="Get NodeDB running in under a minute with Docker or from source.">
+<HeroAction label="Quickstart" href="/docs/introduction/quickstart" variant="primary" />
+<HeroAction label="Architecture" href="/docs/architecture/overview" variant="secondary" />
 </CTA>
 </Section>

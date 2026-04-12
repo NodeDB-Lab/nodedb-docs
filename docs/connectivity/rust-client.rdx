@@ -1,0 +1,41 @@
+---
+title: Rust Client
+description: The nodedb-client crate connects over the NDB protocol with both SQL and native modes.
+---
+
+# Rust Client
+
+The `nodedb-client` crate connects over the NDB protocol (port 6433). It supports both SQL and native modes on the same connection.
+
+## Installation
+
+```toml
+[dependencies]
+nodedb-client = "0.1"
+```
+
+## Usage
+
+```rust
+use nodedb_client::NodeDbRemote;
+
+let client = NodeDbRemote::connect("localhost:6433").await?;
+
+// SQL mode
+let rows = client.sql("SELECT * FROM users WHERE age > 30").await?;
+
+// Native mode (skip SQL parsing)
+let user = client.get("users", "u1").await?;
+client.put("users", "u1", &doc).await?;
+client.vector_search("articles", &query_vec, 10, None).await?;
+```
+
+## The NodeDb Trait
+
+Both `NodeDbRemote` (network client) and `NodeDbLite` (embedded) implement the `NodeDb` trait. Application code can be generic over the trait — same logic works in-process or over the network.
+
+```rust
+async fn search<D: NodeDb>(db: &D, query: &[f32]) -> Result<Vec<Row>> {
+    db.vector_search("articles", query, 10, None).await
+}
+```

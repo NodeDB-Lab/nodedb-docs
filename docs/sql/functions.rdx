@@ -1,0 +1,89 @@
+---
+title: Functions Reference
+description: Built-in scalar, aggregate, and engine-specific SQL functions.
+---
+
+# Functions Reference
+
+## String Functions
+
+`LENGTH`, `SUBSTR`, `UPPER`, `LOWER`, `TRIM`, `LTRIM`, `RTRIM`, `CONCAT` (or `||`), `REPLACE`, `SPLIT`
+
+## Numeric Functions
+
+`ABS`, `CEIL`, `FLOOR`, `ROUND`, `SQRT`, `POWER`, `MOD` (or `%`), `GREATEST`, `LEAST`
+
+## Date/Time Functions
+
+| Function                        | Description                            |
+| ------------------------------- | -------------------------------------- |
+| `NOW()`                         | Current UTC timestamp                  |
+| `CURRENT_TIMESTAMP()`           | Alias for NOW()                        |
+| `EXTRACT(field FROM ts)`        | Extract year, month, day, hour, etc.   |
+| `DATE_TRUNC(unit, ts)`          | Truncate to unit boundary              |
+| `DATE_FORMAT(ts, fmt)`          | Format timestamp as string             |
+| `time_bucket(interval, ts)`     | Truncate to interval boundary          |
+
+`time_bucket` accepts: `'1s'`, `'5m'`, `'15m'`, `'1h'`, `'6h'`, `'1d'`, `'1w'`, or ISO 8601 (`'PT5M'`, `'P1D'`).
+
+## Type Functions
+
+`CAST(expr AS type)`, `TRY_CAST(expr AS type)`, `expr::type`
+
+## ID Generation
+
+`gen_uuid_v7()` — time-ordered UUID v7
+
+## KV Atomic Functions
+
+| Function                               | Description                    |
+| -------------------------------------- | ------------------------------ |
+| `KV_INCR(coll, key, delta [, TTL])` | Atomic increment               |
+| `KV_DECR(coll, key, delta)`           | Atomic decrement               |
+| `KV_INCR_FLOAT(coll, key, delta)`     | Float increment                |
+| `KV_CAS(coll, key, expected, new)`    | Compare-and-swap               |
+| `KV_GETSET(coll, key, new)`           | Atomic get-and-set             |
+
+## Leaderboard Functions
+
+| Function                    | Description              |
+| --------------------------- | ------------------------ |
+| `RANK(index, key)`          | Player's rank            |
+| `TOPK(index, k)`           | Top-k entries (TVF)      |
+| `RANGE(index, min, max)`    | Score range query (TVF)  |
+| `SORTED_COUNT(index)`       | Total entries            |
+
+## Rate Limiting Functions
+
+| Function                                       | Description                |
+| ---------------------------------------------- | -------------------------- |
+| `RATE_CHECK(gate, key, max_count, window_secs)` | Check and consume          |
+| `RATE_REMAINING(gate, key, max_count, window_secs)` | Check remaining budget |
+| `RATE_RESET(gate, key)`                         | Reset a cooldown           |
+
+## Transfer Functions
+
+| Function                                               | Description          |
+| ------------------------------------------------------ | -------------------- |
+| `TRANSFER(coll, source, dest, field, amount)`          | Fungible transfer    |
+| `TRANSFER_ITEM(src_coll, dst_coll, item, src, dst)`   | Non-fungible transfer|
+
+## Timeseries Functions
+
+`ts_rate`, `ts_delta`, `ts_moving_avg`, `ts_ema`, `ts_interpolate`, `ts_percentile`, `ts_correlate`, `ts_lag`, `ts_lead`, `ts_rank`, `ts_stddev`, `ts_derivative`, `ts_zscore`, `ts_bollinger_upper/lower/mid/width`, `ts_moving_percentile`
+
+## Vector Functions
+
+`vector_distance(col, vec)`, `rrf_score(vector_distance, bm25_score [, k1, k2])`
+
+## Full-Text Functions
+
+`text_match(col, query)`, `bm25_score(col, query)`, `search_score(col, query)`
+
+## Document Navigation
+
+`doc_get(payload, path)`, `doc_exists(payload, path)`, `doc_array_contains(payload, path, value)`
+
+## CRDT Functions
+
+`crdt_state(coll, id)`, `crdt_apply(coll, id, delta)`

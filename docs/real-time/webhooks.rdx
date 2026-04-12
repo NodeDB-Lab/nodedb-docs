@@ -1,0 +1,33 @@
+---
+title: Webhooks
+description: HTTP POST delivery for change stream events with retry and HMAC signing.
+---
+
+# Webhooks
+
+Change streams can deliver events to external HTTP endpoints:
+
+```sql
+CREATE CHANGE STREAM order_events ON orders
+WITH (
+    DELIVERY = 'webhook',
+    URL = 'https://hooks.example.com/orders',
+    RETRY = 3,
+    TIMEOUT = '5s'
+);
+```
+
+## Headers
+
+Each POST includes:
+
+| Header                | Description                    |
+| --------------------- | ------------------------------ |
+| `X-Idempotency-Key`  | Unique per delivery attempt    |
+| `X-Event-Sequence`    | Monotonic sequence number      |
+| `X-Partition`          | Source partition               |
+| `X-LSN`                | WAL log sequence number        |
+
+## Retry Behavior
+
+Exponential backoff. 4xx client errors (except 429) are not retried. 5xx and timeouts retry up to the configured limit. Persistent failures go to the dead-letter queue.

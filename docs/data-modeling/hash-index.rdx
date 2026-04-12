@@ -1,0 +1,37 @@
+---
+title: Hash Index
+description: O(1) hash-based index for key-value point lookups.
+---
+
+# Hash Index
+
+The hash index provides O(1) point lookups by user-defined key. It is the primary index for KV collections.
+
+## How It Works
+
+Keys are hashed to locate the value directly — no tree traversal. This provides constant-time reads regardless of collection size.
+
+## Creating a KV Collection
+
+```sql
+CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);
+```
+
+The `PRIMARY KEY` column is automatically hash-indexed.
+
+## Secondary Indexes
+
+KV collections can also have secondary B-tree indexes on value fields:
+
+```sql
+CREATE INDEX ON sessions FIELDS role;
+SELECT key, user_id FROM sessions WHERE role = 'admin';
+```
+
+## TTL
+
+Native TTL with an index-backed expiry wheel. Keys expire automatically:
+
+```sql
+INSERT INTO sessions { key: 'sess_abc', user_id: 'alice', ttl: 3600 };
+```

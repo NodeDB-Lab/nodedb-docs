@@ -1,0 +1,37 @@
+---
+title: CSR Index
+description: Compressed Sparse Row adjacency index for cache-resident graph traversal.
+---
+
+# CSR Index
+
+CSR (Compressed Sparse Row) is the graph engine's core index format. It stores adjacency data in contiguous arrays for cache-resident traversal.
+
+## Layout
+
+```
+out_offsets: Vec<u32>        [num_nodes + 1]  — offset into target array per node
+out_targets: DenseArray<u32> [num_edges]      — destination node IDs (contiguous, mmap-capable)
+out_labels:  DenseArray<u16> [num_edges]      — edge labels (parallel array)
+out_weights: Option<DenseArray<f64>>           — optional, allocated only when weighted
+
+in_offsets / in_targets / in_labels / in_weights — symmetric for inbound
+```
+
+## Memory Efficiency
+
+At 1 billion edges, CSR uses ~10 GB vs ~60 GB for naive adjacency lists (6x improvement). Node IDs are interned as `u32`, labels as `u16`.
+
+## Storage
+
+Edges are persisted in a redb B-Tree with forward and reverse indexes. The CSR index is built at query time for bulk operations. Writes go to a mutable buffer and become visible immediately. Compaction merges the buffer into dense CSR arrays when the buffer exceeds 10% of the dense size.
+
+## Graph Operations
+
+The CSR index supports all traversal and algorithm operations:
+
+- BFS/DFS traversal
+- Shortest path (Dijkstra)
+- All 13 native graph algorithms
+- MATCH pattern matching
+- GraphRAG fusion

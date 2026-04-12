@@ -1,0 +1,34 @@
+---
+title: Native Protocol (NDB)
+description: Binary MessagePack protocol for the ndb CLI, Rust SDK, and FFI/WASM bindings.
+---
+
+# Native Protocol (NDB)
+
+Binary MessagePack protocol on port 6433. Used by the `ndb` CLI, Rust SDK (`nodedb-client`), and FFI/WASM bindings.
+
+## Two Modes
+
+**SQL** — SQL text transported as a MessagePack message. Same parser and planner as pgwire.
+
+**Native opcodes** — Typed messages that skip SQL parsing. Used by SDKs for hot-path operations:
+
+```rust
+// Native mode — typed, skip SQL parsing
+let user = client.get("users", "u1").await?;
+client.put("users", "u1", &doc).await?;
+client.vector_search("articles", &query_vec, 10, None).await?;
+
+// SQL mode — flexible, any query
+let rows = client.sql("SELECT * FROM users WHERE age > 30").await?;
+```
+
+Both modes produce the same `PhysicalPlan` and execute identically.
+
+## Connection
+
+```bash
+# ndb CLI
+./target/release/ndb
+./target/release/ndb --host localhost --port 6433
+```

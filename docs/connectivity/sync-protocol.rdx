@@ -1,0 +1,39 @@
+---
+title: Sync Protocol (WebSocket)
+description: WebSocket-based CRDT sync for NodeDB-Lite clients on phones, browsers, and desktops.
+---
+
+# Sync Protocol
+
+WebSocket-based sync on port 9090 for NodeDB-Lite clients. CRDT deltas flow between edge devices and Origin.
+
+## How It Works
+
+1. Lite client connects via WebSocket to Origin
+2. Client sends its current LSN watermark
+3. Origin sends any missed deltas since that watermark
+4. Client sends locally accumulated CRDT deltas
+5. Origin validates constraints (UNIQUE, FK, CHECK) via Raft
+6. Committed deltas are broadcast to all connected clients with matching shape subscriptions
+
+## Shape Subscriptions
+
+Devices subscribe to a subset of data:
+
+```sql
+-- Client only receives data matching this filter
+SUBSCRIBE SHAPE ON users WHERE user_id = $me;
+```
+
+Changes within a device's shape are pushed in real time. Changes outside the shape are not sent.
+
+## Compensation Hints
+
+If a local write violates a constraint on Origin, a typed `CompensationHint` is sent back:
+
+- `Rename` — duplicate key detected
+- `Merge` — concurrent edits to the same document
+- `CreateParent` — FK target doesn't exist
+- `Adjust` — CHECK constraint violation
+
+The application handles the conflict — no silent data loss.

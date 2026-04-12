@@ -1,0 +1,35 @@
+---
+title: CRDT Operations
+description: Read CRDT state and apply deltas via SQL.
+---
+
+# CRDT Operations
+
+## Read State
+
+```sql
+SELECT crdt_state('collab_docs', 'doc123');
+```
+
+Returns the current merged state of the CRDT document.
+
+## Apply Delta
+
+```sql
+SELECT crdt_apply('collab_docs', 'doc123', '<delta_bytes>');
+```
+
+Applies a Loro CRDT delta to the document. On Origin, the delta goes through Raft consensus. On Lite, it is applied locally and queued for sync.
+
+## Conflict Policies
+
+```sql
+-- View current policy
+SHOW CONFLICT POLICY ON notes;
+
+-- Set policy
+ALTER COLLECTION notes SET conflict_policy = 'lww';
+ALTER COLLECTION profiles SET conflict_policy = 'field_merge';
+```
+
+See [CRDT Sync](/docs/crdt-sync/overview) for full sync protocol details.

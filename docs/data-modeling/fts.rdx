@@ -1,0 +1,66 @@
+---
+title: Full-Text Search Engine
+description: Block-Max WAND BM25 with 27-language support, CJK tokenization, fuzzy matching, and hybrid vector fusion.
+---
+
+# Full-Text Search Engine
+
+Block-Max WAND (BMW) optimized BM25 ranking with 16 Snowball stemmers, 27-language stop words, CJK bigram tokenization, posting compression, fuzzy matching, and native hybrid fusion with vector search.
+
+## When to Use
+
+- Text search across documents, articles, products, logs
+- Search-as-you-type with fuzzy matching
+- Multilingual content search (including CJK, Arabic, Hindi)
+- Hybrid retrieval: keyword matching + semantic similarity
+
+## SQL Usage
+
+```sql
+CREATE COLLECTION articles;
+CREATE SEARCH INDEX ON articles FIELDS title, body ANALYZER 'english' FUZZY true;
+
+-- Basic search
+SELECT title, bm25_score(body, 'distributed database') AS score
+FROM articles
+WHERE text_match(body, 'distributed database')
+ORDER BY score DESC LIMIT 20;
+
+-- Fuzzy search
+SELECT title FROM articles WHERE text_match(title, 'databse', { fuzzy: true, distance: 2 });
+
+-- Hybrid BM25 + vector (RRF)
+SELECT title, rrf_score(
+    vector_distance(embedding, $query_vec),
+    bm25_score(body, 'distributed systems')
+) AS score
+FROM articles
+LIMIT 10;
+
+-- Synonyms
+CREATE SYNONYM GROUP db_terms AS ('database', 'db', 'datastore');
+```
+
+## Analyzers
+
+| Analyzer     | Behavior                                        |
+| ------------ | ----------------------------------------------- |
+| `standard`   | NFD normalize, lowercase, English stop/stem     |
+| `simple`     | Lowercase + whitespace split                    |
+| `keyword`    | Entire input as a single token                  |
+| `cjk_bigram` | CJK bigram tokenization                        |
+| `ngram:2:4`  | Character n-grams (min:max)                     |
+| `edge_ngram` | Prefix-anchored n-grams for autocomplete        |
+
+16 language-specific analyzers: `ar`, `da`, `nl`, `en`, `fi`, `fr`, `de`, `hu`, `it`, `no`, `pt`, `ro`, `ru`, `es`, `sv`, `tr`.
+
+CJK text is automatically routed to bigram tokenizer regardless of configured analyzer. Optional dictionary segmentation via feature gates: `lang-ja`, `lang-zh`, `lang-ko`, `lang-th`.
+
+## Internals
+
+- **BMW scoring** — WAND pivot selection + 128-doc block pruning via precomputed upper bounds
+- **Posting compression** — Delta-encoded, variable-width bitpacked doc IDs with SIMD unpack (SSE2/NEON)
+- **SmallFloat fieldnorms** — 1-byte length quantization (4x space reduction)
+- **LSM storage** — In-memory memtable → immutable segments → level-based compaction (8x8 tiering)
+- **AND-first with OR fallback** — Tries AND; falls back to OR with coverage penalty if zero results
+- **Phrase proximity boost** — Consecutive tokens at consecutive positions get up to 3x score boost

@@ -1,0 +1,39 @@
+---
+title: Replication
+description: Raft-based replication with configurable replication factor per vShard.
+---
+
+# Replication
+
+NodeDB replicates data via Raft log replication. Each vShard's Raft group independently replicates its WAL entries to followers.
+
+## Replication Factor
+
+Configurable per collection or per vShard:
+
+- **RF=1** — no replication, single-node durability only
+- **RF=3** — default for production, tolerates one node failure
+- **RF=5** — high durability, tolerates two node failures
+
+## How Replication Works
+
+1. Leader receives a write and appends to its WAL
+2. WAL entry is sent to all followers in the Raft group
+3. Each follower appends to its own WAL and acknowledges
+4. Leader waits for a quorum (majority) of acknowledgements
+5. Leader commits the entry and responds to the client
+
+## Follower Reads
+
+Followers can serve reads with bounded staleness:
+
+```sql
+SET read_consistency = 'bounded_staleness_5s';
+SELECT * FROM orders WHERE status = 'pending';
+```
+
+The follower checks that its replication lag is within the configured bound before serving the read. If the lag exceeds the bound, the read is forwarded to the leader.
+
+## Cross-Region Replication
+
+Learner replicas (non-voting Raft members) can be placed in remote regions for read scaling. They replicate asynchronously and do not participate in quorum decisions, so they do not add write latency.

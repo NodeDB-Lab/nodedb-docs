@@ -1,0 +1,41 @@
+---
+title: WAL & Segment Formats
+description: On-disk format specifications for WAL records and segment files.
+---
+
+# WAL & Segment Formats
+
+## WAL Record Format
+
+```
+┌──────────┬─────────────────┬────────────┬─────┬───────────┬───────────┬─────────────┬─────────┐
+│  magic   │ format_version  │ record_type│ lsn │ tenant_id │ vshard_id │ payload_len │ crc32c  │
+│  4 bytes │    2 bytes      │   2 bytes  │ 8B  │   4 bytes │  2 bytes  │   4 bytes   │ 4 bytes │
+└──────────┴─────────────────┴────────────┴─────┴───────────┴───────────┴─────────────┴─────────┘
+```
+
+- Page size: 4 KiB or 16 KiB (O_DIRECT alignment)
+- CRC32C per page for bit-rot detection
+- Segmented with auto-rollover
+- AES-256-GCM encryption (optional, per-record)
+
+## Segment File Footer
+
+All persistent segment files embed a footer:
+
+```
+┌─────────────────┬────────────┬──────────┬─────────┬─────────┐
+│ format_version  │ created_by │ checksum │ min_lsn │ max_lsn │
+└─────────────────┴────────────┴──────────┴─────────┴─────────┘
+```
+
+- Compaction preserves monotonic LSN ordering
+- Footer enables crash-safe validation on startup
+
+## Columnar Segment Format (NDBS)
+
+- Magic bytes: `NDBS`
+- Versioned footer with CRC32C
+- Per-column codec metadata
+- 1024-row blocks with min/max/null-count statistics
+- Delete bitmaps (Roaring)

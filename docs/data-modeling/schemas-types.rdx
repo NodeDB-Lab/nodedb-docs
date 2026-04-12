@@ -1,0 +1,74 @@
+---
+title: Schemas & Types
+description: Data types, schema enforcement, typeguards, and schema evolution.
+---
+
+# Schemas & Types
+
+## Data Types
+
+| Type        | Description                          | Example                |
+| ----------- | ------------------------------------ | ---------------------- |
+| `STRING`    | UTF-8 text                           | `'hello'`              |
+| `TEXT`      | Alias for STRING                     | `'hello'`              |
+| `VARCHAR`   | Alias for STRING                     | `'hello'`              |
+| `INT`       | 64-bit signed integer                | `42`                   |
+| `FLOAT`     | 64-bit IEEE 754                      | `3.14`                 |
+| `DECIMAL`   | Arbitrary precision                  | `99.99`                |
+| `BOOL`      | Boolean                              | `true`                 |
+| `TIMESTAMP` | UTC timestamp (nanosecond precision) | `now()`                |
+| `DATETIME`  | Alias for TIMESTAMP                  | `'2026-01-01T00:00Z'`  |
+| `UUID`      | 128-bit UUID                         | `gen_uuid_v7()`        |
+| `GEOMETRY`  | OGC geometry (WKB internally)        | `ST_Point(-73.9, 40.7)`|
+| `ARRAY`     | Ordered list                         | `ARRAY[1, 2, 3]`       |
+| `OBJECT`    | Nested document                      | `{ name: 'Alice' }`   |
+
+## Schema Modes
+
+**Schemaless** — No schema required. Fields can vary between documents. Types are inferred on insert. This is the default when you `CREATE COLLECTION x`.
+
+**Strict** — Schema is defined at creation time and enforced on every write. O(1) field extraction via binary tuple format. Created with `TYPE DOCUMENT STRICT (...)`.
+
+## Typeguards (Schemaless Validation)
+
+Typeguards add write-time validation to schemaless collections without changing the storage format. Guarded fields are type-checked; unguarded fields pass freely.
+
+```sql
+CREATE TYPEGUARD ON users (
+    email STRING REQUIRED CHECK (email LIKE '%@%.%'),
+    age INT CHECK (age >= 0 AND age <= 150),
+    role STRING DEFAULT 'user',
+    updated_at TIMESTAMP VALUE now()
+);
+```
+
+| Modifier   | Behavior                                        |
+| ---------- | ----------------------------------------------- |
+| `REQUIRED` | Field must be present and non-null               |
+| `DEFAULT`  | Inject a value when the field is absent          |
+| `VALUE`    | Always inject/overwrite (computed fields)        |
+| `CHECK`    | SQL boolean expression validated at write time   |
+
+```sql
+-- Modify guards
+ALTER TYPEGUARD ON users ADD score FLOAT CHECK (score >= 0);
+ALTER TYPEGUARD ON users DROP age;
+
+-- Audit existing data against guards
+VALIDATE TYPEGUARD ON users;
+
+-- Graduate to strict schema
+CONVERT COLLECTION users TO strict;
+```
+
+## Schema Evolution (Strict Mode)
+
+```sql
+-- Add a column with a default (zero-downtime, multi-version reads)
+ALTER COLLECTION orders ADD COLUMN region STRING DEFAULT 'us-east';
+
+-- Drop a column
+ALTER COLLECTION orders DROP COLUMN region;
+```
+
+`ALTER ADD COLUMN` uses multi-version reads — existing rows are served with the default value without rewriting storage. New writes include the column natively.

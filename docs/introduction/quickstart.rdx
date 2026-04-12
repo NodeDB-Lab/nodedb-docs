@@ -1,0 +1,143 @@
+---
+title: Quick Start
+description: Start NodeDB and run your first queries across multiple engines in under five minutes.
+---
+
+# Quick Start
+
+This guide takes you from zero to running multi-engine queries in five minutes.
+
+## 1. Start NodeDB
+
+```bash
+# Docker (recommended)
+docker compose up -d
+
+# Or from source
+./target/release/nodedb
+```
+
+## 2. Connect
+
+```bash
+psql -h localhost -p 6432
+```
+
+## 3. Documents (Schemaless)
+
+```sql
+CREATE COLLECTION users;
+
+INSERT INTO users (id, name, email, age)
+VALUES ('u1', 'Alice', 'alice@example.com', 30);
+
+INSERT INTO users (id, name, email, role)
+VALUES ('u2', 'Bob', 'bob@example.com', 'admin');
+
+-- Object literal syntax also works
+INSERT INTO users { name: 'Charlie', email: 'charlie@example.com', age: 25 };
+
+SELECT name, email FROM users WHERE age > 25;
+```
+
+## 4. Strict Documents (Schema-Enforced)
+
+```sql
+CREATE COLLECTION orders TYPE DOCUMENT STRICT (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT,
+    total FLOAT,
+    status TEXT,
+    created_at TIMESTAMP
+);
+
+INSERT INTO orders (id, customer_id, total, status)
+VALUES ('o1', 'u1', 99.99, 'pending');
+
+SELECT * FROM orders WHERE status = 'pending' ORDER BY created_at DESC;
+```
+
+## 5. Vector Search
+
+```sql
+CREATE COLLECTION articles;
+CREATE VECTOR INDEX idx_embed ON articles METRIC cosine DIM 384;
+
+INSERT INTO articles (id, title, embedding)
+VALUES ('a1', 'Intro to AI', ARRAY[0.1, 0.2, 0.3, ...]);
+
+SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, ...], 10);
+```
+
+## 6. Graph
+
+```sql
+CREATE COLLECTION social;
+
+INSERT INTO social (id, name) VALUES ('alice', 'Alice');
+INSERT INTO social (id, name) VALUES ('bob', 'Bob');
+
+GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020 };
+
+GRAPH TRAVERSE FROM 'alice' DEPTH 2;
+
+GRAPH ALGO PAGERANK ON social DAMPING 0.85 ITERATIONS 20 TOLERANCE 1e-7;
+```
+
+## 7. Key-Value
+
+```sql
+CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);
+
+INSERT INTO sessions (key, value) VALUES ('sess_abc', 'token-abc');
+
+SELECT * FROM sessions WHERE key = 'sess_abc';
+```
+
+## 8. Columnar (Analytics)
+
+```sql
+CREATE COLLECTION web_events TYPE COLUMNAR (
+    ts TIMESTAMP,
+    user_id UUID,
+    page VARCHAR,
+    duration_ms INT
+);
+
+SELECT page, AVG(duration_ms), COUNT(*)
+FROM web_events
+WHERE ts > now() - INTERVAL '7 days'
+GROUP BY page ORDER BY COUNT(*) DESC;
+```
+
+## 9. Timeseries
+
+```sql
+CREATE COLLECTION cpu_metrics TYPE COLUMNAR (
+    ts TIMESTAMP TIME_KEY,
+    host VARCHAR,
+    cpu FLOAT
+) WITH profile = 'timeseries', partition_by = '1h';
+
+SELECT time_bucket('5 minutes', ts) AS bucket, host, AVG(cpu)
+FROM cpu_metrics
+WHERE ts > now() - INTERVAL '1 hour'
+GROUP BY bucket, host;
+```
+
+## 10. Triggers
+
+```sql
+CREATE TRIGGER notify_on_order AFTER INSERT ON orders FOR EACH ROW $$
+BEGIN
+    INSERT INTO notifications (id, user_id, message)
+    VALUES (NEW.id || '_notif', NEW.customer_id, 'Order received');
+END;
+$$;
+```
+
+## What's Next
+
+- [Architecture](/docs/architecture/overview) — how the three-plane execution model works
+- [Data Modeling](/docs/data-modeling/collections) — collections, schemas, and engine selection
+- [SQL Reference](/docs/sql/overview) — full query language reference

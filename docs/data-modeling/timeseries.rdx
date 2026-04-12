@@ -1,0 +1,80 @@
+---
+title: Timeseries Profile
+description: Columnar profile for time-ordered data with retention, continuous aggregation, ILP ingest, and PromQL.
+---
+
+# Timeseries Profile
+
+Timeseries is a columnar profile. It extends the columnar engine with retention policies, continuous aggregation, ILP ingest, and dedicated time-series SQL functions. Data is stored in the same columnar memtables with a `TIME_KEY` column driving partition-by-time and block-level skip.
+
+## DDL
+
+```sql
+CREATE COLLECTION cpu_metrics TYPE COLUMNAR (
+    ts TIMESTAMP TIME_KEY,
+    host VARCHAR,
+    region VARCHAR,
+    cpu_usage FLOAT,
+    mem_usage FLOAT
+) WITH profile = 'timeseries', partition_by = '1d', retention = '90d';
+
+-- Convenience alias
+CREATE TIMESERIES cpu_metrics;
+```
+
+## Queries
+
+```sql
+-- Time-bucketed aggregation
+SELECT time_bucket('5 minutes', ts) AS bucket, host, AVG(cpu_usage) AS avg_cpu
+FROM cpu_metrics
+WHERE ts > now() - INTERVAL '1 hour'
+GROUP BY bucket, host ORDER BY bucket DESC;
+
+-- Approximate aggregation (mergeable across shards)
+SELECT approx_count_distinct(host), approx_percentile(cpu_usage, 0.95)
+FROM cpu_metrics WHERE ts > now() - INTERVAL '24 hours';
+```
+
+## Continuous Aggregation
+
+Incrementally maintained views — no full re-scan on refresh:
+
+```sql
+CREATE CONTINUOUS AGGREGATE cpu_hourly ON cpu_metrics AS
+    SELECT time_bucket('1 hour', ts) AS hour, host, AVG(cpu_usage), ts_percentile(cpu_usage, 0.99)
+    FROM cpu_metrics GROUP BY hour, host
+WITH (refresh_interval = '1m');
+
+REFRESH CONTINUOUS AGGREGATE cpu_hourly;
+```
+
+## Timeseries SQL Functions
+
+| Function               | What it does                         |
+| ---------------------- | ------------------------------------ |
+| `ts_rate`              | Per-second rate of change            |
+| `ts_delta`             | Difference between consecutive values|
+| `ts_moving_avg`        | Moving average over a window         |
+| `ts_ema`               | Exponential moving average           |
+| `ts_interpolate`       | Gap-fill with interpolated values    |
+| `ts_percentile`        | Percentile calculation               |
+| `ts_zscore`            | Z-score anomaly detection            |
+| `ts_bollinger_upper/lower/mid/width` | Bollinger Bands       |
+| `ts_moving_percentile` | Rolling percentile                   |
+| `ts_correlate`         | Correlation between two series       |
+| `ts_lag` / `ts_lead`   | Previous/next value in a series      |
+
+## ILP Ingest
+
+Enable with `ports.ilp = 8086`. Any ILP-compatible client (Telegraf, Vector) pushes metrics directly:
+
+```bash
+echo "cpu,host=web-01 usage=72.5 1609459200000000000" | nc localhost 8086
+```
+
+Adaptive batching and per-series core routing — self-tuning, no configuration needed.
+
+## Grafana / PromQL
+
+NodeDB works as a native Grafana Prometheus data source at `http://nodedb:6480/obsv/api`. Full PromQL engine (Tier 1+2+3 functions). Also supports Prometheus remote write/read for long-term storage.

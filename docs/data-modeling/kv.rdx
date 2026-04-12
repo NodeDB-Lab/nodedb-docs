@@ -1,0 +1,82 @@
+---
+title: Key-Value Engine
+description: Hash-indexed O(1) point lookups with TTL, atomic operations, sorted indexes, and rate gates.
+---
+
+# Key-Value Engine
+
+Purpose-built hash-indexed store with O(1) point lookups, native TTL, and secondary indexes. Unlike a standalone KV store, data is SQL-queryable, joinable, and syncable via CRDTs.
+
+## When to Use
+
+- Session state and tokens
+- Feature flags and configuration
+- Rate limiters and counters
+- Caching without an external cache
+- Leaderboards and rankings
+
+## SQL Usage
+
+```sql
+CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);
+
+-- Insert with TTL
+INSERT INTO sessions { key: 'sess_abc', user_id: 'alice', role: 'admin', ttl: 3600 };
+
+-- Get by key
+SELECT * FROM sessions WHERE key = 'sess_abc';
+
+-- Analytical queries work too
+SELECT role, COUNT(*) FROM sessions GROUP BY role;
+
+-- Join with other collections
+SELECT u.name, s.role FROM users u JOIN sessions s ON u.id = s.user_id;
+```
+
+## Atomic Operations
+
+```sql
+SELECT KV_INCR('counters', 'page_views', 1);
+SELECT KV_DECR('credits', 'user-123', 50);
+SELECT KV_CAS('state', 'player-1', 'idle', 'in_match');
+SELECT KV_GETSET('token', 'sess-1', 'new-token');
+SELECT KV_INCR('daily_logins', 'user-1', 1, TTL => 86400);
+```
+
+## Sorted Indexes (Leaderboards)
+
+```sql
+CREATE SORTED INDEX lb_global ON scores (score DESC, updated_at ASC) KEY player_id;
+
+SELECT RANK(lb_global, 'player-123');
+SELECT * FROM TOPK(lb_global, 10);
+SELECT SORTED_COUNT(lb_global);
+
+-- Time-windowed leaderboard
+CREATE SORTED INDEX lb_daily ON scores (score DESC) KEY player_id WINDOW DAILY ON updated_at;
+```
+
+## Rate Gates
+
+```sql
+SELECT RATE_CHECK('attack_cooldown', 'player-123', 3, 10);
+-- {"allowed": true, "remaining": 2, "resets_in_ms": 7500}
+
+SELECT RATE_REMAINING('api_calls', 'tenant-1', 100, 60);
+SELECT RATE_RESET('attack_cooldown', 'player-123');
+```
+
+## Redis-Compatible Access (RESP)
+
+Enable by setting `ports.resp = 6381` in config. Any Redis client works:
+
+```bash
+redis-cli -p 6381
+SET sess_abc '{"user":"alice"}' EX 3600
+GET sess_abc
+INCR page_views
+ZADD leaderboard 1500 player-123
+ZRANK leaderboard player-123
+```
+
+Supported: GET, SET, DEL, EXISTS, MGET, MSET, EXPIRE, TTL, SCAN, KEYS, HGET, HSET, INCR, DECR, ZADD, ZREM, ZRANK, ZRANGE, SUBSCRIBE, PUBLISH, and more.

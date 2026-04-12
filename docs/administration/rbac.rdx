@@ -1,0 +1,57 @@
+---
+title: Roles & Permissions (RBAC)
+description: Role-based access control with GRANT, REVOKE, and built-in role hierarchy.
+---
+
+# Roles & Permissions (RBAC)
+
+## Built-in Roles
+
+| Role           | Permissions                    |
+| -------------- | ------------------------------ |
+| `readonly`     | SELECT on all collections      |
+| `readwrite`    | SELECT, INSERT, UPDATE, DELETE |
+| `admin`        | All operations + DDL           |
+| `tenant_admin` | Admin within a tenant          |
+| `superuser`    | Unrestricted (cross-tenant)    |
+
+Higher roles inherit all permissions of lower roles.
+
+## Custom Roles
+
+```sql
+CREATE ROLE analyst;
+CREATE ROLE data_engineer;
+```
+
+## Granting Permissions
+
+```sql
+GRANT SELECT ON orders TO analyst;
+GRANT INSERT, UPDATE ON orders TO data_engineer;
+GRANT ALL ON orders TO admin;
+GRANT EXECUTE ON FUNCTION full_name TO analyst;
+GRANT BACKUP ON TENANT acme TO ops_user;
+```
+
+## Revoking
+
+```sql
+REVOKE INSERT ON orders FROM analyst;
+```
+
+## SECURITY DEFINER
+
+Functions and triggers can execute with owner's permissions:
+
+```sql
+CREATE FUNCTION admin_count() RETURNS INT SECURITY DEFINER
+AS BEGIN RETURN (SELECT COUNT(*) FROM audit_log); END;
+```
+
+## Introspection
+
+```sql
+SHOW GRANTS FOR analyst;
+SHOW PERMISSIONS;
+```

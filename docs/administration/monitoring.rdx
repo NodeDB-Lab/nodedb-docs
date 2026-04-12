@@ -1,0 +1,53 @@
+---
+title: Monitoring
+description: Prometheus metrics, OpenTelemetry, health checks, and Grafana integration.
+---
+
+# Monitoring
+
+## Prometheus Metrics
+
+```bash
+curl http://localhost:6480/metrics
+```
+
+70+ system metrics: per-engine, per-core, connection, query, replication, and storage. Latency histogram with 13 buckets.
+
+## PromQL Engine
+
+Full Prometheus query engine at `/obsv/api`. Point Grafana at this URL as a Prometheus data source. Supports all Tier 1+2+3 functions (rate, irate, delta, histogram_quantile, holt_winters, etc.).
+
+## Prometheus Remote Write/Read
+
+Use NodeDB as a long-term Prometheus storage backend:
+
+```yaml
+remote_write:
+  - url: "http://nodedb:6480/obsv/api/v1/write"
+remote_read:
+  - url: "http://nodedb:6480/obsv/api/v1/read"
+```
+
+## OpenTelemetry
+
+- **OTLP ingest** — Metrics, traces, and logs via HTTP (4318) and gRPC (4317)
+- **OTLP export** — Push NodeDB's own traces/metrics to any OTLP collector
+
+Feature-gated: `--features otel`, `--features promql`, `--features monitoring`.
+
+## Health Checks
+
+```bash
+curl http://localhost:6480/health        # basic health
+curl http://localhost:6480/health/ready   # WAL recovered, ready for queries
+```
+
+## Key Metrics
+
+| Metric Category | Examples                                       |
+| --------------- | ---------------------------------------------- |
+| Engine          | Per-engine memory, query count, latency         |
+| Core            | Per-core CPU, queue depth, io_uring completions |
+| Connection      | Active connections, auth failures               |
+| Replication     | Raft log lag, replication latency               |
+| Storage         | WAL fsync latency, segment count, compaction debt |

@@ -1,0 +1,47 @@
+---
+title: SQL Overview
+description: NodeDB uses SQL as its primary query language, extended with engine-specific syntax for vectors, graphs, spatial, and more.
+---
+
+# SQL Overview
+
+NodeDB uses SQL as its primary query language. Whether you connect via `ndb`, `psql`, or HTTP — the same SQL works everywhere.
+
+## Query Execution
+
+```
+ndb CLI (NDB protocol)   ──┐
+psql    (pgwire)         ──┼──► SQL Parser ──► EngineRules ──► PhysicalPlan ──► Data Plane
+HTTP    (REST/JSON)      ──┘
+```
+
+Three doors, one room. Same parser, same optimizer, same execution engine.
+
+## Standard SQL Support
+
+NodeDB supports standard SQL with high PostgreSQL compatibility:
+
+- SELECT with WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET
+- JOINs (INNER, LEFT, RIGHT, CROSS, SEMI, ANTI)
+- Window functions (ROW_NUMBER, RANK, LAG, LEAD, SUM OVER)
+- CTEs (WITH, WITH RECURSIVE)
+- Subqueries and derived tables
+- Set operations (UNION, INTERSECT, EXCEPT)
+- Transactions with savepoints (BEGIN, COMMIT, ROLLBACK, SAVEPOINT)
+- Prepared statements
+
+## Engine-Specific Extensions
+
+Beyond standard SQL, NodeDB extends the language for each engine:
+
+- **Vector** — `SEARCH ... USING VECTOR()`, `vector_distance()`
+- **Graph** — `GRAPH TRAVERSE`, `GRAPH ALGO`, `MATCH` patterns
+- **Full-Text** — `text_match()`, `bm25_score()`, `search_score()`
+- **Spatial** — `ST_DWithin()`, `ST_Contains()`, `ST_Distance()`, etc.
+- **Timeseries** — `time_bucket()`, `ts_rate()`, continuous aggregates
+- **KV** — `KV_INCR()`, `KV_CAS()`, sorted indexes, rate gates
+- **CRDT** — `crdt_state()`, `crdt_apply()`
+
+## Isolation Level
+
+Snapshot Isolation (SI). Reads see a consistent snapshot from `BEGIN` time. Write conflicts detected at `COMMIT`.

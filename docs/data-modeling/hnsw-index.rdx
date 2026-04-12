@@ -1,0 +1,56 @@
+---
+title: HNSW Index
+description: Hierarchical Navigable Small World graph for approximate nearest neighbor search on vector embeddings.
+---
+
+# HNSW Index
+
+HNSW (Hierarchical Navigable Small World) is a multi-layer proximity graph for approximate nearest neighbor search. It provides logarithmic search complexity with high recall.
+
+## Creating an HNSW Index
+
+```sql
+CREATE VECTOR INDEX idx_embed ON articles METRIC cosine DIM 384;
+
+-- With explicit parameters
+CREATE VECTOR INDEX idx_embed ON articles
+    METRIC cosine DIM 384
+    M 16 EF_CONSTRUCTION 200;
+```
+
+## Parameters
+
+| Parameter          | Default | Description                                                   |
+| ------------------ | ------- | ------------------------------------------------------------- |
+| `METRIC`           | —       | Distance metric: `l2`, `cosine`, `inner_product`, `manhattan`, `chebyshev`, `hamming`, `jaccard`, `pearson` |
+| `DIM`              | —       | Vector dimension (must match your embeddings)                 |
+| `M`                | 16      | Max connections per node per layer. Higher = more accurate, more memory |
+| `EF_CONSTRUCTION`  | 200     | Search width during index build. Higher = slower build, better graph quality |
+
+## How It Works
+
+- **Construction** — Vectors inserted at full precision (FP32/FP16) to maintain structural integrity
+- **Search** — Traverses quantized copies for speed, then re-ranks top candidates against full-precision vectors
+- **Layers** — Upper layers provide coarse navigation; bottom layer is fully connected
+
+## Quantization
+
+Add quantization to reduce memory:
+
+| Quantization | Memory reduction | Recall impact |
+| ------------ | ---------------- | ------------- |
+| SQ8          | ~4x              | Minimal       |
+| PQ           | ~4-8x            | ~5% loss      |
+| IVF-PQ       | ~16 bytes/vector | ~5-15% loss   |
+
+## Search
+
+```sql
+-- k-NN search
+SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, ...], 10);
+
+-- With pre-filtering
+SELECT * FROM articles
+WHERE category = 'ml'
+  AND id IN (SEARCH articles USING VECTOR(embedding, $vec, 10));
+```

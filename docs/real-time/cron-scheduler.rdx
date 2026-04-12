@@ -1,0 +1,52 @@
+---
+title: Cron Scheduler
+description: Distributed cron scheduler for periodic SQL jobs with leader-aware execution.
+---
+
+# Cron Scheduler
+
+The Event Plane includes a distributed cron scheduler. Jobs are evaluated per-second and dispatched through the Control Plane → Data Plane path.
+
+```sql
+CREATE SCHEDULE nightly_cleanup
+CRON '0 2 * * *'
+AS BEGIN
+    DELETE FROM sessions WHERE expires_at < now();
+    INSERT INTO maintenance_log { task: 'nightly_cleanup', ran_at: now() };
+END;
+
+CREATE SCHEDULE refresh_stats
+CRON '*/5 * * * *'
+AS BEGIN
+    REFRESH CONTINUOUS AGGREGATE order_stats;
+END;
+
+DROP SCHEDULE nightly_cleanup;
+SHOW SCHEDULES;
+```
+
+## Cron Syntax
+
+Standard 5-field cron: `minute hour day-of-month month day-of-week`.
+
+| Expression      | Meaning                     |
+| --------------- | --------------------------- |
+| `0 2 * * *`     | 2:00 AM UTC daily           |
+| `*/5 * * * *`   | Every 5 minutes             |
+| `0 0 * * 0`     | Midnight Sunday             |
+| `0 */6 * * *`   | Every 6 hours               |
+
+## Leader-Aware
+
+In clustered mode, scheduled jobs run on the collection's shard leader. If a leader changes due to failover, the new leader picks up the schedule. Job history and missed execution policies are tracked in redb.
+
+## LISTEN/NOTIFY
+
+PostgreSQL-compatible ephemeral notifications (session-scoped, cluster-wide):
+
+```sql
+LISTEN order_events;
+NOTIFY order_events, 'order 123 shipped';
+```
+
+For durable delivery, use [Change Streams](/docs/real-time/change-streams) or [Durable Topics](/docs/sql/ddl).

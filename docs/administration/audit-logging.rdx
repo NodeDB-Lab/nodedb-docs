@@ -1,0 +1,39 @@
+---
+title: Audit Logging
+description: Hash-chained audit trail with configurable levels and SIEM export.
+---
+
+# Audit Logging
+
+Tamper-evident, hash-chained audit log. Every entry includes a SHA-256 hash of the previous entry — if any record is modified, the chain breaks.
+
+```sql
+SHOW AUDIT LOG;
+SHOW AUDIT LOG LIMIT 50;
+```
+
+## Audit Levels
+
+```toml
+[audit]
+level = "standard"
+```
+
+| Level      | Records                                        |
+| ---------- | ---------------------------------------------- |
+| `minimal`  | Auth events (login, failure, denial)           |
+| `standard` | + admin actions, DDL, sessions, config changes |
+| `full`     | + every query, RLS denials                     |
+| `forensic` | + row-level mutations, CRDT deltas             |
+
+## Key Events
+
+AuthSuccess, AuthFailure, AuthzDenied, PrivilegeChange, SessionConnect/Disconnect, AdminAction, TenantCreated/Deleted, SnapshotBegin/End, RestoreBegin/End, CertRotation, KeyRotation, NodeJoined/Left, QueryExec, RlsDenied, RowChange.
+
+## SIEM Export
+
+```sql
+CREATE CHANGE STREAM audit_export ON _system.audit
+    DELIVERY WEBHOOK 'https://siem.example.com/ingest'
+    WITH (format = 'json', hmac_secret = 'your-secret');
+```

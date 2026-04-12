@@ -1,0 +1,84 @@
+---
+title: Collections
+description: Collections are NodeDB's top-level data containers. Each collection has a storage engine chosen at creation time.
+---
+
+# Collections
+
+A collection is NodeDB's top-level data container — analogous to a table in PostgreSQL or a collection in MongoDB. Each collection has a storage engine chosen at creation time.
+
+## Creating Collections
+
+```sql
+-- Schemaless document (default)
+CREATE COLLECTION users;
+
+-- Strict document (schema-enforced)
+CREATE COLLECTION orders TYPE DOCUMENT STRICT (
+    id UUID DEFAULT gen_uuid_v7(),
+    customer_id UUID NOT NULL,
+    total DECIMAL NOT NULL,
+    status STRING DEFAULT 'pending'
+);
+
+-- Columnar (analytics)
+CREATE COLLECTION events TYPE COLUMNAR (
+    ts TIMESTAMP TIME_KEY,
+    user_id UUID,
+    event VARCHAR,
+    duration_ms INT
+);
+
+-- Key-Value
+CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);
+```
+
+## Storage Engines
+
+| Type              | DDL                     | Best for                                        |
+| ----------------- | ----------------------- | ----------------------------------------------- |
+| Document          | `CREATE COLLECTION x`   | Flexible data, prototyping, agent state          |
+| Document (strict) | `TYPE DOCUMENT STRICT`  | OLTP, transactions, known schemas                |
+| Columnar          | `TYPE COLUMNAR`         | Analytics, reporting, scan-heavy workloads        |
+| Key-Value         | `TYPE KEY_VALUE`        | Sessions, caches, counters, key-dominant access   |
+
+Columnar collections can specialize via profiles:
+
+| Profile    | Column Modifier  | Extra capabilities                                |
+| ---------- | ---------------- | ------------------------------------------------- |
+| Plain      | (none)           | Full UPDATE/DELETE, general analytics              |
+| Timeseries | `TIME_KEY`       | Retention, continuous aggregation, ILP ingest      |
+| Spatial    | `SPATIAL_INDEX`  | R*-tree indexing, OGC predicates                  |
+
+## Cross-Engine Indexes
+
+Any collection can have indexes from multiple engines:
+
+```sql
+CREATE COLLECTION products;
+
+-- Add a vector index for semantic search
+CREATE VECTOR INDEX ON products METRIC cosine DIM 384;
+
+-- Add a full-text index for keyword search
+CREATE SEARCH INDEX ON products FIELDS title, description ANALYZER 'english';
+
+-- Add a spatial index for location queries
+CREATE SPATIAL INDEX ON products FIELDS location;
+
+-- Add graph edges for relationships
+GRAPH INSERT EDGE FROM 'products:p1' TO 'products:p2' TYPE 'similar';
+```
+
+## Converting Between Engines
+
+Collections can be converted at any time without data loss:
+
+```sql
+CONVERT COLLECTION users TO strict;
+CONVERT COLLECTION logs TO columnar;
+CONVERT COLLECTION cache TO kv;
+CONVERT COLLECTION events TO document;
+```
+
+NodeDB infers the schema from existing documents when converting to strict mode.
