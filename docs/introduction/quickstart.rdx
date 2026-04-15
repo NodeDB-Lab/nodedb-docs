@@ -10,12 +10,19 @@ This guide takes you from zero to running multi-engine queries in five minutes.
 ## 1. Start NodeDB
 
 ```bash
-# Docker (recommended)
+# Linux: prebuilt binary (recommended — best performance)
+gh release download --repo NodeDB-Lab/nodedb --pattern 'nodedb-*-linux-x64.tar.gz' \
+  && tar -xzf nodedb-*-linux-x64.tar.gz \
+  && ./nodedb
+
+# macOS / Windows / WSL2: Docker
 docker compose up -d
 
-# Or from source
+# Or from source (any Linux with Rust 1.94+)
 ./target/release/nodedb
 ```
+
+See [Installation](/docs/introduction/installation) for the full setup, configuration, and systemd unit examples.
 
 ## 2. Connect
 

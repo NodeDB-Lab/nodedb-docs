@@ -15,7 +15,7 @@ docker run -d --name nodedb \
   -p 6433:6433 \
   -p 6480:6480 \
   -p 9090:9090 \
-  -v nodedb-data:/data \
+  -v nodedb-data:/var/lib/nodedb \
   farhansyah/nodedb
 ```
 
@@ -40,7 +40,7 @@ docker run -d --name nodedb \
   -p 9090:9090 \
   -p 6381:6381 \
   -p 8086:8086 \
-  -v nodedb-data:/data \
+  -v nodedb-data:/var/lib/nodedb \
   -e NODEDB_PORT_RESP=6381 \
   -e NODEDB_PORT_ILP=8086 \
   farhansyah/nodedb
@@ -58,7 +58,7 @@ services:
       - "6480:6480"   # HTTP
       - "9090:9090"   # sync
     volumes:
-      - nodedb-data:/data
+      - nodedb-data:/var/lib/nodedb
     environment:
       NODEDB_MEMORY_LIMIT: "4GiB"
       # NODEDB_PORT_RESP: "6381"    # uncomment to enable Redis protocol
@@ -102,7 +102,7 @@ curl http://localhost:6480/health
 | `NODEDB_HOST`             | `0.0.0.0`  | Bind address                 |
 | `NODEDB_PORT_RESP`        | disabled   | Set to enable Redis protocol |
 | `NODEDB_PORT_ILP`         | disabled   | Set to enable ILP ingest     |
-| `NODEDB_DATA_DIR`         | `/data`    | Data directory inside container |
+| `NODEDB_DATA_DIR`         | `/var/lib/nodedb` | Data directory inside container |
 
 ## Custom Port Mapping
 
@@ -112,6 +112,6 @@ Remap any port on the host side. The container always listens on the same intern
 docker run -d --name nodedb \
   -p 5432:6432 \
   -p 8080:6480 \
-  -v nodedb-data:/data \
+  -v nodedb-data:/var/lib/nodedb \
   farhansyah/nodedb
 ```

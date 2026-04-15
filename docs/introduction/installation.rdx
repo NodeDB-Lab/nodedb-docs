@@ -1,13 +1,89 @@
 ---
 title: Installation
-description: Build NodeDB from source. Requires Rust 1.94+ and Linux with io_uring support.
+description: Install NodeDB via prebuilt binary, Docker, or from source. Linux kernel 5.1+ required.
 ---
 
 # Installation
 
-NodeDB requires Linux kernel 5.1+ (for io_uring) and Rust 1.94+.
+NodeDB requires Linux kernel 5.1+ (for io_uring), regardless of how you install it.
+
+There are three ways to install NodeDB:
+
+1. [Prebuilt binary](#prebuilt-binary-linux) — **recommended on Linux.** Direct kernel access to io_uring, no virtualization overhead, best raw performance.
+2. [Docker](/docs/introduction/docker) — **recommended on macOS / Windows / WSL2**, or when you want a one-command setup with zero host configuration.
+3. [Build from source](#build-from-source) — for development or custom features.
+
+All three share the same [configuration](#configuration) and connection paths described below.
+
+## Prebuilt binary (Linux)
+
+Each tagged release ships a static `nodedb` tarball on GitHub for `linux-x64` and `linux-arm64`. macOS and Windows users should use [Docker](/docs/introduction/docker) until those targets ship.
+
+```bash
+# Resolve the latest tag and your architecture
+TAG=$(curl -fsSL https://api.github.com/repos/NodeDB-Lab/nodedb/releases/latest \
+        | grep '"tag_name"' | cut -d'"' -f4)
+ARCH=$(uname -m | sed 's/aarch64/arm64/; s/x86_64/x64/')
+
+# Download and extract
+curl -L -o nodedb.tar.gz \
+  "https://github.com/NodeDB-Lab/nodedb/releases/download/${TAG}/nodedb-${TAG#v}-linux-${ARCH}.tar.gz"
+tar -xzf nodedb.tar.gz
+
+# Optional: install system-wide
+sudo mv nodedb /usr/local/bin/
+
+# Run with all defaults (data goes to ~/.nodedb/data)
+nodedb
+```
+
+If you have the [GitHub CLI](https://cli.github.com/) installed, this is one command:
+
+```bash
+gh release download --repo NodeDB-Lab/nodedb --pattern 'nodedb-*-linux-x64.tar.gz' \
+  && tar -xzf nodedb-*-linux-x64.tar.gz
+```
+
+Run with a config file or a custom data directory:
+
+```bash
+# Point at an explicit data dir
+NODEDB_DATA_DIR=/var/lib/nodedb nodedb
+
+# Or load a config file (env vars still override TOML keys)
+nodedb --config /etc/nodedb/nodedb.toml
+```
+
+For a long-running server, drop a unit file at `/etc/systemd/system/nodedb.service`:
+
+```ini
+[Unit]
+Description=NodeDB
+After=network.target
+
+[Service]
+Type=simple
+User=nodedb
+Group=nodedb
+ExecStart=/usr/local/bin/nodedb --config /etc/nodedb/nodedb.toml
+Restart=on-failure
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then `sudo systemctl enable --now nodedb`. The user/group must be able to read the config file and write `data_dir`.
+
+For a specific version or to browse changelogs, see the release page: <https://github.com/NodeDB-Lab/nodedb/releases>. The SQL surface is still pre-1.0 and changes between tags, so pin a version in production.
+
+## Docker
+
+See [Docker](/docs/introduction/docker) for the full Compose and `docker run` setup. The right choice on macOS, Windows, or any host where you don't want to manage a binary directly.
 
 ## Build from Source
+
+Requires Rust 1.94+ and a Linux host.
 
 ```bash
 git clone https://github.com/NodeDB-Lab/nodedb.git
@@ -16,8 +92,11 @@ cd nodedb
 # Release build (all crates)
 cargo build --release
 
-# Run tests
-cargo test --all-features
+# Run tests (use nextest — the cluster integration tests rely on
+# the test groups defined in .config/nextest.toml and will hang
+# under plain `cargo test`)
+cargo install cargo-nextest --locked  # one-time
+cargo nextest run --all-features
 ```
 
 The build produces two binaries:
@@ -25,13 +104,16 @@ The build produces two binaries:
 - `target/release/nodedb` — the database server
 - `target/release/ndb` — the terminal client (TUI with syntax highlighting, tab completion, history search)
 
-## Start the Server
+Start the server:
 
 ```bash
 ./target/release/nodedb
+
+# Or with a config file
+./target/release/nodedb --config nodedb.toml
 ```
 
-Default output:
+Default startup output:
 
 ```
 2026-01-01T00:00:00Z INFO nodedb: Starting NodeDB
@@ -43,7 +125,12 @@ Default output:
 
 ## Configuration
 
-All protocols share one bind address. Env vars take precedence over the TOML file.
+This section applies to **every** install method — prebuilt binary, Docker, and source builds all read the same TOML schema and respond to the same environment variables. Pick whichever is convenient:
+
+- **TOML file** — pass `--config /path/to/nodedb.toml` on the command line. Best for production / systemd / pre-baked images.
+- **Environment variables** — prefix `NODEDB_*`. Best for Docker (`-e`), Compose (`environment:`), and Kubernetes. Env vars **override** values from the TOML file when both are set.
+
+All protocols share one bind address (`host`); only the port differs per protocol.
 
 ```toml
 # nodedb.toml
@@ -63,24 +150,24 @@ resp = 6381          # Optional: set to enable
 ilp = 8086           # Optional: set to enable
 ```
 
-| Config field       | Environment variable      | Default          |
-| ------------------ | ------------------------- | ---------------- |
-| `host`             | `NODEDB_HOST`             | `127.0.0.1`      |
-| `ports.native`     | `NODEDB_PORT_NATIVE`      | `6433`           |
-| `ports.pgwire`     | `NODEDB_PORT_PGWIRE`      | `6432`           |
-| `ports.http`       | `NODEDB_PORT_HTTP`        | `6480`           |
-| `ports.resp`       | `NODEDB_PORT_RESP`        | disabled         |
-| `ports.ilp`        | `NODEDB_PORT_ILP`         | disabled         |
-| `data_dir`         | `NODEDB_DATA_DIR`         | `~/.local/share/nodedb` |
-| `memory_limit`     | `NODEDB_MEMORY_LIMIT`     | `1GiB`           |
-| `data_plane_cores` | `NODEDB_DATA_PLANE_CORES` | CPUs - 1         |
-| `max_connections`  | `NODEDB_MAX_CONNECTIONS`  | `4096`           |
-| `log_format`       | `NODEDB_LOG_FORMAT`       | `text`           |
+| Config field       | Environment variable      | Default                                              |
+| ------------------ | ------------------------- | ---------------------------------------------------- |
+| `host`             | `NODEDB_HOST`             | `127.0.0.1`                                          |
+| `ports.native`     | `NODEDB_PORT_NATIVE`      | `6433`                                               |
+| `ports.pgwire`     | `NODEDB_PORT_PGWIRE`      | `6432`                                               |
+| `ports.http`       | `NODEDB_PORT_HTTP`        | `6480`                                               |
+| `ports.resp`       | `NODEDB_PORT_RESP`        | disabled                                             |
+| `ports.ilp`        | `NODEDB_PORT_ILP`         | disabled                                             |
+| `data_dir`         | `NODEDB_DATA_DIR`         | `~/.nodedb/data` (binary), `/var/lib/nodedb` (Docker) |
+| `memory_limit`     | `NODEDB_MEMORY_LIMIT`     | `1GiB`                                               |
+| `data_plane_cores` | `NODEDB_DATA_PLANE_CORES` | CPUs - 1                                             |
+| `max_connections`  | `NODEDB_MAX_CONNECTIONS`  | `4096`                                               |
+| `log_format`       | `NODEDB_LOG_FORMAT`       | `text`                                               |
 
 ## Connect
 
 ```bash
-# With the ndb TUI client
+# With the ndb TUI client (source build)
 ./target/release/ndb
 
 # With psql
@@ -92,7 +179,7 @@ curl http://localhost:6480/health
 
 ## System Requirements
 
-- **OS**: Linux (kernel 5.1+ for io_uring)
-- **Rust**: 1.94+
+- **OS**: Linux (kernel 5.1+ for io_uring) — required for the binary and source builds; Docker users can run on any host that supports a Linux container with io_uring.
+- **Rust**: 1.94+ (source builds only)
 - **Memory**: 512 MiB minimum, 4+ GiB recommended
 - **Disk**: NVMe recommended for Data Plane I/O
