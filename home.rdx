@@ -23,7 +23,7 @@ layout: landing
 </script>
 </Head>
 
-<Hero title="NodeDB — Hybrid Database for AI">
+<Hero title="NodeDB">
 <HeroAction label="Get Started" href="/docs/introduction/quickstart" variant="primary" />
 <HeroAction label="GitHub" href="https://github.com/NodeDB-Lab/nodedb" variant="secondary" />
 
