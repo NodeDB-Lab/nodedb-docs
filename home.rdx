@@ -1,10 +1,26 @@
 ---
-title: NodeDB - Hybrid Database for AI Workloads
-description: Distributed hybrid database with seven engines — Vector, Graph, Document, Columnar, Key-Value, Full-Text Search, and CRDT — in a single Rust binary.
+title: Hybrid Database for AI Workloads
+description: NodeDB is a distributed hybrid database with seven engines — Vector, Graph, Document, Columnar, Key-Value, Full-Text Search, and CRDT — in a single Rust binary. PostgreSQL-compatible, edge-to-cloud.
 layout: landing
 ---
 
-<Hero title="NodeDB">
+<Head>
+<meta property="og:type" content="website" />
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "NodeDB",
+  "applicationCategory": "DatabaseApplication",
+  "operatingSystem": "Linux, macOS, Windows, iOS, Android, Web",
+  "description": "Distributed hybrid database with seven engines — Vector, Graph, Document, Columnar, Key-Value, Full-Text Search, and CRDT — in a single Rust binary.",
+  "url": "https://nodedb.dev",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+</Head>
+
+<Hero title="NodeDB — Hybrid Database for AI">
 <HeroAction label="Get Started" href="/docs/introduction/quickstart" variant="primary" />
 <HeroAction label="GitHub" href="https://github.com/NodeDB-Lab/nodedb" variant="secondary" />
 

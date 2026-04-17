@@ -1,6 +1,6 @@
 [project]
 name = "NodeDB"
-description = "Distributed hybrid database for multi-modal AI and agentic workloads"
+description = "Distributed hybrid database for multi-modal AI and agentic workloads — Vector, Graph, Document, Columnar, Key-Value, Full-Text Search, and CRDT engines in a single Rust binary."
 logo = "/assets/logo.svg"
 favicon = "/assets/logo.svg"
 base_url = "https://nodedb.dev"
