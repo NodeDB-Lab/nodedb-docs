@@ -13,6 +13,8 @@ BACKUP TENANT acme TO '/backups/acme-2026-04.bak';
 
 Backups cover all 7 engines: documents, indexes, vectors, graph edges, KV tables, timeseries, and CRDT state. Encrypted with AES-256-GCM using the tenant WAL key.
 
+The backup envelope embeds catalog rows and the source tombstone set alongside segment data, so a restored snapshot reconstructs the catalog deterministically and refuses to resurrect collections tombstoned before the backup was taken. Each `StoredCollection` row carries a `size_bytes_estimate` field surfaced through `_system.dropped_collections` for sizing the L2 cleanup queue before `PURGE`.
+
 ## Validate
 
 ```sql

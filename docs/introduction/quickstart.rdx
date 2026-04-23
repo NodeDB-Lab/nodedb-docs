@@ -84,7 +84,7 @@ CREATE COLLECTION social;
 INSERT INTO social (id, name) VALUES ('alice', 'Alice');
 INSERT INTO social (id, name) VALUES ('bob', 'Bob');
 
-GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020 };
+GRAPH INSERT EDGE IN 'social' FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020 };
 
 GRAPH TRAVERSE FROM 'alice' DEPTH 2;
 

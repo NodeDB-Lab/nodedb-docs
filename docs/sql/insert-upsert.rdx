@@ -21,9 +21,28 @@ INSERT INTO users { name: 'Alice', email: 'alice@example.com', age: 30 };
 INSERT INTO archive SELECT * FROM orders WHERE created_at < '2025-01-01';
 ```
 
+Plain `INSERT` is strict: a duplicate primary key raises `unique_violation` (SQLSTATE `23505`). Use `ON CONFLICT` or `UPSERT` for "insert if absent" or "insert or overwrite" semantics.
+
+## INSERT ... ON CONFLICT
+
+```sql
+-- Skip rows that would collide with an existing PK (no error)
+INSERT INTO users (id, name) VALUES ('u1', 'Alice')
+ON CONFLICT DO NOTHING;
+
+-- Overwrite selected fields on conflict. EXCLUDED refers to the incoming row;
+-- bare column names refer to the existing row.
+INSERT INTO users (id, name, login_count) VALUES ('u1', 'Alice', 1)
+ON CONFLICT (id) DO UPDATE SET
+  name        = EXCLUDED.name,
+  login_count = users.login_count + EXCLUDED.login_count;
+```
+
+`ON CONFLICT DO UPDATE` fires `AFTER UPDATE` triggers (not `AFTER INSERT`) when a row is overwritten — the trigger op tag is derived from storage prior-bytes, not the surface SQL verb.
+
 ## UPSERT
 
-Insert or merge if the document ID already exists:
+Insert or overwrite if the primary key already exists:
 
 ```sql
 UPSERT INTO users (id, name, role) VALUES ('u1', 'Alice', 'admin');
@@ -31,6 +50,8 @@ UPSERT INTO users (id, name, role) VALUES ('u1', 'Alice', 'admin');
 -- Object literal syntax
 UPSERT INTO users { id: 'u1', name: 'Alice', role: 'admin' };
 ```
+
+`UPSERT` is equivalent to `INSERT ... ON CONFLICT (<pk>) DO UPDATE SET <all-columns> = EXCLUDED.<col>`. It fires `AFTER UPDATE` on overwrite and `AFTER INSERT` on first write.
 
 ## Bulk Import
 

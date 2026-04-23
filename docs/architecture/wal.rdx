@@ -28,6 +28,8 @@ The WAL ensures durability. Every write is persisted to the WAL before being ack
 
 **Segmented** — The WAL rolls over to a new segment file automatically. Old segments are eligible for cleanup once all records have been flushed to L1 segments.
 
+**Tombstone GC** — Each checkpoint garbage-collects WAL rows for collections that have been hard-deleted (tombstoned), so tombstone records do not accumulate across restarts. On replay, the startup path merges persisted WAL tombstones with tombstones extracted from the WAL itself — a crash mid-purge cannot resurrect a dropped collection.
+
 **Encryption** — Optional AES-256-GCM encryption at the page level. Key management is external.
 
 ## Crash Recovery

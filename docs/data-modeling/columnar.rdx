@@ -60,15 +60,26 @@ CREATE COLLECTION locations TYPE COLUMNAR (
 ## Queries
 
 ```sql
+-- Point-get by primary key hits the segment PK index (not a full scan).
+SELECT * FROM logs WHERE ts = '2026-04-24T10:00:00Z';
+
 SELECT level, COUNT(*) FROM logs
 WHERE ts > now() - INTERVAL '1 hour'
 GROUP BY level ORDER BY COUNT(*) DESC;
+
+-- ORDER BY is supported on columnar scans
+SELECT ts, host, message FROM logs
+WHERE level = 'error'
+ORDER BY ts DESC
+LIMIT 100;
 
 -- Window functions
 SELECT host, message,
        ROW_NUMBER() OVER (PARTITION BY host ORDER BY ts DESC) AS rank
 FROM logs;
 ```
+
+Plain `INSERT` on a columnar collection raises `unique_violation` on primary-key conflict; use `UPSERT` or `INSERT ... ON CONFLICT (pk) DO UPDATE SET col = EXCLUDED.col` for overwrite semantics.
 
 ## HTAP Bridge
 

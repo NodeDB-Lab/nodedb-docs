@@ -18,6 +18,9 @@ WITH (URL = 'https://hooks.example.com/orders');
 CREATE CHANGE STREAM user_state ON users WITH (COMPACTION = 'key', KEY = 'id');
 
 DROP CHANGE STREAM order_events;
+-- Drop atomically tears down the stream's consumer groups and persisted offset
+-- rows. Recreating a stream with the same name starts from the head; it does
+-- not resume at stale offsets.
 SHOW CHANGE STREAMS;
 ```
 

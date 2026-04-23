@@ -8,9 +8,11 @@ description: GRAPH commands, MATCH pattern matching, and algorithm execution in 
 ## Edge Operations
 
 ```sql
-GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020 };
-GRAPH DELETE EDGE FROM 'alice' TO 'bob' TYPE 'knows';
+GRAPH INSERT EDGE IN 'edges' FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020 };
+GRAPH DELETE EDGE IN 'edges' FROM 'alice' TO 'bob' TYPE 'knows';
 ```
+
+The `IN '<collection>'` clause is **required** — edges are overlays on a named document collection. Statements without `IN` fail to parse.
 
 ## Traversal
 
@@ -59,6 +61,6 @@ Available: `pagerank`, `wcc`, `label_propagation`, `lcc`, `sssp`, `betweenness`,
 
 ```sql
 GRAPH RAG FUSION ON entities
-  QUERY $embedding VECTOR_TOP_K 50 EXPANSION_DEPTH 2
+  QUERY $embedding VECTOR_FIELD 'embedding' VECTOR_TOP_K 50 EXPANSION_DEPTH 2
   EDGE_LABEL 'related_to' FINAL_TOP_K 10 RRF_K (60.0, 35.0);
 ```

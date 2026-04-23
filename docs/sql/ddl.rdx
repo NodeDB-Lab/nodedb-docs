@@ -28,10 +28,26 @@ CREATE COLLECTION locations TYPE COLUMNAR (geom GEOMETRY SPATIAL_INDEX, name VAR
 -- Convenience alias
 CREATE TIMESERIES metrics;
 
-DROP COLLECTION users;
+DROP COLLECTION users;          -- soft-delete: tombstoned, still restorable
+UNDROP COLLECTION users;        -- restore while within the retention window
+DROP COLLECTION users PURGE;    -- admin-only: immediate hard-delete, not restorable
 SHOW COLLECTIONS;
 DESCRIBE users;
 ```
+
+`DROP COLLECTION` is two-phase. A plain drop marks the collection as tombstoned and enqueues background L2 cleanup after a configurable retention window; within that window, `UNDROP COLLECTION` restores the collection and its data. Admins can bypass the window with `DROP ... PURGE`.
+
+```sql
+-- Retention window knobs
+ALTER SYSTEM SET collection_gc_retention = '7d';
+ALTER TENANT acme SET collection_gc_retention = '24h';
+
+-- Inspect the lifecycle
+SELECT name, dropped_at, size_bytes_estimate FROM _system.dropped_collections;
+SELECT * FROM _system.l2_cleanup_queue;
+```
+
+Dropping a collection also cascades downstream catalog state: dependent materialized views are unregistered, change-stream consumer groups are torn down, and the L2 cleanup worker reclaims segment files.
 
 ## Schema Evolution
 
@@ -75,6 +91,8 @@ BEGIN IF NEW.balance < 0 THEN RAISE EXCEPTION 'Negative balance'; END IF; END; $
 DROP TRIGGER notify ON orders;
 SHOW TRIGGERS;
 ```
+
+The op tag (INSERT vs UPDATE) is derived from storage prior-bytes, not the surface SQL verb. An `UPSERT` or `INSERT ... ON CONFLICT (pk) DO UPDATE` that overwrites an existing row fires `AFTER UPDATE`; the same statement against a non-existent key fires `AFTER INSERT`. `ON CONFLICT DO NOTHING` emits no event on conflict.
 
 ## Functions & Procedures
 

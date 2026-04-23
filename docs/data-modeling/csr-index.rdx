@@ -10,21 +10,26 @@ CSR (Compressed Sparse Row) is the graph engine's core index format. It stores a
 ## Layout
 
 ```
-out_offsets: Vec<u32>        [num_nodes + 1]  — offset into target array per node
-out_targets: DenseArray<u32> [num_edges]      — destination node IDs (contiguous, mmap-capable)
-out_labels:  DenseArray<u16> [num_edges]      — edge labels (parallel array)
-out_weights: Option<DenseArray<f64>>           — optional, allocated only when weighted
+CsrIndex (per tenant):
+  out_offsets:  Vec<u32>                 [num_nodes + 1]  — offset into target array per node
+  out_targets:  DenseArray<u32>          [num_edges]      — destination node IDs (contiguous, mmap-capable)
+  out_labels:   DenseArray<u32>          [num_edges]      — edge labels (parallel array)
+  out_weights:  Option<DenseArray<f64>>                   — optional, allocated only when weighted
 
-in_offsets / in_targets / in_labels / in_weights — symmetric for inbound
+  in_offsets / in_targets / in_labels / in_weights — symmetric for inbound
 ```
+
+## Tenant Partitioning
+
+The in-memory index is `ShardedCsrIndex` — one `CsrIndex` per tenant. Algorithms and traversals receive a single tenant's partition; there is no lexical tenant prefix on node names. Each `CsrIndex` is assigned a unique partition tag at construction, and public APIs that return dense node indices hand out `LocalNodeId { id, partition_tag }`. Using a node id from one partition with another partition's API panics at the boundary.
 
 ## Memory Efficiency
 
-At 1 billion edges, CSR uses ~10 GB vs ~60 GB for naive adjacency lists (6x improvement). Node IDs are interned as `u32`, labels as `u16`.
+At 1 billion edges, CSR uses ~10 GB vs ~60 GB for naive adjacency lists (6x improvement). Node IDs are interned as `u32`, labels as `u32`.
 
 ## Storage
 
-Edges are persisted in a redb B-Tree with forward and reverse indexes. The CSR index is built at query time for bulk operations. Writes go to a mutable buffer and become visible immediately. Compaction merges the buffer into dense CSR arrays when the buffer exceeds 10% of the dense size.
+Edges are persisted in a redb B-Tree with forward and reverse indexes, both keyed by `(tenant_id: u32, "src\x00label\x00dst")` tuples. Tenant isolation is structural (first-class key component), not lexical. The CSR index is built at query time for bulk operations. Writes go to a mutable buffer and become visible immediately. Compaction merges the buffer into dense CSR arrays when the buffer exceeds 10% of the dense size.
 
 ## Graph Operations
 

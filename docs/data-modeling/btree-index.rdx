@@ -29,4 +29,4 @@ CREATE UNIQUE INDEX ON users FIELDS email;
 
 ## Graph Edge Storage
 
-Graph edges are persisted in redb B-Trees with forward and reverse indexes. The key format (`src_id\x00label\x00dst_id`) enables efficient prefix scans for outbound traversal.
+Graph edges are persisted in redb B-Trees with forward and reverse indexes, keyed by `(tenant_id: u32, "src\x00label\x00dst")` tuples. Tenant isolation is a first-class key component, not a lexical prefix; the composite portion enables prefix scans for outbound traversal within a tenant.

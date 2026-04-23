@@ -24,7 +24,8 @@ CREATE COLLECTION people;
 INSERT INTO people (id, name) VALUES ('alice', 'Alice');
 INSERT INTO people (id, name) VALUES ('bob', 'Bob');
 
-GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020, weight: 0.9 };
+GRAPH INSERT EDGE IN 'people' FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020, weight: 0.9 };
+-- The IN '<collection>' clause is required — edges live on a named collection.
 ```
 
 ## Traversal
@@ -103,6 +104,7 @@ Combines vector similarity with graph traversal in one query:
 ```sql
 GRAPH RAG FUSION ON entities
   QUERY $embedding
+  VECTOR_FIELD 'embedding'
   VECTOR_TOP_K 50
   EXPANSION_DEPTH 2
   EDGE_LABEL 'related_to'

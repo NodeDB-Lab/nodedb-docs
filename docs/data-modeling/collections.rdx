@@ -67,7 +67,7 @@ CREATE SEARCH INDEX ON products FIELDS title, description ANALYZER 'english';
 CREATE SPATIAL INDEX ON products FIELDS location;
 
 -- Add graph edges for relationships
-GRAPH INSERT EDGE FROM 'products:p1' TO 'products:p2' TYPE 'similar';
+GRAPH INSERT EDGE IN 'products' FROM 'products:p1' TO 'products:p2' TYPE 'similar';
 ```
 
 ## Converting Between Engines

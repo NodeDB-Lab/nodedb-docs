@@ -29,7 +29,7 @@ NodeDB uses `NodeDbError` — a struct with numeric `ErrorCode`, human-readable 
 | ---------------------- | ---- | --------------------------- |
 | `COLLECTION_NOT_FOUND` | 1100 | Check collection name       |
 | `TYPE_MISMATCH`        | 1020 | Check data types in query   |
-| `CONSTRAINT_VIOLATION` | 1000 | Duplicate key — use UPSERT  |
+| `CONSTRAINT_VIOLATION` | 1000 | Duplicate key on plain INSERT maps to SQLSTATE `23505` (`unique_violation`). Use `UPSERT` or `INSERT ... ON CONFLICT DO NOTHING / DO UPDATE` for non-error semantics. |
 | `DEADLINE_EXCEEDED`    | 1002 | Query took too long         |
 | `INSUFFICIENT_BALANCE` | 1022 | Not enough for TRANSFER     |
 | `OVERFLOW`             | 1021 | i64 overflow on INCR        |
