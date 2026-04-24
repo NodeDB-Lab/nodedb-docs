@@ -47,4 +47,4 @@ Deltas that persistently fail constraint validation are routed to a dead-letter 
 ## Related
 
 - [CRDT Sync](/docs/crdt-sync/overview) — Full sync protocol and offline patterns
-- [Document Engine](/docs/data-modeling/document) — Schemaless documents with CRDT sync
+- [Document Engine](/docs/storage-engines/document) — Schemaless documents with CRDT sync

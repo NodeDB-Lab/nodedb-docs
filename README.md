@@ -10,7 +10,10 @@ Built with [Oxidoc](https://oxidoc.dev). Published at [nodedb.dev](https://noded
 docs/
 ├── introduction/       Getting started, installation, Docker
 ├── architecture/       Three-plane model, storage, cluster topology
-├── data-modeling/      Engines (Vector, Graph, Document, Columnar, KV, FTS, CRDT), indexes
+├── data-modeling/      Collections and schemas/types
+├── storage-engines/    Vector, Graph, Document, Columnar, KV, FTS, CRDT
+├── columnar-profiles/  Timeseries, Spatial
+├── indexes/            HNSW, CSR, R-tree, B-tree, inverted, hash
 ├── sql/                SQL reference, engine-specific queries, EXPLAIN
 ├── real-time/          LIVE SELECT, change streams, webhooks, cron
 ├── connectivity/       pgwire, HTTP, native protocol, RESP, ILP, client libraries
