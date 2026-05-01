@@ -5,6 +5,22 @@ description: System limits, default values, and capacity constraints.
 
 # Limits & Defaults
 
+## Per-Op Server Limits
+
+Server-enforced caps announced to every native client in the `HelloAckFrame.limits` struct. Defaults are uncapped (`None`); operators set caps via configuration. Exceeding a cap returns a typed `LimitExceeded { limit_name, value, max }` error rather than truncating silently.
+
+| Limit                  | Applies to                                        |
+| ---------------------- | ------------------------------------------------- |
+| `max_vector_dim`       | Vector embedding dimensionality                   |
+| `max_top_k`            | `top_k` for vector / FTS / hybrid retrieval       |
+| `max_scan_limit`       | Result set size on scans                          |
+| `max_batch_size`       | Rows per batch INSERT/UPSERT                      |
+| `max_crdt_delta_bytes` | Single CRDT delta payload                         |
+| `max_query_text_bytes` | SQL text length                                   |
+| `max_graph_depth`      | `MAX_DEPTH` for graph traversal                   |
+
+SDKs surface these via `client.limits()`. See [Native Protocol — Handshake](../connectivity/native-protocol#handshake).
+
 ## Connection Limits
 
 | Setting          | Default | Max        |

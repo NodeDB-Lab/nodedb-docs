@@ -12,23 +12,25 @@ REST API on port 6480 for web clients and services.
 ### Execute SQL
 
 ```bash
-curl -X POST http://localhost:6480/query \
+curl -X POST http://localhost:6480/v1/query \
   -H "Authorization: Bearer ndb_..." \
   -H "Content-Type: application/json" \
+  -H "Accept: application/vnd.nodedb.v1+json" \
   -d '{"sql": "SELECT * FROM users LIMIT 10"}'
 ```
 
 ### Stream Results (NDJSON)
 
 ```bash
-curl -X POST http://localhost:6480/query/stream \
+curl -X POST http://localhost:6480/v1/query/stream \
   -d '{"sql": "SELECT * FROM large_table"}'
 ```
 
 ### Health & Readiness
 
 ```bash
-curl http://localhost:6480/health        # basic health
+curl http://localhost:6480/healthz        # k8s readiness — 503 until startup completes
+curl http://localhost:6480/health/live    # liveness probe
 curl http://localhost:6480/health/ready   # WAL recovered, ready for queries
 ```
 
@@ -43,7 +45,7 @@ curl http://localhost:6480/metrics
 ### PromQL
 
 ```
-http://localhost:6480/obsv/api
+http://localhost:6480/v1/obsv/api
 ```
 
 Full Prometheus query engine. Point Grafana at this URL as a Prometheus data source.
@@ -57,4 +59,8 @@ GET /v1/streams/{stream}/poll?group={group}      # Long-poll
 
 ### WebSocket
 
-`/ws` endpoint for JSON-RPC: SQL execution, LIVE SELECT delivery, session reconnect.
+`/v1/ws` endpoint for JSON-RPC: SQL execution, LIVE SELECT delivery, session reconnect.
+
+## Versioning
+
+All non-probe routes are under the `/v1/` prefix. JSON responses carry `Content-Type: application/vnd.nodedb.v1+json; charset=utf-8`. Clients may opt into version negotiation by sending `Accept: application/vnd.nodedb.v1+json`; sending only an unsupported `application/vnd.nodedb.vN+json` returns `406 Not Acceptable`. Probe routes (`/healthz`, `/health/*`, `/metrics`) are unversioned and always reachable, including during startup.

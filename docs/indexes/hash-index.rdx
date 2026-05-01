@@ -14,7 +14,7 @@ Keys are hashed to locate the value directly — no tree traversal. This provide
 ## Creating a KV Collection
 
 ```sql
-CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);
+CREATE COLLECTION sessions (key TEXT PRIMARY KEY) WITH (engine='kv');
 ```
 
 The `PRIMARY KEY` column is automatically hash-indexed.

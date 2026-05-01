@@ -39,22 +39,22 @@ Data is stored in 1024-row blocks. Each block has min/max/null-count statistics.
 
 ```sql
 -- Plain columnar
-CREATE COLLECTION logs TYPE COLUMNAR (
+CREATE COLLECTION logs (
     ts TIMESTAMP TIME_KEY,
     host VARCHAR,
     level VARCHAR,
     message VARCHAR
-);
+) WITH (engine='columnar');
 
--- Timeseries profile
-CREATE COLLECTION metrics TYPE COLUMNAR (
+-- Timeseries (peer engine — append-only, retention, continuous aggregates)
+CREATE COLLECTION metrics (
     ts TIMESTAMP TIME_KEY, host VARCHAR, cpu FLOAT
-) WITH profile = 'timeseries', partition_by = '1h';
+) WITH (engine='timeseries', partition_by='1h');
 
--- Spatial profile
-CREATE COLLECTION locations TYPE COLUMNAR (
+-- Spatial (peer engine — R-tree + geohash + OGC predicates)
+CREATE COLLECTION locations (
     geom GEOMETRY SPATIAL_INDEX, name VARCHAR
-);
+) WITH (engine='spatial');
 ```
 
 ## Queries
@@ -86,7 +86,7 @@ Plain `INSERT` on a columnar collection raises `unique_violation` on primary-key
 Combine strict (OLTP) with columnar (OLAP):
 
 ```sql
-CREATE COLLECTION orders TYPE DOCUMENT STRICT (...);
+CREATE COLLECTION orders (...) WITH (engine='document_strict');
 
 CREATE MATERIALIZED VIEW order_analytics AS
 SELECT status, DATE_TRUNC('day', created_at) AS day, COUNT(*), SUM(total)

@@ -19,7 +19,7 @@ docker run -d --name nodedb \
   farhansyah/nodedb
 ```
 
-That's it. Connect with `psql -h localhost -p 6432` or `curl http://localhost:6480/health`.
+That's it. Connect with `psql -h localhost -p 6432` or `curl http://localhost:6480/healthz`.
 
 ## Ports
 

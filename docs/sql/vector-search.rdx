@@ -32,6 +32,45 @@ FROM articles
 ORDER BY dist LIMIT 10;
 ```
 
+### Operator Forms
+
+| Operator | Function                       | Metric                  |
+| -------- | ------------------------------ | ----------------------- |
+| `<->`    | `vector_distance`              | L2                      |
+| `<=>`    | `vector_cosine_distance`       | Cosine                  |
+| `<#>`    | `vector_neg_inner_product`     | Negative inner product  |
+
+```sql
+SELECT id FROM articles ORDER BY embedding <=> $query_vec LIMIT 10;
+```
+
+### ANN Tuning (Named Arguments)
+
+`vector_distance` and its cosine / inner-product peers accept named tuning arguments via `=>`. JSON-string options are not accepted — every option is a typed, closed-set named argument:
+
+```sql
+SELECT id, vector_distance(
+    embedding, $query_vec,
+    quantization => 'rabitq',
+    oversample   => 4,
+    ef_search    => 128,
+    target_recall => 0.95
+) AS dist
+FROM articles
+ORDER BY dist LIMIT 10;
+```
+
+| Argument            | Type    | Notes                                              |
+| ------------------- | ------- | -------------------------------------------------- |
+| `quantization`      | string  | `none`, `sq8`, `pq`, `ivf_pq`, `rabitq`            |
+| `oversample`        | u32     | Candidates fetched before re-ranking                |
+| `query_dim`         | u32     | Override query dimensionality                       |
+| `meta_token_budget` | u32     | Metadata pre-filter budget                          |
+| `ef_search`         | u32     | HNSW search-time `ef`                               |
+| `target_recall`     | f32     | Adaptive recall target                              |
+
+Unknown names, duplicate keys, positional 3rd args, or wrong operators (`=` instead of `=>`) all return typed errors that list the canonical names.
+
 ## Hybrid Vector + Text (RRF)
 
 ```sql

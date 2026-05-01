@@ -28,14 +28,28 @@ NodeDB extends the PostgreSQL wire protocol with:
 
 REST endpoints on port 6480:
 
-| Method | Path                          | Description            |
-| ------ | ----------------------------- | ---------------------- |
-| POST   | `/query`                      | Execute SQL            |
-| POST   | `/query/stream`               | Stream NDJSON results  |
-| GET    | `/health`                     | Health check           |
-| GET    | `/health/ready`               | Readiness check        |
-| GET    | `/metrics`                    | Prometheus metrics     |
-| GET    | `/obsv/api`                   | PromQL endpoint        |
-| GET    | `/v1/streams/{id}/events`     | SSE CDC stream         |
-| GET    | `/v1/streams/{id}/poll`       | Long-poll CDC          |
-| WS     | `/ws`                         | WebSocket JSON-RPC     |
+All data routes are under `/v1/`. Probe routes (`/healthz`, `/health/*`, `/metrics`) are unversioned and always reachable.
+
+| Method | Path                          | Description                              |
+| ------ | ----------------------------- | ---------------------------------------- |
+| POST   | `/v1/query`                   | Execute SQL                              |
+| POST   | `/v1/query/stream`            | Stream NDJSON results                    |
+| GET    | `/v1/status`                  | Node status                              |
+| GET    | `/v1/cluster/status`          | Cluster status                           |
+| POST   | `/v1/auth/exchange-key`       | Exchange API key for session token       |
+| POST   | `/v1/auth/session`            | Create session                           |
+| DELETE | `/v1/auth/session`            | Delete session                           |
+| POST   | `/v1/collections/{name}/crdt/apply` | Apply CRDT delta                   |
+| GET    | `/v1/streams/{id}/events`     | SSE named-stream events                  |
+| GET    | `/v1/streams/{id}/poll`       | Long-poll named-stream                   |
+| GET    | `/v1/cdc/{collection}`        | SSE CDC stream                           |
+| GET    | `/v1/cdc/{collection}/poll`   | Long-poll CDC                            |
+| GET    | `/v1/obsv/api/v1/...`         | PromQL endpoints (Prom-spec suffix)      |
+| WS     | `/v1/ws`                      | WebSocket JSON-RPC                       |
+| GET    | `/healthz`                    | k8s readiness (503 until startup ready)  |
+| GET    | `/health/live`                | Liveness probe                           |
+| GET    | `/health/ready`               | Readiness probe                          |
+| POST   | `/health/drain`               | Cooperative drain                        |
+| GET    | `/metrics`                    | Prometheus metrics                       |
+
+JSON responses carry `Content-Type: application/vnd.nodedb.v1+json; charset=utf-8`. Clients sending only `Accept: application/vnd.nodedb.vN+json` for an unsupported `N` get `406 Not Acceptable`.

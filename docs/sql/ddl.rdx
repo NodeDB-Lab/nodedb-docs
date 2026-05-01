@@ -12,20 +12,26 @@ description: CREATE, ALTER, and DROP statements for collections, indexes, trigge
 CREATE COLLECTION users;
 
 -- Strict document
-CREATE COLLECTION orders TYPE DOCUMENT STRICT (
+CREATE COLLECTION orders (
     id TEXT PRIMARY KEY, customer_id TEXT, total FLOAT, status TEXT, created_at TIMESTAMP
-);
+) WITH (engine='document_strict');
 
 -- Key-Value
-CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);
+CREATE COLLECTION sessions (key TEXT PRIMARY KEY) WITH (engine='kv');
 
--- Columnar (plain, timeseries, spatial)
-CREATE COLLECTION logs TYPE COLUMNAR (ts TIMESTAMP TIME_KEY, host VARCHAR, level VARCHAR, message VARCHAR);
-CREATE COLLECTION metrics TYPE COLUMNAR (ts TIMESTAMP TIME_KEY, host VARCHAR, cpu FLOAT)
-    WITH profile = 'timeseries', partition_by = '1h', retention = '90d';
-CREATE COLLECTION locations TYPE COLUMNAR (geom GEOMETRY SPATIAL_INDEX, name VARCHAR);
+-- Columnar (plain analytics)
+CREATE COLLECTION logs (ts TIMESTAMP TIME_KEY, host VARCHAR, level VARCHAR, message VARCHAR)
+    WITH (engine='columnar');
 
--- Convenience alias
+-- Timeseries (peer engine, append-only with retention + continuous aggregates)
+CREATE COLLECTION metrics (ts TIMESTAMP TIME_KEY, host VARCHAR, cpu FLOAT)
+    WITH (engine='timeseries', partition_by='1h', retention='90d');
+
+-- Spatial (peer engine, R-tree + geohash + OGC predicates)
+CREATE COLLECTION locations (geom GEOMETRY SPATIAL_INDEX, name VARCHAR)
+    WITH (engine='spatial');
+
+-- Convenience alias for timeseries
 CREATE TIMESERIES metrics;
 
 DROP COLLECTION users;          -- soft-delete: tombstoned, still restorable
@@ -49,6 +55,25 @@ SELECT * FROM _system.l2_cleanup_queue;
 
 Dropping a collection also cascades downstream catalog state: dependent materialized views are unregistered, change-stream consumer groups are torn down, and the L2 cleanup worker reclaims segment files.
 
+## Constraint Policy
+
+NodeDB accepts a deliberately small subset of SQL constraints in `CREATE COLLECTION` / `CREATE TABLE`. Anything outside that subset is rejected with SQLSTATE `0A000` (`feature_not_supported`) — the parser tells you the canonical replacement instead of silently stripping the constraint.
+
+**Accepted:** inline `<col> <TYPE> PRIMARY KEY` on a single column. The named column becomes the row identity; without one, NodeDB auto-injects `_rowid INT64 PRIMARY KEY`.
+
+**Rejected at DDL time:**
+
+| Form                                       | Replacement                                                |
+| ------------------------------------------ | ---------------------------------------------------------- |
+| Table-level `PRIMARY KEY (col)`            | Inline form: `<col> <TYPE> PRIMARY KEY`                    |
+| Named `CONSTRAINT pk_x PRIMARY KEY (col)`  | Inline form                                                |
+| Inline or table-level `UNIQUE`             | `CREATE UNIQUE INDEX ON tbl(col)`                          |
+| Inline or table-level `CHECK (...)`        | Application-side validation (typeguards on schemaless docs) |
+| `FOREIGN KEY (...) REFERENCES ...`         | Application-side enforcement                               |
+| Column-level `REFERENCES other(col)`       | Application-side enforcement                               |
+
+These are launch-frozen choices. UNIQUE/CHECK/FK/REFERENCES would each pull in a fixed semantic that's expensive to walk back, and the canonical replacements (unique indexes, app-side validation) cover the same use cases without locking the engine into a particular cross-row enforcement strategy.
+
 ## Schema Evolution
 
 ```sql
@@ -60,9 +85,9 @@ ALTER COLLECTION orders DROP COLUMN region;
 ## Storage Conversion
 
 ```sql
-CONVERT COLLECTION cache TO STORAGE='kv';
-CONVERT COLLECTION users TO STORAGE='strict';
-CONVERT COLLECTION logs TO STORAGE='columnar' WITH (profile = 'timeseries');
+CONVERT COLLECTION cache TO kv;
+CONVERT COLLECTION users TO document_strict;
+CONVERT COLLECTION logs TO document_schemaless;
 ```
 
 ## Indexes

@@ -10,13 +10,13 @@ Spatial is a columnar profile. Collections with a `SPATIAL_INDEX` column modifie
 ## DDL
 
 ```sql
--- Columnar with spatial index
-CREATE COLLECTION restaurants TYPE COLUMNAR (
+-- Spatial peer engine (R-tree + geohash + OGC predicates)
+CREATE COLLECTION restaurants (
     location GEOMETRY SPATIAL_INDEX,
     name VARCHAR,
     cuisine VARCHAR,
     rating FLOAT
-);
+) WITH (engine='spatial');
 
 -- Or add a spatial index to any collection
 CREATE COLLECTION restaurants;
@@ -66,10 +66,10 @@ WKB, WKT, and GeoJSON interchange. GeoParquet v1.1.0 and GeoArrow metadata for b
 
 ```sql
 -- Fleet tracking: spatial + time
-CREATE COLLECTION fleet TYPE COLUMNAR (
+CREATE COLLECTION fleet (
     ts TIMESTAMP TIME_KEY,
     vehicle_id VARCHAR,
     position GEOMETRY SPATIAL_INDEX,
     speed FLOAT
-) WITH profile = 'timeseries', partition_by = '1d';
+) WITH (engine='timeseries', partition_by='1d');
 ```

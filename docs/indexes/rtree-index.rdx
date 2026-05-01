@@ -10,11 +10,11 @@ The R*-tree is the spatial engine's primary index. It supports range queries, ne
 ## Creating a Spatial Index
 
 ```sql
--- Automatic via SPATIAL_INDEX column modifier
-CREATE COLLECTION locations TYPE COLUMNAR (
+-- Automatic via SPATIAL_INDEX column modifier (spatial peer engine)
+CREATE COLLECTION locations (
     geom GEOMETRY SPATIAL_INDEX,
     name VARCHAR
-);
+) WITH (engine='spatial');
 
 -- Or add to any collection
 CREATE SPATIAL INDEX ON restaurants FIELDS location;

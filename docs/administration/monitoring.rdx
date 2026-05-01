@@ -38,7 +38,8 @@ Feature-gated: `--features otel`, `--features promql`, `--features monitoring`.
 ## Health Checks
 
 ```bash
-curl http://localhost:6480/health        # basic health
+curl http://localhost:6480/healthz        # k8s readiness — 503 until startup completes
+curl http://localhost:6480/health/live    # liveness probe
 curl http://localhost:6480/health/ready   # WAL recovered, ready for queries
 ```
 

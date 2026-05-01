@@ -14,41 +14,46 @@ A collection is NodeDB's top-level data container — analogous to a table in Po
 CREATE COLLECTION users;
 
 -- Strict document (schema-enforced)
-CREATE COLLECTION orders TYPE DOCUMENT STRICT (
+CREATE COLLECTION orders (
     id UUID DEFAULT gen_uuid_v7(),
     customer_id UUID NOT NULL,
     total DECIMAL NOT NULL,
     status STRING DEFAULT 'pending'
-);
+) WITH (engine='document_strict');
 
 -- Columnar (analytics)
-CREATE COLLECTION events TYPE COLUMNAR (
+CREATE COLLECTION events (
     ts TIMESTAMP TIME_KEY,
     user_id UUID,
     event VARCHAR,
     duration_ms INT
-);
+) WITH (engine='columnar');
 
 -- Key-Value
-CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);
+CREATE COLLECTION sessions (key TEXT PRIMARY KEY) WITH (engine='kv');
 ```
 
 ## Storage Engines
 
-| Type              | DDL                     | Best for                                        |
-| ----------------- | ----------------------- | ----------------------------------------------- |
-| Document          | `CREATE COLLECTION x`   | Flexible data, prototyping, agent state          |
-| Document (strict) | `TYPE DOCUMENT STRICT`  | OLTP, transactions, known schemas                |
-| Columnar          | `TYPE COLUMNAR`         | Analytics, reporting, scan-heavy workloads        |
-| Key-Value         | `TYPE KEY_VALUE`        | Sessions, caches, counters, key-dominant access   |
+NodeDB has seven peer engines. Pick one per collection via `WITH (engine='<name>')`. The default (no `engine=`) is `document_schemaless`.
 
-Columnar collections can specialize via profiles:
+| Engine                | Selector                            | Best for                                          |
+| --------------------- | ----------------------------------- | ------------------------------------------------- |
+| `document_schemaless` | (default)                           | Flexible data, prototyping, agent state           |
+| `document_strict`     | `WITH (engine='document_strict')`   | OLTP, transactions, known schemas                 |
+| `columnar`            | `WITH (engine='columnar')`          | Analytics, reporting, scan-heavy workloads        |
+| `timeseries`          | `WITH (engine='timeseries')`        | Append-only metrics, retention, continuous aggs    |
+| `spatial`             | `WITH (engine='spatial')`           | Geo-primary workloads, R*-tree, OGC predicates    |
+| `kv`                  | `WITH (engine='kv')`                | Sessions, caches, counters, key-dominant access   |
+| `vector`              | `WITH (engine='vector', vector_field='emb')` | Vector-primary collections                |
 
-| Profile    | Column Modifier  | Extra capabilities                                |
-| ---------- | ---------------- | ------------------------------------------------- |
-| Plain      | (none)           | Full UPDATE/DELETE, general analytics              |
-| Timeseries | `TIME_KEY`       | Retention, continuous aggregation, ILP ingest      |
-| Spatial    | `SPATIAL_INDEX`  | R*-tree indexing, OGC predicates                  |
+Column modifiers add capabilities to any engine:
+
+| Modifier         | Effect                                                            |
+| ---------------- | ----------------------------------------------------------------- |
+| `TIME_KEY`       | Marks the time column (used by timeseries engine, allowed elsewhere) |
+| `SPATIAL_INDEX`  | R*-tree index on a `GEOMETRY` column                              |
+| `PRIMARY KEY`    | Row identity column (inline only — table-level not supported)     |
 
 ## Cross-Engine Indexes
 
@@ -75,10 +80,9 @@ GRAPH INSERT EDGE IN 'products' FROM 'products:p1' TO 'products:p2' TYPE 'simila
 Collections can be converted at any time without data loss:
 
 ```sql
-CONVERT COLLECTION users TO strict;
-CONVERT COLLECTION logs TO columnar;
+CONVERT COLLECTION users TO document_strict;
 CONVERT COLLECTION cache TO kv;
-CONVERT COLLECTION events TO document;
+CONVERT COLLECTION events TO document_schemaless;
 ```
 
 NodeDB infers the schema from existing documents when converting to strict mode.

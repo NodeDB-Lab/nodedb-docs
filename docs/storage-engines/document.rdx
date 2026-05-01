@@ -31,13 +31,13 @@ SELECT * FROM users WHERE age > 25;
 Schema-enforced documents stored as Binary Tuples with O(1) field extraction. The engine jumps directly to the byte offset of any column — 3-4x better cache density than MessagePack or BSON.
 
 ```sql
-CREATE COLLECTION orders TYPE DOCUMENT STRICT (
+CREATE COLLECTION orders (
     id UUID DEFAULT gen_uuid_v7(),
     customer_id UUID NOT NULL,
     total DECIMAL NOT NULL,
     status STRING DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT now()
-);
+) WITH (engine='document_strict');
 
 INSERT INTO orders (customer_id, total, status) VALUES ($cust_id, 149.99, 'shipped');
 SELECT * FROM orders WHERE id = '...';
@@ -75,7 +75,7 @@ See [Schemas & Types](/docs/data-modeling/schemas-types) for full typeguard refe
 ## Converting
 
 ```sql
-CONVERT COLLECTION users TO strict;      -- schemaless → strict
+CONVERT COLLECTION users TO document_strict;      -- schemaless → strict
 CONVERT COLLECTION logs TO columnar;     -- document → columnar
 CONVERT COLLECTION cache TO kv;          -- document → key-value
 ```

@@ -42,6 +42,54 @@ Beyond standard SQL, NodeDB extends the language for each engine:
 - **KV** — `KV_INCR()`, `KV_CAS()`, sorted indexes, rate gates
 - **CRDT** — `crdt_state()`, `crdt_apply()`
 
+## PostgreSQL Compatibility
+
+These standard Postgres surface elements work natively over pgwire — no rewriting, no extension.
+
+### Identifiers vs. Literals
+
+`"quoted"` is a case-preserved identifier; `'quoted'` is a string literal. `SELECT "userId"` projects the column named `userId` exactly; `SELECT 'userId'` returns the constant string.
+
+### Pattern Matching
+
+```sql
+SELECT * FROM users WHERE name LIKE 'Ali%';            -- case-sensitive
+SELECT * FROM users WHERE email ILIKE '%@EXAMPLE.COM'; -- case-insensitive
+```
+
+### JSON Operators
+
+```sql
+doc -> 'addr'              -- field as JSON
+doc ->> 'name'             -- field as text
+doc #> '{addr,city}'       -- nested path as JSON
+doc #>> '{addr,city}'      -- nested path as text
+doc @> '{"role":"admin"}'  -- left contains right
+doc <@ '{"role":"admin"}'  -- left contained in right
+doc ? 'email'              -- top-level key exists
+```
+
+### Full-Text Search (Postgres syntax)
+
+```sql
+SELECT * FROM articles
+WHERE to_tsvector('english', body) @@ to_tsquery('english', 'transformer & attention');
+```
+
+NodeDB also exposes `text_match()`, `bm25_score()`, and `search_score()` for finer control — see [Full-Text Search](fulltext-search).
+
+### Vector Distance Operators
+
+| Operator | Function                       | Metric                |
+| -------- | ------------------------------ | --------------------- |
+| `<->`    | `vector_distance`              | L2 (default)          |
+| `<=>`    | `vector_cosine_distance`       | Cosine                |
+| `<#>`    | `vector_neg_inner_product`     | Negative inner product |
+
+```sql
+SELECT id FROM articles ORDER BY embedding <=> $query LIMIT 10;
+```
+
 ## Isolation Level
 
 Snapshot Isolation (SI). Reads see a consistent snapshot from `BEGIN` time. Write conflicts detected at `COMMIT`.

@@ -39,7 +39,7 @@ If code needs to cross a plane boundary, it goes through the SPSC bridge (Contro
 **SQL path** — All user-facing interfaces accept SQL. The Control Plane parses via sqlparser, plans via EngineRules, and dispatches a `SqlPlan` through the SPSC bridge to the Data Plane.
 
 ```
-psql / ndb CLI / HTTP /query
+psql / ndb CLI / HTTP /v1/query
   → SQL parser (sqlparser-rs)
   → EngineRules::plan_*()
   → SqlPlan → SPSC Bridge → Data Plane

@@ -18,7 +18,7 @@ Purpose-built hash-indexed store with O(1) point lookups, native TTL, and second
 ## SQL Usage
 
 ```sql
-CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);
+CREATE COLLECTION sessions (key TEXT PRIMARY KEY) WITH (engine='kv');
 
 -- Insert with TTL; plain INSERT raises unique_violation (23505) on duplicate key.
 INSERT INTO sessions { key: 'sess_abc', user_id: 'alice', role: 'admin', ttl: 3600 };

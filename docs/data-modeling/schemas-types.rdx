@@ -27,7 +27,7 @@ description: Data types, schema enforcement, typeguards, and schema evolution.
 
 **Schemaless** — No schema required. Fields can vary between documents. Types are inferred on insert. This is the default when you `CREATE COLLECTION x`.
 
-**Strict** — Schema is defined at creation time and enforced on every write. O(1) field extraction via binary tuple format. Created with `TYPE DOCUMENT STRICT (...)`.
+**Strict** — Schema is defined at creation time and enforced on every write. O(1) field extraction via binary tuple format. Created with `(...) WITH (engine='document_strict')`.
 
 ## Typeguards (Schemaless Validation)
 
@@ -58,7 +58,7 @@ ALTER TYPEGUARD ON users DROP age;
 VALIDATE TYPEGUARD ON users;
 
 -- Graduate to strict schema
-CONVERT COLLECTION users TO strict;
+CONVERT COLLECTION users TO document_strict;
 ```
 
 ## Schema Evolution (Strict Mode)

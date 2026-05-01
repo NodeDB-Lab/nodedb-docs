@@ -10,13 +10,13 @@ Timeseries is a columnar profile. It extends the columnar engine with retention 
 ## DDL
 
 ```sql
-CREATE COLLECTION cpu_metrics TYPE COLUMNAR (
+CREATE COLLECTION cpu_metrics (
     ts TIMESTAMP TIME_KEY,
     host VARCHAR,
     region VARCHAR,
     cpu_usage FLOAT,
     mem_usage FLOAT
-) WITH profile = 'timeseries', partition_by = '1d', retention = '90d';
+) WITH (engine='timeseries', partition_by='1d', retention='90d');
 
 -- Convenience alias
 CREATE TIMESERIES cpu_metrics;

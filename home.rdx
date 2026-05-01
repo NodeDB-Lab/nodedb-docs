@@ -78,12 +78,12 @@ The combination of PostgreSQL + pgvector + Redis + Neo4j + ClickHouse + Elastics
 Unlike most databases that lock you into one model, NodeDB lets you choose per collection — and convert at any time.
 
 ```sql
-CREATE COLLECTION users;                                          -- schemaless document
-CREATE COLLECTION orders TYPE DOCUMENT STRICT (id UUID, ...);     -- strict (OLTP)
-CREATE COLLECTION metrics TYPE COLUMNAR (ts TIMESTAMP TIME_KEY, ...); -- timeseries
-CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);  -- key-value
+CREATE COLLECTION users;                                                                  -- schemaless document
+CREATE COLLECTION orders (id UUID, ...) WITH (engine='document_strict');                  -- strict (OLTP)
+CREATE COLLECTION metrics (ts TIMESTAMP TIME_KEY, ...) WITH (engine='timeseries');        -- timeseries
+CREATE COLLECTION sessions (key TEXT PRIMARY KEY) WITH (engine='kv');                     -- key-value
 
-CONVERT COLLECTION users TO strict;  -- convert when schema stabilizes
+CONVERT COLLECTION users TO document_strict;  -- convert when schema stabilizes
 ```
 
 </Section>

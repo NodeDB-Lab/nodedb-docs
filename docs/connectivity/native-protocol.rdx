@@ -32,3 +32,67 @@ Both modes produce the same `PhysicalPlan` and execute identically.
 ./target/release/ndb
 ./target/release/ndb --host localhost --port 6433
 ```
+
+## Handshake
+
+Every native connection performs a versioned handshake before any opcode frame. SDKs do this automatically on first use; you only need this section if you're implementing a wire-level client.
+
+### `HelloFrame` (client → server)
+
+| Field          | Width | Value                                   |
+| -------------- | ----- | --------------------------------------- |
+| `magic`        | 4 B   | `NDBH`                                  |
+| `proto_min`    | u16   | Minimum protocol version client accepts |
+| `proto_max`    | u16   | Maximum protocol version client supports |
+| `capabilities` | u64   | Bitmask of optional features (send `0` for none; unknown bits ignored by server) |
+
+### `HelloAckFrame` (server → client)
+
+| Field            | Width                | Value                                                 |
+| ---------------- | -------------------- | ----------------------------------------------------- |
+| `magic`          | 4 B                  | `NDBA`                                                |
+| `proto_version`  | u16                  | Negotiated version (`max(proto_min_client, proto_min_server) ≤ v ≤ min(proto_max_client, proto_max_server)`) |
+| `capabilities`   | u64                  | Server-side capability bitmask                        |
+| `server_version` | length-prefixed UTF-8 | Build identifier (e.g. `"nodedb 0.1.0+abc123"`)      |
+| `limits`         | `Limits` struct      | Per-op caps the server enforces (see below)           |
+
+### `HelloErrorFrame`
+
+Returned when no protocol version overlaps. Carries a typed `code` (`VersionMismatch`) and a UTF-8 reason. The connection is closed after the frame is sent.
+
+### Server-enforced `Limits`
+
+The `HelloAckFrame` carries the server's per-op caps. SDKs surface these via `client.limits()`. Sending a request that exceeds a cap returns a typed `LimitExceeded { limit_name, value, max }` error.
+
+| Field                  | Type          | Caps                                            |
+| ---------------------- | ------------- | ----------------------------------------------- |
+| `max_vector_dim`       | `Option<u32>` | Vector embedding dimensionality                 |
+| `max_top_k`            | `Option<u32>` | `top_k` for any retrieval op                    |
+| `max_scan_limit`       | `Option<u32>` | Result set size for scans                       |
+| `max_batch_size`       | `Option<u32>` | Rows per batch INSERT/UPSERT                    |
+| `max_crdt_delta_bytes` | `Option<u32>` | Single CRDT delta payload                       |
+| `max_query_text_bytes` | `Option<u32>` | SQL text length                                 |
+| `max_graph_depth`      | `Option<u32>` | `MAX_DEPTH` for graph traversal                 |
+
+`None` means uncapped. Defaults are uncapped — operators set caps via configuration.
+
+## Capabilities
+
+`Capabilities` is a typed wrapper around the `u64` bitmask returned in `HelloAckFrame`. SDK consumers query specific features via accessor methods rather than testing raw bits, so feature additions never break clients:
+
+```rust
+let caps = client.capabilities();
+if caps.has_graphrag_fusion() { ... }
+if caps.has_continuous_aggregates() { ... }
+```
+
+The `Capabilities::has(bit)` escape hatch is available for forward compatibility, but typed accessors are preferred.
+
+## Server Identity
+
+```rust
+client.proto_version()   // u16 — negotiated protocol version
+client.server_version()  // String — server build identifier
+client.limits()          // &Limits — per-op caps
+client.capabilities()    // Capabilities — typed feature flags
+```
