@@ -1,6 +1,6 @@
 ---
 title: Hybrid Database for AI Workloads
-description: NodeDB is a distributed hybrid database with seven engines — Vector, Graph, Document, Columnar, Key-Value, Full-Text Search, and CRDT — in a single Rust binary. PostgreSQL-compatible, edge-to-cloud.
+description: NodeDB is a distributed hybrid database with eight peer engines — Document, Key-Value, Columnar, Timeseries, Spatial, Vector, Array — plus Graph and Full-Text Search overlays, in a single Rust binary. PostgreSQL-compatible, edge-to-cloud.
 layout: landing
 ---
 
@@ -16,7 +16,7 @@ layout: landing
   "name": "NodeDB",
   "applicationCategory": "DatabaseApplication",
   "operatingSystem": "Linux, macOS, Windows, iOS, Android, Web",
-  "description": "Distributed hybrid database with seven engines — Vector, Graph, Document, Columnar, Key-Value, Full-Text Search, and CRDT — in a single Rust binary.",
+  "description": "Distributed hybrid database with eight peer engines — Document, Key-Value, Columnar, Timeseries, Spatial, Vector, Array — plus Graph and Full-Text Search overlays, in a single Rust binary.",
   "url": "https://nodedb.dev",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
 }
@@ -27,13 +27,13 @@ layout: landing
 <HeroAction label="Get Started" href="/docs/introduction/quickstart" variant="primary" />
 <HeroAction label="GitHub" href="https://github.com/NodeDB-Lab/nodedb" variant="secondary" />
 
-Seven data engines in one binary. Vectors, graphs, documents, columns, key-value, full-text search, and CRDT sync — with shared storage, shared memory, and zero network hops between engines.
+Eight peer engines in one binary. Document, key-value, columnar, timeseries, spatial, vector, ND-array — plus graph and full-text search as cross-engine overlays. Shared storage, shared memory, zero network hops between engines.
 </Hero>
 
 <Section bg="muted">
 <FeatureGrid>
-<Feature icon="🧠" title="Seven Engines, One Process">
-Vector (HNSW), Graph (CSR), Document (schemaless + strict), Columnar (timeseries + spatial profiles), Key-Value, Full-Text Search (BM25), and CRDT. Cross-engine queries execute in one process — no network hops, no application-level joins.
+<Feature icon="🧠" title="Eight Engines, One Process">
+Document (schemaless + strict), Key-Value, Columnar, Timeseries, Spatial, Vector (HNSW + Vamana), and Array (ND coordinate-tuple, tile-based, bitemporal) as peer engines sharing one storage core; plus Graph (CSR) and Full-Text Search (BM25) as cross-engine overlays on any collection. Cross-engine queries execute in one process — no network hops, no application-level joins.
 </Feature>
 <Feature icon="⚡" title="Three-Plane Architecture">
 Control Plane (Tokio) for SQL planning, Data Plane (Thread-per-Core + io_uring) for storage I/O and SIMD math, Event Plane for CDC, triggers, and cron. Connected by lock-free SPSC ring buffers.
@@ -42,7 +42,7 @@ Control Plane (Tokio) for SQL planning, Data Plane (Thread-per-Core + io_uring) 
 Connect with psql, any PostgreSQL driver, or ORM. Six wire protocols: pgwire, HTTP, native MessagePack, RESP (Redis), ILP (InfluxDB), and WebSocket sync.
 </Feature>
 <Feature icon="📱" title="Edge to Cloud">
-NodeDB-Lite embeds all seven engines in phones, browsers (WASM), and desktops. Offline-first with sub-millisecond reads. CRDT sync to Origin via WebSocket when connectivity returns.
+NodeDB-Lite embeds all eight engines in phones, browsers (WASM), and desktops. Offline-first with sub-millisecond reads. CRDT sync to Origin via WebSocket when connectivity returns.
 </Feature>
 <Feature icon="🔄" title="Real-Time Built In">
 LIVE SELECT, CDC change streams with consumer groups, durable pub/sub topics, webhook delivery, cron scheduler, and streaming materialized views. No Kafka or Redis Streams sidecar needed.
@@ -120,13 +120,13 @@ WHERE ST_DWithin(location, ST_Point(-73.99, 40.75), 2000)
 <Section bg="muted">
 <CardGrid>
 <Card title="Quick Start" icon="⚡" href="/docs/introduction/quickstart">
-Start NodeDB and run your first queries across all seven engines in five minutes.
+Start NodeDB and run your first queries across all eight engines in five minutes.
 </Card>
 <Card title="Architecture" icon="🧠" href="/docs/architecture/overview">
 How the three-plane execution model works — Control, Data, and Event planes.
 </Card>
 <Card title="Data Modeling" icon="📦" href="/docs/data-modeling/collections">
-Collections, schemas, storage engines, columnar profiles, and index types.
+Collections, schemas, peer storage engines, and index types.
 </Card>
 <Card title="SQL Reference" icon="📖" href="/docs/sql/overview">
 Full query language reference — standard SQL plus engine-specific extensions.

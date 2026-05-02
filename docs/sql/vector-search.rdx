@@ -60,16 +60,80 @@ FROM articles
 ORDER BY dist LIMIT 10;
 ```
 
-| Argument            | Type    | Notes                                              |
-| ------------------- | ------- | -------------------------------------------------- |
-| `quantization`      | string  | `none`, `sq8`, `pq`, `ivf_pq`, `rabitq`            |
-| `oversample`        | u32     | Candidates fetched before re-ranking                |
-| `query_dim`         | u32     | Override query dimensionality                       |
-| `meta_token_budget` | u32     | Metadata pre-filter budget                          |
-| `ef_search`         | u32     | HNSW search-time `ef`                               |
-| `target_recall`     | f32     | Adaptive recall target                              |
+| Argument            | Type    | Notes                                                                                 |
+| ------------------- | ------- | ------------------------------------------------------------------------------------- |
+| `quantization`      | string  | `none`, `sq8`, `pq`, `binary`, `ternary`, `rabitq`, `bbq`, `opq`                      |
+| `oversample`        | u8      | Candidates fetched before re-ranking. Default `3`. Final rerank set is `oversample × ef_search`. |
+| `query_dim`         | u32     | Coarse-to-fine on first-N dims of Matryoshka embeddings. `None` = full dimensionality. |
+| `meta_token_budget` | u8      | MetaEmbed multivec scoring budget for MaxSim / PLAID                                  |
+| `ef_search`         | u32     | HNSW / Vamana search-time beam width. Default `64`.                                   |
+| `target_recall`     | f32     | Adaptive recall target. The cost-model planner picks oversample / ef_search to hit this. |
 
 Unknown names, duplicate keys, positional 3rd args, or wrong operators (`=` instead of `=>`) all return typed errors that list the canonical names.
+
+### Quantization Choice
+
+| Codec     | Bits/dim | Recall (typ.) | When to pick it                                                |
+| --------- | -------- | ------------- | -------------------------------------------------------------- |
+| `none`    | 32       | 100%          | Small index (< 1M vectors), latency not critical               |
+| `sq8`     | 8        | ~99%          | Balanced default for medium index sizes                        |
+| `pq`      | ~2       | ~95%          | Large memory-bound indexes; classic Product Quantization       |
+| `opq`     | ~2       | ~96%          | PQ + learned random rotation; minor accuracy bump over `pq`    |
+| `rabitq`  | 1        | ~97%          | Frontier 1-bit with `O(1/√D)` error bound (SIGMOD 2024)        |
+| `bbq`     | 1        | ~98%          | Centroid-asymmetric 1-bit + 14-byte corrective; oversample-rerank |
+| `binary`  | 1        | ~85%          | Hamming-only, no rerank — for ultra-cold tiers                 |
+| `ternary` | 1.58     | ~96%          | BitNet-style `{-1, 0, +1}` — cold/hot pack for AVX-512         |
+
+The cost-model planner (`target_recall`) will pick `oversample` and `ef_search` automatically once you set the recall target. Manually set those two only when you need a hard latency ceiling.
+
+## Index Implementations
+
+You don't pick the underlying index directly — it's chosen by the planner from collection metadata + workload signals:
+
+- **HNSW** — in-memory hierarchical graph, the default for moderate-size indexes
+- **Vamana / DiskANN** — flat-beam SSD-resident graph for billion-scale on a single node (`Tier 2` of the vector frontier)
+- **NaviX adaptive-local filtered traversal** (VLDB 2025) — switches per-hop between standard / directed / blind heuristics based on local selectivity. Replaces classic ACORN-1 filtered ANN.
+- **SIEVE workload-driven subindex collections** — the planner builds specialized HNSW subindices for stable predicates (e.g. `tenant_id`) and routes filtered queries to them.
+- **MetaEmbed multi-vector + ColBERT MaxSim + PLAID** (ICLR 2026) — learnable Meta Tokens replace per-token explosion; budgeted MaxSim at query time via `meta_token_budget`.
+- **Matryoshka adaptive-dim querying** — coarse-to-fine ranking on the first-N dimensions of MRL embeddings via `query_dim`.
+- **SPFresh streaming updates** (SOSP 2023) — LIRE topology-aware local rebalancing; no full-rebuild stalls when vectors are added/removed.
+
+## Vector-Primary Collections
+
+By default, vectors are an *index* attached to a column on a normal collection — the document/strict store is the source of truth, and the vector index is a side path. For pure-vector workloads (RAG corpora, recommendation memory, embedding stores) you can flip a collection into **vector-primary** mode, where the vector index becomes the primary access path and the document store is a metadata sidecar:
+
+```sql
+CREATE COLLECTION corpus (
+    id UUID DEFAULT gen_uuid_v7(),
+    embedding FLOAT[384],
+    title TEXT,
+    tenant_id UUID,
+    created_at TIMESTAMP DEFAULT now()
+) WITH (
+    primary='vector',
+    vector_field='embedding',
+    dim=384,
+    metric='cosine',
+    quantization='rabitq',
+    m=32,
+    ef_construction=200,
+    payload_indexes=['tenant_id', 'created_at']
+);
+```
+
+| Option            | Notes                                                                |
+| ----------------- | -------------------------------------------------------------------- |
+| `primary`         | `'document'` (default), `'strict'`, `'kv'`, or `'vector'`            |
+| `vector_field`    | Required when `primary='vector'`. Column name of the embedding.       |
+| `dim`             | Required. Embedding dimensionality.                                   |
+| `metric`          | `'cosine'`, `'l2'`, `'inner_product'`, etc.                          |
+| `quantization`    | Storage-level codec (same vocabulary as the query-time arg above).   |
+| `m`, `ef_construction` | HNSW build-time parameters.                                     |
+| `payload_indexes` | Per-field equality / range / boolean indexes over the metadata sidecar for filtered ANN. Replaces Pinecone metadata filters. |
+
+In vector-primary mode the planner treats the vector index as the source of truth for IDs; metadata fetches only happen for hit IDs. Cross-engine queries, CRDT sync, and SQL semantics all keep working — `primary='vector'` is purely an *access-path* hint, not a different engine.
+
+Default `primary='document'` is unchanged: the existing `CREATE VECTOR INDEX ON ...` syntax continues to work for vector-as-side-index workloads.
 
 ## Hybrid Vector + Text (RRF)
 

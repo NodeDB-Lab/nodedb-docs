@@ -55,17 +55,16 @@ navigation = [
       "data-modeling/schemas-types",
     ] },
     { group = "Storage Engines", pages = [
-      "storage-engines/vector",
-      "storage-engines/graph",
       "storage-engines/document",
-      "storage-engines/columnar",
       "storage-engines/kv",
+      "storage-engines/columnar",
+      "storage-engines/timeseries",
+      "storage-engines/spatial",
+      "storage-engines/vector",
+      "storage-engines/array",
+      "storage-engines/graph",
       "storage-engines/fts",
       "storage-engines/crdt",
-    ] },
-    { group = "Columnar Profiles", pages = [
-      "columnar-profiles/timeseries",
-      "columnar-profiles/spatial",
     ] },
     { group = "Indexes", pages = [
       "indexes/hnsw-index",
@@ -74,6 +73,9 @@ navigation = [
       "indexes/btree-index",
       "indexes/inverted-index",
       "indexes/hash-index",
+    ] },
+    { group = "Temporal Queries", pages = [
+      "temporal/bitemporal",
     ] },
 
     # ── SQL Reference ──────────────────────────────────────────────

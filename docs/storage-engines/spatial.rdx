@@ -1,11 +1,11 @@
 ---
-title: Spatial Profile
-description: R*-tree index, OGC predicates, geohash, H3 hexagonal indexing, and hybrid spatial-vector search.
+title: Spatial Engine
+description: Peer engine for geo-primary workloads — R*-tree index, OGC predicates, geohash, H3 hexagonal indexing, and hybrid spatial-vector search.
 ---
 
-# Spatial Profile
+# Spatial Engine
 
-Spatial is a columnar profile. Collections with a `SPATIAL_INDEX` column modifier get automatic R*-tree indexing over the geometry column.
+Spatial is a peer engine sharing storage with `columnar` and `timeseries`. Collections selected via `WITH (engine='spatial')` and a `GEOMETRY SPATIAL_INDEX` column get automatic R*-tree indexing over the geometry column.
 
 ## DDL
 

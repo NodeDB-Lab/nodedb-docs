@@ -1,11 +1,13 @@
 ---
-title: Timeseries Profile
-description: Columnar profile for time-ordered data with retention, continuous aggregation, ILP ingest, and PromQL.
+title: Timeseries Engine
+description: Peer engine for time-ordered data with retention, continuous aggregation, ILP ingest, and PromQL.
 ---
 
-# Timeseries Profile
+# Timeseries Engine
 
-Timeseries is a columnar profile. It extends the columnar engine with retention policies, continuous aggregation, ILP ingest, and dedicated time-series SQL functions. Data is stored in the same columnar memtables with a `TIME_KEY` column driving partition-by-time and block-level skip.
+Timeseries is a peer engine sharing storage with `columnar` and `spatial`. It adds retention policies, continuous aggregation, ILP ingest, and dedicated time-series SQL functions. Data is stored in the same compressed-column memtables with a `TIME_KEY` column driving partition-by-time and block-level skip.
+
+Selected via `WITH (engine='timeseries')` on `CREATE COLLECTION`, or the `CREATE TIMESERIES <name>` convenience alias.
 
 ## DDL
 
@@ -77,4 +79,4 @@ Adaptive batching and per-series core routing — self-tuning, no configuration 
 
 ## Grafana / PromQL
 
-NodeDB works as a native Grafana Prometheus data source at `http://nodedb:6480/obsv/api`. Full PromQL engine (Tier 1+2+3 functions). Also supports Prometheus remote write/read for long-term storage.
+NodeDB works as a native Grafana Prometheus data source at `http://nodedb:6480/v1/obsv/api`. Full PromQL engine (Tier 1+2+3 functions). Also supports Prometheus remote write/read for long-term storage.

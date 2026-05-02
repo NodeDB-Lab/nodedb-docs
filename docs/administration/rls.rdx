@@ -1,6 +1,6 @@
 ---
 title: Row-Level Security
-description: Per-row filtering based on authenticated user context. Works across all seven engines.
+description: Per-row filtering based on authenticated user context. Works across all eight engines.
 ---
 
 # Row-Level Security (RLS)

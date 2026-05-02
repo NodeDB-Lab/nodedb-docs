@@ -55,3 +55,20 @@ nodedb-client / FFI / WASM
 ```
 
 Both paths produce the same plan and execute identically on the Data Plane.
+
+## Cross-Engine Identity
+
+Every row in every engine — document, KV, columnar, timeseries, spatial, vector, array, graph node, FTS posting — carries a stable global `u32` **surrogate** allocated at insert from a WAL-durable, Raft-replicated monotonic counter. Every engine keys its internal indexes on the surrogate, so cross-engine prefilter and join reduce to roaring-bitmap intersections with **zero per-query translation**.
+
+A query like "find product cells whose embedding is near `$q`, that have FTS hits for `'memory leak'`, that live within 5km of point P, in tenant 42" turns into:
+
+```
+vector_index.search($q, k)         → roaring bitmap A
+fts_index.match("memory leak")     → roaring bitmap B
+spatial_index.dwithin(P, 5km)      → roaring bitmap C
+metadata_index.tenant_id = 42      → roaring bitmap D
+
+A ∩ B ∩ C ∩ D                      → final candidate surrogate set
+```
+
+No `HashMap<surrogate, doc_id>` translations between hops. Adding a new engine does not require new translation paths — it just allocates surrogates from the same counter. This is the mechanism behind every cross-engine query example you'll see in the SQL reference.

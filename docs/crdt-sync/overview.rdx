@@ -33,4 +33,4 @@ Multiple devices converge to the same state regardless of operation order. Loro'
 
 ## Local Engine Capabilities
 
-All seven engines work locally on NodeDB-Lite: vector search, graph traversal, document storage, columnar queries, KV lookups, FTS, and CRDT state — with sub-millisecond reads and no network dependency.
+All eight engines work locally on NodeDB-Lite: document, KV, columnar, timeseries, spatial, vector, array, plus graph traversal and FTS overlays — with sub-millisecond reads and no network dependency.

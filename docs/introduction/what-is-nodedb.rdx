@@ -1,11 +1,11 @@
 ---
 title: What is NodeDB
-description: A distributed hybrid database with seven engines for multi-modal AI and agentic workloads.
+description: A distributed hybrid database with eight peer engines for multi-modal AI and agentic workloads.
 ---
 
 # What is NodeDB
 
-NodeDB is a single Rust binary that provides seven data engines — Vector, Graph, Document (schemaless + strict), Columnar (with Timeseries and Spatial profiles), Key-Value, and Full-Text Search — each built with purpose-specific data structures. All engines share the same storage, memory, and query planner. Cross-engine queries execute in one process with zero network hops.
+NodeDB is a single Rust binary that provides eight peer engines — Document (schemaless), Document (strict), Key-Value, Columnar, Timeseries, Spatial, Vector, and Array — sharing one storage core, plus Graph and Full-Text Search as cross-engine overlays on any collection. Seven of the eight are selected per-collection via `WITH (engine='<name>')`; Array uses its own `CREATE ARRAY` DDL family. Each engine is built with purpose-specific data structures. All share the same storage, memory, and query planner. Cross-engine queries execute in one process with zero network hops.
 
 ## The Problem
 
@@ -13,7 +13,7 @@ Modern applications don't fit in one database. A healthcare app needs patient re
 
 Some databases claim to solve this by bolting on capabilities — "graph" as recursive JOINs, "timeseries" without columnar compression or continuous aggregation. The features exist in name but not in performance.
 
-## Seven Engines
+## Eight Engines
 
 **Vector** — HNSW index with SQ8, PQ, and IVF-PQ quantization. SIMD-accelerated distance math. Adaptive bitmap pre-filtering.
 
@@ -21,11 +21,13 @@ Some databases claim to solve this by bolting on capabilities — "graph" as rec
 
 **Document** — Two modes per collection. Schemaless: MessagePack blobs with CRDT sync. Strict: Binary Tuples with O(1) field extraction and 3-4x cache density over BSON.
 
-**Columnar** — Per-column compression (ALP, FastLanes, FSST, Gorilla, LZ4). Block statistics and predicate pushdown. Three profiles: Plain (general analytics), Timeseries (append-only, retention, continuous aggregation), Spatial (R*-tree, geohash, H3).
+**Columnar / Timeseries / Spatial** — Three peer engines sharing one compressed-column storage core (ALP, FastLanes, FSST, Gorilla, LZ4 codecs; block statistics; predicate pushdown). `columnar` for general analytics; `timeseries` adds append-only ingest, retention, and continuous aggregation; `spatial` adds R*-tree, geohash, and H3 indexing.
 
 **Key-Value** — Hash-indexed O(1) point lookups with typed value fields. Native TTL, secondary indexes, atomic INCR/CAS, and predicate-filtered scans. SQL-queryable and joinable.
 
 **Full-Text Search** — Block-Max WAND optimized BM25 with 16 Snowball stemmers, 27-language stop words, CJK bigram tokenization, posting compression, fuzzy matching, and native hybrid vector fusion.
+
+**Array** — ND sparse multi-dimensional engine with tile-based storage, Z-order indexing, per-tile MBR statistics, and bitemporal cells. Replaces TileDB / Zarr / SciDB / Rasdaman for genomics, single-cell biology, raster cubes, and climate models.
 
 **CRDT** — Loro-backed conflict-free replicated data types. AP on the edge, CP in the cloud. SQL constraint validation at sync time with compensation hints.
 
@@ -35,7 +37,7 @@ Some databases claim to solve this by bolting on capabilities — "graph" as rec
 
 **Origin (local)** — Same binary, single-node. No cluster overhead. Like running PostgreSQL locally.
 
-**NodeDB-Lite (embedded)** — In-process library for phones, browsers (WASM), and desktops. All seven engines run locally with sub-millisecond reads. CRDT sync to Origin via WebSocket.
+**NodeDB-Lite (embedded)** — In-process library for phones, browsers (WASM), and desktops. All eight engines run locally with sub-millisecond reads. CRDT sync to Origin via WebSocket.
 
 ## PostgreSQL Compatible
 

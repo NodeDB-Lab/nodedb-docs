@@ -35,7 +35,7 @@ CREATE COLLECTION sessions (key TEXT PRIMARY KEY) WITH (engine='kv');
 
 ## Storage Engines
 
-NodeDB has seven peer engines. Pick one per collection via `WITH (engine='<name>')`. The default (no `engine=`) is `document_schemaless`.
+NodeDB has eight peer engines. Seven of them are picked per collection via `WITH (engine='<name>')` — the default (no `engine=`) is `document_schemaless`. The eighth, Array, uses its own `CREATE ARRAY` DDL family. See [Array Engine](../storage-engines/array) for that path.
 
 | Engine                | Selector                            | Best for                                          |
 | --------------------- | ----------------------------------- | ------------------------------------------------- |

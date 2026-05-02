@@ -65,4 +65,4 @@ await db.execute("INSERT INTO invoices ...");
 await db.sync("wss://origin.example.com/sync");
 ```
 
-All seven engines work locally with sub-millisecond reads. CRDT sync is transparent.
+All eight engines work locally with sub-millisecond reads. CRDT sync is transparent.

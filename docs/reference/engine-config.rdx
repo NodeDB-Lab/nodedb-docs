@@ -28,9 +28,9 @@ Graph, KV, and FTS engines do not have dedicated budget config fields. They draw
 | Memtable threshold | 32M entries | Flush to segment threshold |
 | Compaction levels  | 8x8         | Level-based compaction     |
 
-## Columnar Engine
+## Columnar / Timeseries / Spatial Engines
 
-The Timeseries profile uses `timeseries_budget_fraction` (default 10%).
+The `timeseries` peer engine has its own memory budget knob `timeseries_budget_fraction` (default 10%); `columnar` and `spatial` draw from the columnar engine pool.
 
 | Parameter    | Default | Description                |
 | ------------ | ------- | -------------------------- |
@@ -51,5 +51,5 @@ These are the actual config fields controlling memory allocation:
 | `vector_budget_fraction`    | 0.30    | HNSW index and vector data        |
 | `sparse_budget_fraction`    | 0.15    | Graph, KV, FTS, and metadata      |
 | `crdt_budget_fraction`      | 0.10    | CRDT state and sync buffers       |
-| `timeseries_budget_fraction`| 0.10    | Columnar timeseries profile       |
+| `timeseries_budget_fraction`| 0.10    | Timeseries peer engine            |
 | `query_budget_fraction`     | 0.20    | Query execution working memory    |

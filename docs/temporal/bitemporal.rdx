@@ -1,0 +1,244 @@
+---
+title: Bitemporal Queries
+description: Track data along system time (when written) and valid time (when valid). Audit trails, backdated corrections, and compliance-grade history across multiple engines.
+---
+
+# Bitemporal Queries
+
+Bitemporal databases track data along two independent time dimensions:
+
+- **System time** — when the database recorded the value. Stored *in the key* (structural), derived from the WAL LSN at Raft commit. Used for audit trails and asking "what did the database think was true at moment X?".
+- **Valid time** — when the value represents. Stored *in the value*, client/device-assigned. Used for forecasts, backdated corrections, and asking "what was true in the world at moment X?".
+
+Closed-open intervals: `[from, to)`; an open upper bound is `i64::MAX`.
+
+## Supported Engines
+
+| Engine                                                       | System Time | Valid Time | Example use case                  |
+| ------------------------------------------------------------ | :---------: | :--------: | --------------------------------- |
+| [Graph](../storage-engines/graph) (edges + nodes)            |     Yes     |    Yes     | Entity-relationship timelines     |
+| [Document (strict)](../storage-engines/document)             |     Yes     |    Yes     | Versioned profiles, ledgers       |
+| [Document (schemaless)](../storage-engines/document)         |     Yes     |    Yes     | Event logs with backdated entries |
+| [Columnar](../storage-engines/columnar)                      |     Yes     |    Yes     | Audit tables, corrected metrics   |
+| [Timeseries](../storage-engines/timeseries)                  |     Yes     |    Yes     | Forecast corrections, data repair |
+| [Array](../storage-engines/array) (tile-level versioning)    |     Yes     |    Yes     | Historical spatial snapshots      |
+
+**Index engines (Vector, Full-Text Search, Spatial R\*-tree, Key-Value)** do not carry temporal columns themselves — they index records that live in data-bearing collections. To query at a point in time, attach the index to a `bitemporal=true` collection; `AS OF` filtering happens at the collection layer, not the index. See [Index engines and temporal composition](#index-engines-and-temporal-composition).
+
+## SQL Syntax
+
+`AS OF` clauses sit in the `FROM` part of a query. Times are milliseconds since Unix epoch — use `extract(epoch from now()) * 1000` for current time:
+
+```sql
+-- Read the database state as of a past system time
+SELECT * FROM collection
+AS OF SYSTEM TIME 1700000000000;
+
+-- Read rows whose valid-time interval includes a given moment
+SELECT * FROM collection
+AS OF VALID TIME 1700000000000;
+
+-- Both: rows that were valid AND in the system at a point
+SELECT * FROM collection
+AS OF SYSTEM TIME 1700000000000
+AS OF VALID TIME 1700000001000;
+```
+
+## Examples
+
+### Audit Trail (System Time)
+
+```sql
+CREATE COLLECTION user_accounts (
+    id UUID DEFAULT gen_uuid_v7(),
+    email VARCHAR,
+    balance DECIMAL,
+    created_at TIMESTAMP DEFAULT now()
+) WITH (engine='document_strict', bitemporal=true);
+
+INSERT INTO user_accounts (email, balance) VALUES ('alice@example.com', 100.00);
+UPDATE user_accounts SET balance = 150.00 WHERE email = 'alice@example.com';
+
+-- Database state 10 minutes ago
+SELECT email, balance FROM user_accounts
+AS OF SYSTEM TIME (extract(epoch from now()) * 1000 - 600000);
+-- → alice@example.com, 100.00
+
+-- Current state
+SELECT email, balance FROM user_accounts;
+-- → alice@example.com, 150.00
+```
+
+### Backdated Corrections (Valid Time)
+
+```sql
+CREATE COLLECTION sensor_readings (
+    ts TIMESTAMP TIME_KEY,
+    location VARCHAR,
+    temperature FLOAT
+) WITH (engine='timeseries', bitemporal=true);
+
+-- Original reading
+INSERT INTO sensor_readings (ts, location, temperature, valid_time)
+VALUES ('2026-04-01T10:00:00Z', 'warehouse-a', 21.5, '2026-04-01T10:00:00Z');
+
+-- Discover it was wrong; insert a correction valid as-of April 2nd
+INSERT INTO sensor_readings (ts, location, temperature, valid_time)
+VALUES ('2026-04-01T10:00:00Z', 'warehouse-a', 22.3, '2026-04-02T15:30:00Z');
+
+-- What we knew on April 1st (before correction)
+SELECT location, temperature FROM sensor_readings
+WHERE ts BETWEEN '2026-04-01' AND '2026-04-02'
+AS OF VALID TIME 1711953600000;
+
+-- What we know now (after correction)
+SELECT location, temperature FROM sensor_readings
+WHERE ts BETWEEN '2026-04-01' AND '2026-04-02'
+AS OF VALID TIME 1712040000000;
+```
+
+### Bitemporal Array Snapshot
+
+```sql
+CREATE ARRAY climate_grid
+  DIMS (lon INT32 DOMAIN [-180, 180), lat INT32 DOMAIN [-90, 90))
+  ATTRS (temp_c FLOAT32)
+  TILE_EXTENTS (64, 64)
+  WITH (audit_retain_ms = 7776000000);  -- 90 days
+
+-- Cells as committed yesterday
+SELECT lon, lat, temp_c FROM NDARRAY_SLICE(
+    'climate_grid',
+    {lon: [-10, 10), lat: [0, 20)},
+    ['temp_c']
+)
+AS OF SYSTEM TIME (extract(epoch from now()) * 1000 - 86400000);
+```
+
+### Lineage and Compliance
+
+```sql
+SELECT status, system_time FROM transactions
+WHERE id = 'txn-1'
+AS OF SYSTEM TIME NULL  -- special: returns all versions in system-time order
+ORDER BY system_time ASC;
+```
+
+## Index Engines and Temporal Composition
+
+Vector, FTS, KV, and Spatial don't carry temporal columns — by design. They are **index engines** that point at records living in data-bearing engines. Indexes don't have time; the records they reference do.
+
+To query any of these "as of", attach the index to a collection with `bitemporal=true`. The collection holds the payload + temporal columns, the index returns candidate IDs, and `AS OF` filters at the collection layer.
+
+### Bitemporal Vector Search
+
+```sql
+CREATE COLLECTION product_embeddings (
+    id UUID DEFAULT gen_uuid_v7(),
+    product_id UUID,
+    description TEXT,
+    embedding FLOAT[384],
+    updated_at TIMESTAMP DEFAULT now()
+) WITH (engine='document_strict', bitemporal=true);
+
+CREATE VECTOR INDEX idx_product_vec ON product_embeddings METRIC cosine DIM 384;
+
+-- Nearest neighbors as of 30 days ago
+SELECT p.product_id, p.description,
+       vector_distance(p.embedding, $query_vec) AS score
+FROM product_embeddings p
+AS OF SYSTEM TIME (extract(epoch from now()) * 1000 - 2592000000)
+WHERE p.id IN (
+    SEARCH product_embeddings USING VECTOR(embedding, $query_vec, 20)
+)
+ORDER BY score
+LIMIT 10;
+```
+
+The vector index narrows the candidate set; the `AS OF SYSTEM TIME` clause on the collection removes candidates that didn't exist at that system time.
+
+### Bitemporal Full-Text Search
+
+```sql
+CREATE COLLECTION articles (
+    id UUID DEFAULT gen_uuid_v7(),
+    title VARCHAR,
+    body TEXT,
+    published_at TIMESTAMP
+) WITH (engine='document_strict', bitemporal=true);
+
+CREATE SEARCH INDEX ON articles FIELDS title, body ANALYZER 'english';
+
+SELECT id, title FROM articles
+AS OF SYSTEM TIME (extract(epoch from now()) * 1000 - 86400000)
+WHERE text_match(body, 'distributed consensus raft')
+ORDER BY bm25_score(body, 'distributed consensus raft') DESC
+LIMIT 20;
+```
+
+### Bitemporal Spatial Queries
+
+```sql
+CREATE COLLECTION store_locations (
+    id UUID DEFAULT gen_uuid_v7(),
+    name VARCHAR,
+    location GEOMETRY,
+    opened_at TIMESTAMP,
+    closed_at TIMESTAMP
+) WITH (engine='document_strict', bitemporal=true);
+
+CREATE SPATIAL INDEX ON store_locations FIELDS location;
+
+SELECT id, name, ST_Distance(location, ST_Point(-73.990, 40.750)) AS dist_m
+FROM store_locations
+AS OF SYSTEM TIME 1704067200000
+WHERE ST_DWithin(location, ST_Point(-73.990, 40.750), 5000)
+ORDER BY dist_m;
+```
+
+### Temporal Key-Value: Use `document_strict`
+
+The KV engine targets O(1) point lookups and doesn't carry temporal columns. For versioned config, auditable feature flags, or time-stamped session state, use a `document_strict` collection with a unique index — O(1) lookup is preserved, temporal history comes from the document layer:
+
+```sql
+CREATE COLLECTION config_entries (
+    id UUID DEFAULT gen_uuid_v7(),
+    key VARCHAR,
+    value TEXT,
+    updated_at TIMESTAMP DEFAULT now()
+) WITH (engine='document_strict', bitemporal=true);
+
+CREATE UNIQUE INDEX ON config_entries(key);
+
+INSERT INTO config_entries (key, value) VALUES ('feature_x_enabled', 'true')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+
+SELECT value FROM config_entries WHERE key = 'feature_x_enabled';
+
+-- What was the value 7 days ago?
+SELECT value FROM config_entries
+AS OF SYSTEM TIME (extract(epoch from now()) * 1000 - 604800000)
+WHERE key = 'feature_x_enabled';
+```
+
+## GDPR and Data Minimization
+
+`audit_retain_ms` enforces automatic purge of old versions during compaction:
+
+```sql
+CREATE COLLECTION user_activity (
+    user_id UUID,
+    action VARCHAR,
+    ts TIMESTAMP TIME_KEY
+) WITH (engine='columnar', audit_retain_ms=2592000000);  -- 30 days
+```
+
+Tiles or row-versions older than the window are irreversibly purged. Historical queries beyond the retention window return no rows for that range.
+
+## Performance Notes
+
+- **System time queries** read from historical snapshots — performance depends on snapshot availability for the requested time
+- **Valid time queries** scan all versions and filter — slower than single-version reads
+- **Both clauses** intersect — slower still, but produce precise audit trails
+
+For large collections with heavy correction traffic: archive old versions to L2 (S3) cold storage periodically, reduce `audit_retain_ms` once the compliance window expires, and rely on columnar compression to keep storage overhead low.
