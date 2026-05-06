@@ -42,3 +42,35 @@ Raft leader election handles temporary unavailability.
 - **Single node failure** — Raft elects new leaders for affected vShards
 - **Minority failure** — Cluster remains available with quorum
 - **Majority failure** — Cluster becomes read-only until quorum restores
+
+## Cross-shard transaction mode
+
+```sql
+-- Require atomic cross-shard writes (default)
+SET cross_shard_txn = 'strict';
+
+-- Opt out of atomicity for bulk loads (each shard commits independently)
+SET cross_shard_txn = 'best_effort_non_atomic';
+
+SHOW cross_shard_txn;
+```
+
+See [Cross-Shard Transactions](../architecture/cross-shard-transactions) for details on the Calvin sequencer and OLLP.
+
+## Debug endpoints
+
+```bash
+# List all Raft groups (data, meta, sequencer)
+curl http://localhost:6480/v1/cluster/debug/raft/{group_id}
+
+# QUIC transport diagnostics
+curl http://localhost:6480/v1/cluster/debug/transport
+
+# Catalog descriptor dump
+curl http://localhost:6480/v1/cluster/debug/catalog/descriptors
+
+# Segments currently in quarantine (corrupt and isolated)
+curl http://localhost:6480/v1/cluster/debug/quarantined-segments
+```
+
+See [Corruption Quarantine](./corruption-quarantine) for the quarantine runbook.

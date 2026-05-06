@@ -1,0 +1,90 @@
+---
+title: Corruption Quarantine
+description: Automatic detection and isolation of corrupt segments, with operator tooling for inspection and recovery.
+---
+
+# Corruption Quarantine
+
+NodeDB automatically detects corrupt segments using CRC32C checksums and isolates them so one bad segment cannot take down an entire collection or shard.
+
+## How it works — two-strike rule
+
+**First CRC failure** on a segment: log a warning and retry the read once.
+
+**Second failure** on the same segment: the segment is quarantined —
+
+1. The file is renamed to `<original-path>.quarantined.<unix_ts_ms>`
+2. The segment ID is recorded in the quarantine registry
+3. Subsequent reads of that segment return a typed `SegmentQuarantined` error
+4. All other segments in the collection continue serving reads normally
+
+On restart, NodeDB scans the data directory for `*.quarantined.*` files and rebuilds the registry automatically — quarantine state survives restarts.
+
+The two-strike rule prevents transient I/O errors (flipped bit on a warm SSD) from quarantining healthy segments, while ensuring persistently corrupt segments are isolated after the first retry.
+
+## Affected engines
+
+Quarantine is wired into reads for:
+
+- **Columnar** — segment scan, retention scan, prior-value read
+- **FTS** — redb backend byte retrieval
+- **Raft snapshots** — snapshot chunk install
+- **Vector** — wrapper present; currently no production read sites (segments held in-memory; quarantine activates if disk-resident vector segments are added in future)
+
+## Inspect quarantined segments
+
+```bash
+curl http://localhost:6480/v1/cluster/debug/quarantined-segments
+```
+
+Response:
+
+```json
+{
+  "segments": [
+    {
+      "segment_id": "col-00042",
+      "engine": "columnar",
+      "collection": "events",
+      "quarantined_at_unix_ms": 1746480000000,
+      "strikes": 2,
+      "last_error": "FooterCrcMismatch"
+    }
+  ]
+}
+```
+
+An empty `segments` array means no segments are currently quarantined.
+
+## Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `nodedb_segments_quarantined_total{engine,collection}` | counter | Cumulative segments quarantined since startup |
+| `nodedb_segments_quarantined_active{engine,collection}` | gauge | Segments currently in quarantine |
+
+Alert on `nodedb_segments_quarantined_total` increasing, or `nodedb_segments_quarantined_active > 0`.
+
+## Recovery
+
+A quarantined segment means data in that segment is unreadable. Options:
+
+**Option 1 — Restore from backup.** If you have a recent backup, restore it. The quarantined file is preserved as-is until you delete it manually.
+
+```sql
+RESTORE TENANT acme FROM '/backups/acme-latest.bak';
+```
+
+**Option 2 — Rebuild the index.** For vector and FTS indexes, the index can be rebuilt from the source data without data loss.
+
+```sql
+REINDEX CONCURRENTLY my_collection;
+```
+
+**Option 3 — Drop and repopulate.** If the collection can be repopulated from an upstream source, drop and recreate it.
+
+**After recovery:** the `.quarantined.<ts>` files can be deleted manually once you've confirmed data is restored. NodeDB does not auto-delete them.
+
+## Storage location
+
+By default quarantined files stay alongside their originals on local disk. To archive quarantined files to object storage instead, configure `quarantine_storage` — see [Backup & Recovery](./backup-recovery#quarantine-storage).

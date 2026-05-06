@@ -25,8 +25,27 @@ Each Raft group handles:
 
 Writes are linearizable within each Raft group.
 
+## Raft group kinds
+
+NodeDB runs three kinds of Raft groups simultaneously:
+
+| Kind | Purpose | Count |
+|---|---|---|
+| **Data** | One per vShard — replicates WAL entries for that shard's data | One per vShard |
+| **Meta** | Cluster membership, catalog, schema | One per cluster |
+| **Sequencer** | Cross-shard transaction ordering (Calvin epoch log) | One per cluster |
+
+Each kind has independent leader election. A sequencer leader failure does not affect data-group leaders, and vice versa.
+
+### Sequencer Raft group
+
+The sequencer group exists solely to produce a globally-ordered log of cross-shard transaction batches (epochs). It has its own dedicated group ID outside the data-group range so it can never accidentally alias a vShard. See [Cross-Shard Transactions](./cross-shard-transactions) for how the sequencer group interacts with the scheduler and executor.
+
+Single-shard writes never touch the sequencer group — they go directly through the relevant data-group's Raft.
+
 ## Advantages of Multi-Raft
 
 - **Independent leaders** — different vShards can have leaders on different nodes, distributing write load
 - **Parallel commits** — vShards commit independently, no global ordering bottleneck
 - **Granular failover** — a node failure only triggers leader election for the vShards it led, not the entire cluster
+- **Failure isolation** — sequencer leader election is independent of data and meta group elections

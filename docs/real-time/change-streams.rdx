@@ -45,6 +45,21 @@ WITH (DELIVERY = 'kafka', BROKERS = 'localhost:9092', TOPIC = 'orders');
 
 **HTTP long-poll** — `GET /v1/streams/{stream}/poll?group={group}&limit=100`.
 
+The poll response includes gap-detection fields alongside the events:
+
+```json
+{
+  "events": [...],
+  "evicted_since_last_poll": 0,
+  "oldest_available_lsn": 19240
+}
+```
+
+- `evicted_since_last_poll` — number of events dropped from the buffer since the previous poll call. A non-zero value means the consumer fell behind and the stream's ring buffer wrapped; events in the gap are permanently lost for this consumer.
+- `oldest_available_lsn` — the lowest LSN still present in the stream buffer. Consumers can compare this against their last-seen LSN to detect gaps without waiting for the next event to arrive.
+
+The `nodedb_cdc_events_dropped_total{tenant,stream}` counter tracks drops per named stream (not globally). Alert on this increasing for a stream whose consumer is active.
+
 ## Streaming Materialized Views
 
 ```sql

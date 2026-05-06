@@ -13,6 +13,20 @@ EXPLAIN SELECT * FROM users WHERE age > 30;
 
 Shows the logical and physical query plan. Useful for understanding how the query planner routes to engines and which indexes are used.
 
+## Cross-shard dispatch
+
+For writes that span multiple vShards, `EXPLAIN` reports whether the query routes through the Calvin sequencer:
+
+```sql
+EXPLAIN INSERT INTO orders (id, region, total) VALUES ('o1', 'eu', 99.99);
+-- Calvin static dispatch | vshards: [3, 7] | mode: strict | epoch: <assigned by sequencer at admission> | position: <assigned by sequencer>
+
+EXPLAIN INSERT INTO local_cache (id, val) VALUES ('k1', 'v');
+-- (single-shard plans emit no preamble — the plan rows that follow describe the local execution)
+```
+
+The cross-shard preamble appears only for sequenced multi-vShard writes. The `epoch` and `position` fields show placeholder text at `EXPLAIN` time — they are assigned by the sequencer when the transaction is actually submitted. Other dispatch modes (`Calvin dependent-read dispatch (OLLP)`, `Best-effort multi-shard dispatch [NON-ATOMIC]`) replace the leading label.
+
 ## Session Variables
 
 ```sql
@@ -52,4 +66,4 @@ SHOW AUDIT LOG LIMIT 100;
 
 ## Limitations
 
-`EXPLAIN ANALYZE` is not yet supported. It requires instrumentation across the SPSC bridge to collect per-core execution stats from the Data Plane.
+`EXPLAIN ANALYZE` with actual per-operator runtime stats is not yet supported — it requires instrumentation across the SPSC bridge to collect per-core execution stats from the Data Plane. The cross-shard preamble (epoch, position, participating vshards) does appear for sequenced queries.

@@ -52,3 +52,49 @@ curl http://localhost:6480/health/ready   # WAL recovered, ready for queries
 | Connection      | Active connections, auth failures               |
 | Replication     | Raft log lag, replication latency               |
 | Storage         | WAL fsync latency, segment count, compaction debt |
+
+## Cross-shard transaction metrics
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `nodedb_sequencer_epochs_total` | counter | Epochs proposed by the sequencer |
+| `nodedb_sequencer_epoch_duration_ms` | histogram | Time to drain and propose each epoch |
+| `nodedb_sequencer_admitted_txns_total{outcome}` | counter | Admission outcomes: `admitted`, `rejected_conflict`, `rejected_inbox_full`, `rejected_txn_too_large`, `rejected_fanout_too_wide`, `rejected_tenant_quota`, `rejected_not_leader` |
+| `nodedb_sequencer_inbox_depth` | gauge | Pending transactions in the sequencer inbox |
+| `nodedb_calvin_scheduler_lock_wait_ms_total{vshard}` | counter | Cumulative lock-wait time per shard |
+| `nodedb_calvin_executor_txn_duration_ms{vshard}` | histogram | Per-shard execution time for cross-shard txns |
+| `nodedb_calvin_ollp_retries_total{predicate_class,outcome}` | counter | OLLP retry outcomes (`succeeded`, `retried`, `exhausted`, `circuit_open`, `tenant_budget_exceeded`) |
+| `nodedb_calvin_ollp_circuit_state{predicate_class}` | gauge | 0 = closed, 1 = half-open, 2 = open |
+| `nodedb_calvin_ollp_backoff_ms{predicate_class}` | gauge | Current OLLP retry backoff delay |
+| `nodedb_calvin_infra_abort_total{reason}` | counter | Infrastructure aborts (disk error, OOM, corruption) |
+
+## Memory backpressure metrics
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `nodedb_backpressure_critical_total{engine}` | counter | Write handlers that entered the Critical-pressure flush path |
+| `nodedb_backpressure_emergency_total{engine}` | counter | Write handlers rejected by Emergency-pressure |
+
+## IO priority metrics
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `nodedb_io_queue_depth{priority}` | gauge | Pending tasks per IO priority tier (`background`, `normal`, `high`, `critical`) |
+| `nodedb_io_wait_ns{priority}` | histogram | Submission-to-completion latency per tier |
+
+## CDC metrics
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `nodedb_cdc_events_dropped_total{tenant,stream}` | counter | Events dropped from a named stream's buffer due to overflow — per stream, not global |
+
+Alert on this increasing for a stream whose consumer is active — it means the consumer is falling behind.
+
+## Corruption quarantine metrics
+
+See [Corruption Quarantine](./corruption-quarantine) for the full quarantine runbook.
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `nodedb_segments_quarantined_total{engine,collection}` | counter | Cumulative segments quarantined since startup |
+| `nodedb_segments_quarantined_active{engine,collection}` | gauge | Segments currently in quarantine |

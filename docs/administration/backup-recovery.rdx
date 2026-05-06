@@ -43,3 +43,29 @@ The Event Plane resumes from its LSN watermark — no events are lost.
 ## WAL Archiving
 
 WAL segments can be archived for point-in-time recovery. Old segments are eligible for cleanup once all records have been flushed to L1 segments.
+
+## Object storage for snapshots and quarantine
+
+By default, snapshots and quarantined segment files are stored on local disk alongside the data directory. Both can be redirected to S3-compatible object storage.
+
+```toml
+[snapshot_storage]
+endpoint = "https://s3.amazonaws.com"
+bucket   = "my-nodedb-snapshots"
+region   = "us-east-1"
+prefix   = "cluster-prod"
+access_key = "AKIA..."
+secret_key = "..."
+
+[quarantine_storage]
+endpoint = "https://s3.amazonaws.com"
+bucket   = "my-nodedb-quarantine"
+region   = "us-east-1"
+prefix   = "cluster-prod"
+access_key = "AKIA..."
+secret_key = "..."
+```
+
+Omit `endpoint` (or leave it empty) to use the local filesystem — this is the default. Both sections are independent: you can put snapshots on S3 and leave quarantine files local, or vice versa.
+
+The cold data tier (`[cold_storage]`) is a separate config from these two — it covers Parquet archives and timeseries L2 data, not snapshots or quarantine files.

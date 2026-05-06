@@ -5,7 +5,7 @@ description: Reciprocal Rank Fusion for combining results from multiple engines 
 
 # Cross-Engine Fusion (RRF)
 
-Reciprocal Rank Fusion merges ranked results from different engines — vector similarity, BM25 text ranking, graph hop distance — into a single result set. No application-level merging needed.
+Reciprocal Rank Fusion merges ranked results from two engines into a single result set. No application-level merging needed. Two pairwise fusions are supported: vector + BM25 text via `rrf_score(...)`, and vector + graph via either `GRAPH RAG FUSION ON ...` or `SEARCH ... USING FUSION(...)`.
 
 ## How RRF Works
 
@@ -26,8 +26,24 @@ LIMIT 10;
 
 ```sql
 GRAPH RAG FUSION ON entities
-  QUERY $embedding VECTOR_FIELD 'embedding' VECTOR_TOP_K 50 EXPANSION_DEPTH 2
-  EDGE_LABEL 'related_to' FINAL_TOP_K 10 RRF_K (60.0, 35.0);
+  QUERY ARRAY[0.1, 0.3, -0.2, ...]
+  VECTOR_FIELD 'embedding'
+  VECTOR_TOP_K 50
+  EXPANSION_DEPTH 2
+  EDGE_LABEL 'related_to'
+  FINAL_TOP_K 10
+  RRF_K (60.0, 35.0);
+```
+
+Equivalent shorthand:
+
+```sql
+SEARCH entities USING FUSION(
+  ARRAY[0.1, 0.3, -0.2, ...]
+  VECTOR_FIELD 'embedding' VECTOR_TOP_K 50
+  DEPTH 2 LABEL 'related_to'
+  TOP 10 RRF_K (60.0, 35.0)
+);
 ```
 
 Vector search finds seed nodes, graph BFS expands context, RRF merges both rankings.

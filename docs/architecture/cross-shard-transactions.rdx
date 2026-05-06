@@ -1,0 +1,134 @@
+---
+title: Cross-Shard Transactions
+description: Calvin sequencer architecture for deterministic, atomically-committed cross-shard writes.
+---
+
+# Cross-Shard Transactions
+
+When a write touches rows that hash to more than one vShard, NodeDB routes it through the **Calvin sequencer** — a dedicated Raft-backed coordination layer that guarantees all participating shards commit the transaction in the same order, with no mid-flight aborts.
+
+Single-shard writes bypass this entirely and take the normal per-vShard Raft fast path.
+
+## Why Calvin, not 2PC
+
+Two-phase commit with compensating actions was the earlier design. It was replaced because compensation creates observable intermediate states (a row exists, then disappears), compensation can itself fail, and every read path that crosses an in-flight transaction has to know about pending compensations. The concern spreads outward indefinitely.
+
+Calvin (Thomson et al., SIGMOD 2012) eliminates the problem by validating the full read/write set *before* any shard touches the transaction. Every shard executes against a globally-ordered input log. There is no concept of "shard A committed, shard B failed" — either all shards execute the transaction or none do.
+
+## Architecture
+
+```
+Client / Control Plane
+  │  declares read/write set
+  ▼
+SEQUENCER  (dedicated Raft group, Control Plane)
+  │  batches transactions into epochs (default 20 ms)
+  │  replicates each epoch via Raft — globally ordered
+  ▼
+SCHEDULER  (per vShard, Control Plane)
+  │  acquires locks in deterministic global order
+  │  single-threaded per shard
+  ▼
+EXECUTOR   (Data Plane, existing engine handlers)
+  │  executes deterministically using the sequenced batch
+  │  no application-level aborts — all constraint checks happen upstream
+```
+
+### The sequencer Raft group
+
+The sequencer runs as its own independent Raft group (`SEQUENCER_GROUP_ID`), separate from the per-vShard data groups and the metadata group. This means:
+
+- **Failure isolation** — sequencer leader election doesn't disrupt metadata reads, schema operations, or data writes
+- **Independent tuning** — epoch duration (default 20 ms) is tuned separately from data-group commit latency
+- **Geographic placement** — the sequencer triad can sit on the lowest-latency nodes without constraining where data groups live
+
+### Epochs
+
+The sequencer leader batches incoming transactions into epoch windows (default 20 ms). At the end of each window it:
+
+1. Runs a pre-validation pass — detects intra-batch write-set conflicts; admits the first txn for a conflicting key, rejects others with `SequencerConflict` so the client retries
+2. Proposes the validated batch to the sequencer Raft group
+3. Once committed, fans the epoch out to each participating vShard's scheduler
+
+### Determinism
+
+All replicas must produce byte-identical WAL output for the same epoch. The executor is forbidden from using wall-clock time, non-seeded randomness, or non-deterministic map iteration on the cross-shard write path. System-time columns (bitemporal `sys_from`, KV TTL expiry, graph HLC ordinals) are seeded from the epoch timestamp so all replicas stamp the same value.
+
+## Session variable
+
+```sql
+-- Default: route multi-vShard writes through the sequencer (atomic)
+SET cross_shard_txn = 'strict';
+
+-- Explicit opt-out: each shard commits independently (NOT atomic)
+SET cross_shard_txn = 'best_effort_non_atomic';
+
+SHOW cross_shard_txn;
+```
+
+`best_effort_non_atomic` is intended for bulk loads where atomicity is not required. It is deliberately named to discourage accidental use.
+
+## EXPLAIN output
+
+`EXPLAIN` reports whether a query routes through the sequencer:
+
+```sql
+EXPLAIN INSERT INTO orders VALUES (...);
+-- cross-shard: sequenced | vshards: [3, 7] | epoch: <assigned at admission> | position: <assigned at admission>
+
+EXPLAIN INSERT INTO local_cache VALUES (...);
+-- single-shard: vshard 3
+```
+
+## OLLP — value-dependent predicates
+
+For `UPDATE ... WHERE balance > 10000` where the write set depends on a scan result, NodeDB uses Optimistic Lock Location Prediction:
+
+1. The planner runs the query optimistically once to capture the predicted write set
+2. Submits to the sequencer with the predicted set
+3. At execution time the executor re-scans and compares — if the set changed due to a concurrent commit, it returns `OllpRetryRequired` and retries transparently
+
+To prevent retry storms, each predicate class (the parsed predicate AST, ignoring bound parameters) has:
+
+- **Adaptive backoff** — starts at 10 ms, doubles up to 5 s
+- **Circuit breaker** — opens after >50% retry rate over a 60 s window; half-opens after 30 s; closes after 4 consecutive successes
+- **Per-tenant budget** — 1000 retries/min per tenant; excess returns `OllpTenantBudgetExceeded`
+
+Static predicates (`WHERE id IN (...)`, `WHERE id = ?`) compute a deterministic write set at parse time and never enter the OLLP path.
+
+## Admission limits
+
+The sequencer enforces caps to prevent a single transaction from monopolising the cluster:
+
+| Cap | Default | Error on exceed |
+|---|---|---|
+| `max_plans_bytes_per_txn` | 1 MiB | `TxnTooLarge` |
+| `max_participating_vshards_per_txn` | 64 | `FanoutTooWide` |
+| `max_txns_per_epoch` | 1024 | queued to next epoch |
+| `max_bytes_per_epoch` | 16 MiB | queued to next epoch |
+| Per-tenant inbox quota | inbox / 8 | `TenantQuotaExceeded` |
+
+## Failure modes
+
+| Failure | Behaviour |
+|---|---|
+| Sequencer leader dies | Raft re-elects; in-flight inbox submissions dropped; clients see `Unavailable` and retry |
+| Sequencer follower dies | No client-visible impact; quorum remains |
+| Scheduler shard crashes | Rebuilt from sequencer log on restart; shard unavailable until rebuild completes |
+| Executor panic mid-apply | Locks held; shard restarts and replays the txn from WAL (determinism ensures identical result) |
+| Network partition | Partitioned shard stops applying new epochs; serves reads with snapshot semantics; catches up on heal |
+
+## Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `nodedb_sequencer_epochs_total` | counter | Epochs proposed |
+| `nodedb_sequencer_epoch_duration_ms` | histogram | Time to drain + propose each epoch |
+| `nodedb_sequencer_admitted_txns_total{outcome}` | counter | Per-outcome admission counts (`admitted`, `rejected_conflict`, `rejected_inbox_full`, `rejected_txn_too_large`, `rejected_fanout_too_wide`, `rejected_tenant_quota`, `rejected_not_leader`) |
+| `nodedb_sequencer_inbox_depth` | gauge | Pending txns in the inbox |
+| `nodedb_calvin_scheduler_lock_wait_ms_total{vshard}` | counter | Cumulative lock-wait time per shard |
+| `nodedb_calvin_executor_txn_duration_ms{vshard}` | histogram | Per-shard execution time |
+| `nodedb_calvin_ollp_retries_total{predicate_class,outcome}` | counter | OLLP retry outcomes |
+| `nodedb_calvin_ollp_circuit_state{predicate_class}` | gauge | 0=closed, 1=half-open, 2=open |
+| `nodedb_calvin_ollp_backoff_ms{predicate_class}` | gauge | Current OLLP backoff delay |
+| `nodedb_calvin_infra_abort_total{reason}` | counter | Infrastructure-level aborts (disk error, OOM, etc.) |

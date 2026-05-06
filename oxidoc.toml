@@ -47,6 +47,7 @@ navigation = [
       "architecture/multi-raft",
       "architecture/vshards",
       "architecture/replication",
+      "architecture/cross-shard-transactions",
     ] },
 
     # ── Data Modeling ──────────────────────────────────────────────
@@ -140,6 +141,7 @@ navigation = [
     ] },
     { group = "Operations", pages = [
       "administration/monitoring",
+      "administration/corruption-quarantine",
       "administration/backup-recovery",
       "administration/cluster-operations",
       "administration/memory-management",

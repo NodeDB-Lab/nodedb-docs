@@ -100,7 +100,18 @@ CREATE SEARCH INDEX ON articles FIELDS title, body ANALYZER 'english' FUZZY true
 CREATE SPATIAL INDEX ON locations(geom);
 CREATE SORTED INDEX lb ON scores (score DESC) KEY player_id;
 DROP INDEX idx_email;
+
+-- Rebuild all indexes on a collection (non-blocking concurrent path recommended)
+REINDEX CONCURRENTLY articles;
+
+-- Rebuild a specific named index only
+REINDEX INDEX idx_email CONCURRENTLY users;
+
+-- Blocking rebuild (holds write lock for the duration — use only in maintenance windows)
+REINDEX articles;
 ```
+
+`REINDEX CONCURRENTLY` builds the new index in a shadow location while reads and writes continue against the live index. Cutover is a single atomic swap. Supported for HNSW vector indexes, FTS LSM indexes, and Graph CSR indexes. Secondary B-tree indexes use the blocking path regardless of `CONCURRENTLY` (rebuild is fast for B-tree).
 
 ## Triggers
 
