@@ -7,17 +7,22 @@ description: PostgreSQL type OID mappings for pgwire protocol compatibility.
 
 NodeDB maps its types to PostgreSQL OIDs for pgwire compatibility.
 
-| NodeDB Type | PostgreSQL Type | OID  |
-| ----------- | --------------- | ---- |
-| STRING      | text            | 25   |
-| INT         | int8            | 20   |
-| FLOAT       | float8          | 701  |
-| BOOL        | bool            | 16   |
-| TIMESTAMP   | timestamptz     | 1184 |
-| UUID        | uuid            | 2950 |
-| DECIMAL     | numeric         | 1700 |
-| ARRAY       | jsonb           | 3802 |
-| OBJECT      | jsonb           | 3802 |
-| GEOMETRY    | bytea           | 17   |
+| NodeDB Type  | PostgreSQL Type | OID  |
+| ------------ | --------------- | ---- |
+| STRING       | text            | 25   |
+| INT          | int8            | 20   |
+| FLOAT        | float8          | 701  |
+| BOOL         | bool            | 16   |
+| TIMESTAMP    | timestamp       | 1114 |
+| TIMESTAMPTZ  | timestamptz     | 1184 |
+| INTERVAL     | interval        | 1186 |
+| UUID         | uuid            | 2950 |
+| DECIMAL      | numeric         | 1700 |
+| ARRAY        | jsonb           | 3802 |
+| OBJECT       | jsonb           | 3802 |
+| GEOMETRY     | bytea           | 17   |
+| VECTOR       | float4[]        | 1021 |
 
-Complex types (ARRAY, OBJECT) are serialized as JSONB over pgwire. GEOMETRY is serialized as WKB (bytea).
+`TIMESTAMP` (OID 1114) is timezone-naive. `TIMESTAMPTZ` (OID 1184) is UTC-normalised. Use `TIMESTAMPTZ` for wall-clock event times; `TIMESTAMP` for values that are inherently local (e.g. a schedule expressed in the user's timezone before conversion).
+
+Complex types (ARRAY, OBJECT) are serialized as JSONB over pgwire. GEOMETRY is serialized as WKB (bytea). VECTOR is serialized as a float4 array.

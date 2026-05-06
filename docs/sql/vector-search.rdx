@@ -8,10 +8,12 @@ description: Nearest neighbor search, filtered vector search, and multi-vector q
 ## Nearest Neighbor
 
 ```sql
-SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, -0.2, ...], 10);
+SELECT id, vector_distance(embedding, ARRAY[0.1, 0.3, -0.2, ...]) AS dist
+FROM articles
+ORDER BY dist LIMIT 10;
 ```
 
-Returns the 10 nearest neighbors by the metric configured on the index (l2, cosine, inner_product, manhattan, chebyshev, hamming, jaccard, or pearson).
+Returns the 10 nearest neighbors by the metric configured on the index (l2, cosine, inner_product, manhattan, chebyshev, hamming, jaccard, or pearson). The planner detects `ORDER BY vector_distance(...) LIMIT k` and rewrites it into an ANN top-k plan; no special `SEARCH` keyword is required.
 
 ## Filtered Vector Search
 
@@ -19,7 +21,7 @@ Returns the 10 nearest neighbors by the metric configured on the index (l2, cosi
 SELECT title, vector_distance(embedding, ARRAY[0.1, 0.3, ...]) AS score
 FROM articles
 WHERE category = 'machine-learning'
-  AND id IN (SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, ...], 10));
+ORDER BY score LIMIT 10;
 ```
 
 The engine builds a Roaring Bitmap of matching IDs and selects the optimal strategy: pre-filter (selective filters), post-filter (broad filters), or brute-force (very selective).

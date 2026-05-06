@@ -8,11 +8,15 @@ description: On-disk format specifications for WAL records and segment files.
 ## WAL Record Format
 
 ```
-┌──────────┬─────────────────┬────────────┬─────┬───────────┬───────────┬─────────────┬─────────┐
-│  magic   │ format_version  │ record_type│ lsn │ tenant_id │ vshard_id │ payload_len │ crc32c  │
-│  4 bytes │    2 bytes      │   2 bytes  │ 8B  │   4 bytes │  2 bytes  │   4 bytes   │ 4 bytes │
-└──────────┴─────────────────┴────────────┴─────┴───────────┴───────────┴─────────────┴─────────┘
+┌─────────┬────────────────┬─────────────┬──────┬───────────┬───────────┬─────────────┬──────────┬─────────┐
+│  magic  │ format_version │ record_type │  lsn │ tenant_id │ vshard_id │ payload_len │ reserved │ crc32c  │
+│  4 bytes│    2 bytes     │   4 bytes   │  8B  │   8 bytes │  4 bytes  │   4 bytes   │ 16 bytes │ 4 bytes │
+└─────────┴────────────────┴─────────────┴──────┴───────────┴───────────┴─────────────┴──────────┴─────────┘
 ```
+
+Byte offsets: magic 0..4, format_version 4..6, record_type 6..10, lsn 10..18, tenant_id 18..26, vshard_id 26..30, payload_len 30..34, reserved 34..50, crc32c 50..54. Total header: **54 bytes**.
+
+Bit 14 of `record_type` signals AES-256-GCM encryption of the payload. The logical record type is `record_type & !(1 << 14)`.
 
 - Page size: 4 KiB or 16 KiB (O_DIRECT alignment)
 - CRC32C per page for bit-rot detection

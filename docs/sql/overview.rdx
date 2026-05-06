@@ -34,7 +34,7 @@ NodeDB supports standard SQL with high PostgreSQL compatibility:
 
 Beyond standard SQL, NodeDB extends the language for each engine:
 
-- **Vector** — `SEARCH ... USING VECTOR()`, `vector_distance()`
+- **Vector** — `vector_distance()` with `<->` / `<=>` / `<#>` operators, ANN-aware `ORDER BY ... LIMIT k`
 - **Graph** — `GRAPH TRAVERSE`, `GRAPH ALGO`, `MATCH` patterns
 - **Full-Text** — `text_match()`, `bm25_score()`, `search_score()`
 - **Spatial** — `ST_DWithin()`, `ST_Contains()`, `ST_Distance()`, etc.
