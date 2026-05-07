@@ -1,0 +1,67 @@
+---
+title: SQL Reference Index
+description: Complete index of NodeDB SQL features — standard SQL, engine extensions, DDL, DML, and known gaps.
+---
+
+# SQL Reference
+
+NodeDB exposes a PostgreSQL-compatible SQL surface over pgwire, HTTP, and the native protocol. All features below are available in every deployment mode (Origin cloud, Origin local, NodeDB-Lite where noted).
+
+## Core SQL
+
+| Page | What it covers |
+| ---- | -------------- |
+| [Overview](overview) | Query execution model, PG compatibility basics, isolation level |
+| [DDL](ddl) | Collections, indexes, triggers, functions, materialized views, cron, backup |
+| [SELECT](select) | Filtering, aggregates, window functions, CTEs, recursive CTEs, set operations |
+| [INSERT & UPSERT](insert-upsert) | INSERT, ON CONFLICT, UPSERT, COPY FROM |
+| [UPDATE & DELETE](update-delete) | UPDATE, UPDATE … FROM, DELETE, RETURNING, MERGE, transactions |
+| [JOINs & Aggregations](joins-aggregations) | Inner/outer/semi/anti joins, LATERAL, GROUP BY ROLLUP/CUBE/GROUPING SETS |
+| [Functions](functions) | Scalar, aggregate, date/time, KV atomic, timeseries, vector, FTS, CRDT |
+
+## Engine-Specific SQL
+
+| Page | What it covers |
+| ---- | -------------- |
+| [Vector Search](vector-search) | ANN, filtered search, quantization, vector-primary collections |
+| [Full-Text Search](fulltext-search) | BM25, fuzzy, NOT operator, synonyms, hybrid search |
+| [Graph Queries](graph-queries) | Edge ops, traversal, MATCH patterns, algorithms, GraphRAG |
+| [Spatial Queries](spatial-queries) | OGC predicates, proximity, geofencing, H3, spatial joins |
+| [CRDT Operations](crdt-operations) | crdt_state(), crdt_apply(), conflict policies |
+| [Fusion & RRF](fusion-rrf) | Two-source and three-source Reciprocal Rank Fusion, FUSION DSL |
+
+## SQL Extensions
+
+| Page | What it covers |
+| ---- | -------------- |
+| [JSON Operators](json-operators) | `->`, `->>`  `#>`, `#>>`, `@>`, `<@`, `?`, `?|`, `?&` |
+| [COPY](copy) | COPY FROM (import), COPY TO (export), NDJSON / CSV / JSON array |
+| [LISTEN / NOTIFY](listen-notify) | Async pgwire notifications, transaction buffering, tenant scoping |
+| [Custom Types](custom-types) | CREATE TYPE AS ENUM, CREATE TYPE AS composite, ALTER TYPE ADD VALUE |
+| [Window Frames](window-frames) | ROWS, RANGE, GROUPS frame modes with all boundary combinations |
+| [Lateral Subqueries](lateral-subqueries) | LATERAL FROM, JOIN LATERAL, planning modes |
+| [Recursive CTEs](recursive-cte) | WITH RECURSIVE, value-generating forms, validation rules |
+| [Grouping Sets](grouping-sets) | GROUP BY ROLLUP, CUBE, GROUPING SETS, GROUPING() function |
+
+## Diagnostics
+
+| Page | What it covers |
+| ---- | -------------- |
+| [EXPLAIN](explain) | Query plans, cross-shard dispatch, session variables, introspection |
+
+## Known Gaps
+
+Features not yet available:
+
+- **Transactional DDL** — `CREATE COLLECTION`, `CREATE INDEX`, and other DDL statements auto-commit and cannot be rolled back inside a multi-statement transaction.
+- **`EXPLAIN ANALYZE`** — per-operator runtime stats require Data Plane instrumentation not yet wired. `EXPLAIN` (plan-only) works.
+- **Custom types as pgwire wire-format codecs** — enum and composite types are stored and queryable, but the pgwire layer sends them as `TEXT` rather than their registered OID binary format.
+- **`ALTER TYPE` beyond `ADD VALUE`** — renaming labels, dropping labels, and reordering composite fields are not yet supported.
+- **`ALTER TYPE … RENAME VALUE`** — blocked by the same gap above.
+- **`DROP TYPE` cascade** — `DROP TYPE` is protected; it fails if the type is in use. Cascade dropping the dependent collections first is required manually.
+- **`CHECK` constraints, `FOREIGN KEY`, `REFERENCES`** — rejected at DDL time. See [DDL](ddl) for the canonical replacements.
+- **`UPDATE/DELETE … JOIN` syntax** — rewrite as a subquery. `UPDATE … FROM` is supported; `UPDATE … JOIN` is not.
+- **Full `ALTER TABLE` / `ALTER COLLECTION`** — `ADD COLUMN` and `DROP COLUMN` work; renaming columns, changing column types, and adding/dropping constraints are not yet supported.
+- **`COPY FROM STDIN`** — the streaming STDIN form is handled only by the backup/restore path. File-path `COPY FROM` and `COPY TO` work.
+- **`LISTEN` on non-collection channels** — `LISTEN` subscribes to a collection's change stream. Arbitrary string channel names (Postgres style) are not supported.
+- **Prepared statements for DDL** — only DML (SELECT, INSERT, UPDATE, DELETE) and some DQL statements support the extended-query (prepared) protocol.

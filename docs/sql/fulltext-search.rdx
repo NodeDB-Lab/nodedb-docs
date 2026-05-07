@@ -28,6 +28,61 @@ CJK text is automatically tokenized via character bigrams:
 SELECT title FROM articles WHERE text_match(body, '全文検索');
 ```
 
+## NOT Operator
+
+Exclude documents that match specific terms using the `NOT` keyword or the `-` prefix (Lucene-style, no space before the term).
+
+Both forms require at least one positive term — a query consisting only of negations is rejected.
+
+```sql
+-- Exclude documents that mention 'python'
+SELECT title FROM articles
+WHERE text_match(body, 'rust NOT python');
+
+-- Multiple exclusions
+SELECT title FROM articles
+WHERE text_match(body, 'database NOT mysql NOT oracle');
+
+-- Lucene-style dash prefix (equivalent to NOT)
+SELECT title FROM articles
+WHERE text_match(body, 'database -mysql -oracle');
+```
+
+Parenthesised NOT groups are not supported. Use flat negations:
+
+```sql
+-- Not supported:  rust NOT (python OR ruby)
+-- Supported:      rust NOT python NOT ruby
+SELECT title FROM articles
+WHERE text_match(body, 'rust NOT python NOT ruby');
+```
+
+## Synonym Groups
+
+A synonym group makes the FTS engine treat a set of terms as interchangeable during indexing and querying. When a document contains any term in the group it also matches queries for any other term in the group.
+
+```sql
+-- Define synonyms
+CREATE SYNONYM GROUP db_terms AS ('database', 'db', 'datastore');
+CREATE SYNONYM GROUP ml_terms AS ('machine learning', 'ml', 'artificial intelligence', 'ai');
+
+-- Now a query for 'db' also matches documents that contain 'database' or 'datastore'
+SELECT title FROM articles WHERE text_match(body, 'db performance');
+```
+
+### Managing synonym groups
+
+```sql
+-- List all groups
+SHOW SYNONYM GROUPS;
+
+-- Drop a group
+DROP SYNONYM GROUP db_terms;
+DROP SYNONYM GROUP IF EXISTS ml_terms;
+```
+
+Synonym group names are case-insensitive. Terms within a group are stored lowercased. Duplicate terms within the same group are rejected at creation time.
+
 ## Hybrid Search (BM25 + Vector)
 
 ```sql

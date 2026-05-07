@@ -67,7 +67,11 @@ doc #>> '{addr,city}'      -- nested path as text
 doc @> '{"role":"admin"}'  -- left contains right
 doc <@ '{"role":"admin"}'  -- left contained in right
 doc ? 'email'              -- top-level key exists
+doc ?| ARRAY['phone','email']  -- any key exists
+doc ?& ARRAY['name','email']   -- all keys exist
 ```
+
+See [JSON Operators](json-operators) for full reference and examples.
 
 ### Full-Text Search (Postgres syntax)
 

@@ -46,6 +46,8 @@ SELECT id,
 FROM employees;
 ```
 
+`ROWS`, `RANGE`, and `GROUPS` frame modes are all supported. See [Window Frames](window-frames) for the full frame syntax and all boundary combinations.
+
 ## CTEs & Subqueries
 
 ```sql
@@ -60,6 +62,8 @@ WITH RECURSIVE subordinates AS (
 )
 SELECT * FROM subordinates;
 ```
+
+See [Recursive CTEs](recursive-cte) for the full reference including value-generating forms, cycle prevention, and validation rules.
 
 ## Set Operations
 

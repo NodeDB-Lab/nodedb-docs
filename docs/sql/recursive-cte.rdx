@@ -1,0 +1,121 @@
+---
+title: Recursive CTEs
+description: WITH RECURSIVE for hierarchical queries, graph traversal in SQL, and value-generating sequences.
+---
+
+# Recursive CTEs
+
+`WITH RECURSIVE` defines a CTE that refers to itself, allowing hierarchical or iterative computations in a single SQL statement.
+
+## Syntax
+
+```sql
+WITH RECURSIVE <name> [(<col1>, <col2>, ...)] AS (
+    <anchor>           -- non-recursive base query
+    UNION [ALL]
+    <recursive_arm>    -- references <name>
+)
+SELECT ... FROM <name>;
+```
+
+The anchor query runs once. The recursive arm is then evaluated repeatedly with the previous iteration's output as the input, until it produces no new rows. Results are the union of all iterations.
+
+`UNION` deduplicates across iterations; `UNION ALL` keeps all rows including duplicates and is faster when you know no cycles exist.
+
+## Examples
+
+### Hierarchy traversal
+
+Walk an employee reporting tree from a given root node:
+
+```sql
+WITH RECURSIVE subordinates AS (
+    -- Anchor: start at the root employee
+    SELECT id, name, manager_id, 0 AS depth
+    FROM employees
+    WHERE id = 'emp_root'
+
+    UNION ALL
+
+    -- Recursive arm: follow manager_id links
+    SELECT e.id, e.name, e.manager_id, s.depth + 1
+    FROM employees e
+    JOIN subordinates s ON e.manager_id = s.id
+)
+SELECT id, name, depth FROM subordinates ORDER BY depth;
+```
+
+### Path finding
+
+Accumulate the path as a text column:
+
+```sql
+WITH RECURSIVE path_cte AS (
+    SELECT id, name, manager_id, CAST(name AS TEXT) AS path
+    FROM employees
+    WHERE id = 'emp_root'
+
+    UNION ALL
+
+    SELECT e.id, e.name, e.manager_id, p.path || ' → ' || e.name
+    FROM employees e
+    JOIN path_cte p ON e.manager_id = p.id
+)
+SELECT id, path FROM path_cte;
+```
+
+### Value-generating form
+
+Generate a sequence of integers without a backing collection:
+
+```sql
+WITH RECURSIVE counter(n) AS (
+    SELECT 1
+    UNION ALL
+    SELECT n + 1 FROM counter WHERE n < 10
+)
+SELECT n FROM counter;
+```
+
+Generate a date series:
+
+```sql
+WITH RECURSIVE dates(d) AS (
+    SELECT CAST('2025-01-01' AS TIMESTAMP)
+    UNION ALL
+    SELECT d + INTERVAL '1 day' FROM dates WHERE d < '2025-01-31'
+)
+SELECT d FROM dates;
+```
+
+## Validation rules
+
+The planner enforces these rules at planning time:
+
+1. **UNION or UNION ALL only.** The recursive arm must be connected to the anchor with `UNION` or `UNION ALL`. `INTERSECT` and `EXCEPT` are not allowed.
+2. **Single self-reference.** The recursive arm must reference the CTE name exactly once. Multiple self-references in the same arm are rejected.
+3. **Column-count match.** If you declare an explicit column list (`WITH RECURSIVE name (col1, col2)`) the anchor's SELECT must produce the same number of columns.
+4. **Maximum depth.** Recursion stops after **1 000 iterations** by default. Queries that would exceed this depth are terminated and an error is returned.
+
+## Cycle prevention
+
+For graph-like data where cycles are possible, use `UNION` (instead of `UNION ALL`) to deduplicate rows, or track visited IDs in an accumulated array column:
+
+```sql
+WITH RECURSIVE traversal(id, visited) AS (
+    SELECT id, ARRAY[id] FROM nodes WHERE id = 'start'
+    UNION ALL
+    SELECT n.id, t.visited || n.id
+    FROM nodes n
+    JOIN edges e ON e.from_id = t.id AND e.to_id = n.id
+    JOIN traversal t ON e.from_id = t.id
+    WHERE NOT (n.id = ANY(t.visited))
+)
+SELECT id FROM traversal;
+```
+
+## Notes
+
+- `WITH RECURSIVE` works across all engine types. The anchor and recursive arm can reference collections from different engines.
+- The recursive arm is evaluated on the Data Plane; complex expressions in the arm (e.g., aggregates, window functions, subqueries) are supported subject to the same constraints as non-recursive queries.
+- For deep hierarchies (depth > several hundred levels), consider using the [Graph engine](graph-queries) TRAVERSE or ALGO commands, which use a native BSP implementation and are not subject to the 1 000-depth cap.

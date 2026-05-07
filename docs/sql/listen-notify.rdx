@@ -1,0 +1,99 @@
+---
+title: LISTEN / NOTIFY / UNLISTEN
+description: Async pgwire change notifications — subscribe to collection mutations and send custom payloads.
+---
+
+# LISTEN / NOTIFY / UNLISTEN
+
+NodeDB implements PostgreSQL-compatible asynchronous notifications over pgwire. A client subscribes to a **collection** and receives a notification message every time a row in that collection is mutated by a committed transaction.
+
+## Subscribing
+
+```sql
+LISTEN <collection>;
+```
+
+After this command the connection enters a listening state for the named collection. Multiple collections can be listened on the same connection.
+
+```sql
+LISTEN orders;
+LISTEN inventory;
+```
+
+## Unsubscribing
+
+```sql
+-- Stop listening to a specific collection
+UNLISTEN orders;
+
+-- Stop listening to all collections on this connection
+UNLISTEN *;
+```
+
+## Sending a manual notification
+
+```sql
+NOTIFY <channel>, '<payload>';
+```
+
+`NOTIFY` sends an arbitrary text payload to all connections currently listening on the named channel. The channel name does not have to be an existing collection — it is just a string label.
+
+```sql
+NOTIFY alerts, 'deployment started';
+NOTIFY user_events, '{"user_id": "u1", "event": "login"}';
+```
+
+## Receiving notifications
+
+Notifications are delivered as PostgreSQL `NotificationResponse` messages. In psql they appear immediately after the triggering transaction commits:
+
+```
+Asynchronous notification "orders" with payload "" from server process with PID 12345.
+```
+
+Most PostgreSQL client libraries expose an async notification callback:
+
+```python
+# Python (psycopg2)
+conn.set_isolation_level(0)  # autocommit required for LISTEN
+cur.execute("LISTEN orders")
+while True:
+    select.select([conn], [], [])
+    conn.poll()
+    while conn.notifies:
+        notify = conn.notifies.pop()
+        print(f"channel={notify.channel} payload={notify.payload}")
+```
+
+## Transaction semantics
+
+Notifications triggered by collection mutations are **buffered until `COMMIT`** and **dropped on `ROLLBACK`**.
+
+```sql
+BEGIN;
+INSERT INTO orders (id, total) VALUES ('o1', 99.99);  -- notification queued, not sent yet
+COMMIT;                                                -- notification delivered now
+
+BEGIN;
+INSERT INTO orders (id, total) VALUES ('o2', 50.00);
+ROLLBACK;                                              -- notification dropped, never sent
+```
+
+This guarantees that listeners never see notifications for writes that were rolled back.
+
+## Tenant scoping
+
+Notifications are tenant-scoped. A connection authenticated to tenant `acme` only receives notifications for mutations within the `acme` tenant. A connection cannot receive notifications for a different tenant's collections, even if it knows the collection name.
+
+## Notification payload
+
+For collection-mutation notifications the payload is empty by default. The full change data is available via [Change Streams](../real-time/change-streams) if you need the actual before/after row values.
+
+`NOTIFY <channel>, '<payload>'` delivers the payload string exactly as provided.
+
+## Notes
+
+- `LISTEN` subscribes to a **collection name**, not an arbitrary string channel. Listening on a name that does not correspond to an existing collection returns no error but will never fire.
+- The connection must remain open to receive notifications — notifications are not queued for reconnection.
+- A single connection can listen on multiple collections simultaneously.
+- `NOTIFY` without a payload (`NOTIFY channel`) is not supported; the payload argument is required.

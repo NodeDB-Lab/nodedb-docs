@@ -48,6 +48,32 @@ SEARCH entities USING FUSION(
 
 Vector search finds seed nodes, graph BFS expands context, RRF merges both rankings.
 
+## Three-Source Fusion (Vector + Text + Graph)
+
+When you want vector similarity, BM25 text relevance, and graph context all merged in one pass, add the `BM25 '<query>' ON '<field>'` leg to the `SEARCH … USING FUSION` DSL. The `RRF_K` tuple becomes a triple.
+
+```sql
+SEARCH entities USING FUSION(
+    ARRAY[0.1, 0.3, -0.2, ...]
+    VECTOR_FIELD 'embedding' VECTOR_TOP_K 50
+    BM25 'transformer attention' ON 'body'
+    DEPTH 2 LABEL 'related_to'
+    TOP 10 RRF_K (60.0, 35.0, 50.0)
+);
+```
+
+The three `RRF_K` values correspond to the vector leg, the graph expansion leg, and the BM25 leg respectively. When all three are present the planner routes through the three-source RRF plan variant.
+
+The two-source `GRAPH RAG FUSION ON … BM25 '…' ON '…'` form also accepts the extra text leg inline:
+
+```sql
+GRAPH RAG FUSION ON entities
+  QUERY $embedding VECTOR_FIELD 'embedding' VECTOR_TOP_K 50
+  BM25 'transformer attention' ON 'body'
+  EXPANSION_DEPTH 2 EDGE_LABEL 'related_to' FINAL_TOP_K 10
+  RRF_K (60.0, 35.0, 50.0);
+```
+
 ## Cross-Model Queries
 
 All engines share the same snapshot. A query that combines vector similarity, graph traversal, spatial filtering, and document field access sees a consistent point-in-time view.

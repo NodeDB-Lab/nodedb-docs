@@ -26,6 +26,27 @@ SELECT * FROM users u WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id =
 
 JOINs work across collections of different storage types — you can join a KV collection with a strict document collection.
 
+## LATERAL Joins
+
+`LATERAL` allows the right-hand subquery to reference columns from the outer table. See [Lateral Subqueries](lateral-subqueries) for the full reference. Quick example:
+
+```sql
+-- Top 3 most recent orders for each user
+SELECT u.id, u.name, o.id AS order_id, o.created_at
+FROM users u
+JOIN LATERAL (
+    SELECT id, created_at FROM orders WHERE user_id = u.id
+    ORDER BY created_at DESC LIMIT 3
+) AS o ON true;
+
+-- LEFT JOIN LATERAL — preserve users with no orders
+SELECT u.id, o.last_order_at
+FROM users u
+LEFT JOIN LATERAL (
+    SELECT MAX(created_at) AS last_order_at FROM orders WHERE user_id = u.id
+) AS o ON true;
+```
+
 ## Aggregate Functions
 
 | Function                | Description             |

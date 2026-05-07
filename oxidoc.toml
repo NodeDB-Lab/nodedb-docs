@@ -80,6 +80,9 @@ navigation = [
     ] },
 
     # ── SQL Reference ──────────────────────────────────────────────
+    { group = "SQL Index", pages = [
+      "sql/index",
+    ] },
     { group = "Core SQL", pages = [
       "sql/overview",
       "sql/ddl",
@@ -96,6 +99,16 @@ navigation = [
       "sql/spatial-queries",
       "sql/crdt-operations",
       "sql/fusion-rrf",
+    ] },
+    { group = "SQL Extensions", pages = [
+      "sql/json-operators",
+      "sql/copy",
+      "sql/listen-notify",
+      "sql/custom-types",
+      "sql/window-frames",
+      "sql/lateral-subqueries",
+      "sql/recursive-cte",
+      "sql/grouping-sets",
     ] },
     { group = "Diagnostics", pages = [
       "sql/explain",

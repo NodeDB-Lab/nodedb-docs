@@ -1,0 +1,138 @@
+---
+title: Window Frames
+description: ROWS, RANGE, and GROUPS frame modes for window functions — all boundary combinations with examples.
+---
+
+# Window Frames
+
+Window functions operate over an ordered set of rows called the **window frame**. The frame is a subset of the partition defined by the `OVER` clause. NodeDB supports all three frame modes: `ROWS`, `RANGE`, and `GROUPS`.
+
+## Frame syntax
+
+```sql
+<window_fn>() OVER (
+    [PARTITION BY <col>, ...]
+    ORDER BY <col> [ASC|DESC]
+    [ROWS | RANGE | GROUPS] BETWEEN <start> AND <end>
+)
+```
+
+When no frame clause is written, the default is `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`.
+
+## Frame modes
+
+### ROWS
+
+`ROWS` counts **physical rows**. Each peer row in the ordering is distinct regardless of its sort value.
+
+```sql
+-- Running sum over the previous 2 rows and current row
+SELECT id, amount,
+    SUM(amount) OVER (
+        ORDER BY created_at
+        ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+    ) AS rolling_3
+FROM transactions;
+
+-- Running total from start of partition to current row
+SELECT id, amount,
+    SUM(amount) OVER (
+        PARTITION BY user_id ORDER BY created_at
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative
+FROM transactions;
+```
+
+### RANGE
+
+`RANGE` groups rows that have **equal values** in the ORDER BY column. All peers (rows with the same sort value) fall inside the same frame boundary.
+
+```sql
+-- Sum all rows with the same or earlier date as the current row
+SELECT order_date, total,
+    SUM(total) OVER (
+        ORDER BY order_date
+        RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS daily_cumulative
+FROM daily_orders;
+
+-- Moving sum of rows within a numeric distance of 10 from the current row's value
+SELECT score,
+    SUM(score) OVER (
+        ORDER BY score
+        RANGE BETWEEN 10 PRECEDING AND 10 FOLLOWING
+    ) AS nearby_sum
+FROM scores;
+```
+
+<Callout kind="info" title="RANGE with numeric/interval offsets">
+`RANGE BETWEEN N PRECEDING AND N FOLLOWING` with a numeric or interval literal requires the ORDER BY column to be a numeric or timestamp type. The planner validates this at planning time.
+</Callout>
+
+### GROUPS
+
+`GROUPS` counts **peer groups** (groups of rows with equal ORDER BY values), not individual rows. `1 PRECEDING` means the previous peer group, not the previous row.
+
+```sql
+-- Sum the current group and the two preceding groups
+SELECT category, day, revenue,
+    SUM(revenue) OVER (
+        PARTITION BY category ORDER BY day
+        GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW
+    ) AS group_rolling
+FROM daily_revenue;
+```
+
+## Frame boundaries
+
+| Boundary             | Meaning                                                              |
+| -------------------- | -------------------------------------------------------------------- |
+| `UNBOUNDED PRECEDING` | First row/range/group in the partition                              |
+| `N PRECEDING`         | N rows/ranges/groups before the current row                         |
+| `CURRENT ROW`         | The current row (for ROWS), or the current peer group (for RANGE/GROUPS) |
+| `N FOLLOWING`         | N rows/ranges/groups after the current row                          |
+| `UNBOUNDED FOLLOWING` | Last row/range/group in the partition                               |
+
+The start boundary must not be greater than the end boundary.
+
+## Common patterns
+
+```sql
+-- Sliding window average over 7 days
+SELECT ts, value,
+    AVG(value) OVER (
+        ORDER BY ts
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) AS avg_7d
+FROM metrics;
+
+-- Percent of partition total
+SELECT dept, salary,
+    salary / SUM(salary) OVER (PARTITION BY dept) AS pct_of_dept
+FROM employees;
+
+-- First and last value in the partition
+SELECT id, score,
+    FIRST_VALUE(score) OVER (PARTITION BY user_id ORDER BY played_at
+        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS first_score,
+    LAST_VALUE(score)  OVER (PARTITION BY user_id ORDER BY played_at
+        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_score
+FROM game_sessions;
+```
+
+## Named windows
+
+Repeated window definitions can be factored out with a `WINDOW` clause:
+
+```sql
+SELECT id, amount,
+    SUM(amount)   OVER w AS running_sum,
+    AVG(amount)   OVER w AS running_avg,
+    COUNT(*)      OVER w AS running_count
+FROM transactions
+WINDOW w AS (ORDER BY created_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW);
+```
+
+## Supported window functions
+
+`ROW_NUMBER`, `RANK`, `DENSE_RANK`, `PERCENT_RANK`, `CUME_DIST`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`, `SUM`, `AVG`, `MIN`, `MAX`, `COUNT`.

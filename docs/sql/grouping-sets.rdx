@@ -1,0 +1,115 @@
+---
+title: Grouping Sets
+description: GROUP BY ROLLUP, CUBE, and GROUPING SETS for multi-dimensional aggregation, with the GROUPING() function.
+---
+
+# Grouping Sets
+
+`ROLLUP`, `CUBE`, and `GROUPING SETS` let you compute aggregates over multiple grouping combinations in a single query, which is far more efficient than running multiple `GROUP BY` queries and combining the results with `UNION ALL`.
+
+## ROLLUP
+
+`ROLLUP(a, b, c)` produces all "leading prefix" subsets plus the grand total:
+
+- `(a, b, c)`
+- `(a, b)`
+- `(a)`
+- `()`  ← grand total
+
+Useful for subtotals in hierarchical reports (e.g., region → country → city).
+
+```sql
+SELECT region, country, SUM(revenue) AS total
+FROM sales
+GROUP BY ROLLUP (region, country);
+```
+
+The rows where `country` is `NULL` are the per-region subtotals; the row where both are `NULL` is the grand total.
+
+## CUBE
+
+`CUBE(a, b)` produces every possible subset combination:
+
+- `(a, b)`
+- `(a)`
+- `(b)`
+- `()`
+
+For N columns, `CUBE` generates 2^N grouping sets.
+
+```sql
+SELECT product_line, quarter, SUM(units) AS units_sold
+FROM inventory
+GROUP BY CUBE (product_line, quarter);
+```
+
+## GROUPING SETS
+
+`GROUPING SETS` gives you explicit control over which combinations to compute:
+
+```sql
+SELECT region, country, SUM(revenue)
+FROM sales
+GROUP BY GROUPING SETS ((region, country), (region), ());
+```
+
+The three sets above are: country-level detail, region subtotals, and grand total — the same as `ROLLUP(region, country)`.
+
+## Mixing plain GROUP BY with ROLLUP
+
+You can mix a plain column with a `ROLLUP` or `GROUPING SETS` expression:
+
+```sql
+SELECT channel, region, country, SUM(revenue)
+FROM sales
+GROUP BY channel, ROLLUP (region, country);
+```
+
+This produces all `ROLLUP` groupings nested inside each `channel` value. Only one `ROLLUP`/`CUBE`/`GROUPING SETS` expression is allowed per `GROUP BY` clause.
+
+## GROUPING() function
+
+When `NULL` appears in a grouping column it is ambiguous: it could be a null in the data, or it could be a null because the column was excluded from the current grouping set. `GROUPING(col)` resolves this:
+
+- Returns `0` if `col` is part of the current grouping set (the `NULL` is a real data null or the value is present).
+- Returns `1` if `col` was excluded from the current grouping set (the `NULL` is a rollup placeholder).
+
+```sql
+SELECT
+    region,
+    country,
+    SUM(revenue) AS total,
+    GROUPING(region)  AS region_is_subtotal,
+    GROUPING(country) AS country_is_subtotal
+FROM sales
+GROUP BY ROLLUP (region, country);
+```
+
+For the grand-total row, both `region_is_subtotal` and `country_is_subtotal` are `1`. For a per-region subtotal row, `region_is_subtotal` is `0` and `country_is_subtotal` is `1`.
+
+```sql
+-- Filter to only the subtotal rows (not the detail rows)
+SELECT region, SUM(revenue)
+FROM sales
+GROUP BY ROLLUP (region, country)
+HAVING GROUPING(country) = 1;
+```
+
+## FILTER clause with aggregates
+
+All aggregate functions support a `FILTER (WHERE ...)` clause, which is especially useful inside grouping sets to compute conditional subtotals alongside unconditional ones:
+
+```sql
+SELECT region,
+    SUM(revenue) AS total,
+    SUM(revenue) FILTER (WHERE channel = 'online') AS online_total
+FROM sales
+GROUP BY ROLLUP (region);
+```
+
+## Notes
+
+- `NULL` in a grouping column has its usual meaning (missing data). Use `GROUPING()` to distinguish data nulls from rollup placeholders.
+- The result set from `ROLLUP(a, b, c)` has at most N+1 rows per distinct value combination, where N is the number of rollup columns.
+- `CUBE` with many columns produces exponentially many grouping sets. For N > 5 columns the result set and memory usage can be large.
+- Only one `ROLLUP`/`CUBE`/`GROUPING SETS` expression per `GROUP BY` clause is supported. Mixing two such expressions in the same query is rejected at planning time.

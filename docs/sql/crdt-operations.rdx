@@ -23,4 +23,4 @@ Applies a Loro CRDT delta to the document. On Origin, the delta goes through Raf
 
 ## Conflict Policies
 
-Conflict policies (last-writer-wins, field-merge, custom) are configured per-collection at create time and via the native NodeDB protocol's `ALTER POLICY` command. SQL DDL for inspecting and updating conflict policies — `SHOW CONFLICT POLICY ON <collection>` and `ALTER COLLECTION ... SET ON CONFLICT ...` — is wired in the v0.1.0 release alongside the rest of the SQL surface. See the protocol reference for the native-protocol form, and [CRDT Sync](/docs/crdt-sync/overview) for full sync protocol details.
+Conflict policies (last-writer-wins, field-merge, custom) are configured per-collection at create time and via the native NodeDB protocol's `ALTER POLICY` command. SQL DDL for inspecting and updating conflict policies — `SHOW CONFLICT POLICY ON <collection>` and `ALTER COLLECTION ... SET ON CONFLICT ...` — is available alongside the rest of the SQL surface. See the protocol reference for the native-protocol form, and [CRDT Sync](/docs/crdt-sync/overview) for full sync protocol details.

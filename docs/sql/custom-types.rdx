@@ -1,0 +1,112 @@
+---
+title: Custom Types
+description: CREATE TYPE for enums and composite types, ALTER TYPE ADD VALUE, and DROP TYPE.
+---
+
+# Custom Types
+
+NodeDB supports user-defined types in two forms: **enum types** (a fixed, ordered set of string labels) and **composite types** (a named record with typed fields). Both can be used as column types in `CREATE COLLECTION` and `CREATE TABLE` statements.
+
+## Enum Types
+
+```sql
+CREATE TYPE <name> AS ENUM ('<label1>', '<label2>', ...)
+```
+
+Defines a type whose valid values are the listed labels. Labels are case-sensitive strings. Duplicates are rejected at definition time.
+
+```sql
+CREATE TYPE order_status AS ENUM ('pending', 'processing', 'shipped', 'delivered', 'cancelled');
+
+CREATE TYPE priority AS ENUM ('low', 'medium', 'high', 'critical');
+```
+
+### Using enum types
+
+```sql
+CREATE COLLECTION orders (
+    id TEXT PRIMARY KEY,
+    status order_status,
+    priority priority
+) WITH (engine = 'document_strict');
+
+INSERT INTO orders (id, status, priority) VALUES ('o1', 'pending', 'high');
+
+SELECT * FROM orders WHERE status = 'pending';
+```
+
+### Adding a new label
+
+```sql
+ALTER TYPE order_status ADD VALUE 'on_hold';
+```
+
+The new value is appended to the end of the enum. Existing rows are unaffected. `ADD VALUE` is the only supported `ALTER TYPE` form.
+
+## Composite Types
+
+```sql
+CREATE TYPE <name> AS (<field1> <type1>, <field2> <type2>, ...)
+```
+
+Defines a named record type. Each field has a name and a SQL data type.
+
+```sql
+CREATE TYPE address AS (
+    street TEXT,
+    city   TEXT,
+    zip    TEXT,
+    country TEXT
+);
+
+CREATE TYPE money_amount AS (
+    value    FLOAT,
+    currency TEXT
+);
+```
+
+### Using composite types
+
+```sql
+CREATE COLLECTION users (
+    id      TEXT PRIMARY KEY,
+    name    TEXT,
+    billing address
+) WITH (engine = 'document_strict');
+
+INSERT INTO users (id, name, billing)
+VALUES ('u1', 'Alice', ROW('123 Main St', 'Springfield', '12345', 'US'));
+
+SELECT billing.city FROM users WHERE id = 'u1';
+```
+
+## Inspecting types
+
+```sql
+SHOW TYPES;
+```
+
+Lists all user-defined types in the current tenant, their kind (enum or composite), and their labels or fields.
+
+## Dropping types
+
+```sql
+DROP TYPE order_status;
+DROP TYPE IF EXISTS address;
+```
+
+`DROP TYPE` is **protected**: it fails if any collection has a column of that type. Drop or alter the dependent collections first, then drop the type.
+
+## OIDs
+
+Custom types are assigned OIDs starting at 70001. These appear in `pg_type` catalog queries and in the pgwire type-description messages for columns that use the custom type.
+
+<Callout kind="warning" title="pgwire binary codec">
+Custom types are currently sent over pgwire in TEXT format regardless of the client's requested format. Binary-format decoding for custom type OIDs is not yet implemented. Most PostgreSQL client libraries fall back gracefully to text parsing.
+</Callout>
+
+## Validation rules
+
+- **Enum labels** must be non-empty strings. Duplicate labels within the same type are rejected.
+- **Composite fields** must have distinct names within the same type. The field types can be any built-in SQL type; nested composite types are not yet supported.
+- **Type names** are lowercased and must be unique within the tenant.

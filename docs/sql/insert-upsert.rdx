@@ -60,3 +60,5 @@ UPSERT INTO users { id: 'u1', name: 'Alice', role: 'admin' };
 COPY users FROM '/path/to/users.ndjson';
 COPY users FROM '/path/to/users.csv' WITH (FORMAT csv);
 ```
+
+See [COPY](copy) for the full syntax, all format options, and `COPY TO` for export.

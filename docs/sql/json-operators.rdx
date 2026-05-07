@@ -1,0 +1,126 @@
+---
+title: JSON Operators
+description: PostgreSQL-compatible JSON path operators for navigating and testing document fields in NodeDB.
+---
+
+# JSON Operators
+
+NodeDB supports all nine PostgreSQL JSON path operators on document fields and any expression that produces a JSON value.
+
+## Navigation Operators
+
+### `->` — field as JSON
+
+Returns the value at the given key (or array index) as a JSON value. The result is `NULL` if the key does not exist.
+
+```sql
+-- Object field
+SELECT payload -> 'address' FROM users;
+
+-- Nested path via chaining
+SELECT payload -> 'address' -> 'city' FROM users;
+
+-- Array element by index
+SELECT tags -> 0 FROM articles;
+```
+
+### `->>` — field as text
+
+Same as `->` but casts the result to `TEXT`. Useful in `WHERE` clauses that compare to string literals.
+
+```sql
+SELECT payload ->> 'name' FROM users;
+
+SELECT * FROM users WHERE payload ->> 'role' = 'admin';
+```
+
+### `#>` — path as JSON
+
+Navigates a multi-element path supplied as a text array. Equivalent to chaining multiple `->` operators.
+
+```sql
+SELECT payload #> '{address, city}' FROM users;
+
+-- Same result as: payload -> 'address' -> 'city'
+SELECT payload #> ARRAY['address', 'city'] FROM users;
+```
+
+### `#>>` — path as text
+
+Same as `#>` but casts the result to `TEXT`.
+
+```sql
+SELECT payload #>> '{address, city}' FROM users;
+
+SELECT * FROM orders WHERE payload #>> '{shipping, country}' = 'DE';
+```
+
+## Containment Operators
+
+### `@>` — left contains right
+
+Returns `true` when the left JSON value contains every key/value pair in the right JSON object.
+
+```sql
+-- Rows where role is 'admin'
+SELECT * FROM users WHERE payload @> '{"role": "admin"}';
+
+-- Rows where the tags array contains the element 'rust'
+SELECT * FROM articles WHERE tags @> '["rust"]';
+```
+
+### `<@` — left contained in right
+
+The inverse of `@>`. Returns `true` when the left value is fully contained in the right.
+
+```sql
+SELECT * FROM users WHERE '{"role": "admin"}' <@ payload;
+```
+
+## Existence Operators
+
+### `?` — key exists
+
+Returns `true` if the top-level object contains the given key, or if the array contains the given string element.
+
+```sql
+-- Only rows that have an 'email' field
+SELECT * FROM users WHERE payload ? 'email';
+```
+
+### `?|` — any key exists
+
+Returns `true` if the object contains **any** of the supplied keys.
+
+```sql
+SELECT * FROM users WHERE payload ?| ARRAY['phone', 'email'];
+```
+
+### `?&` — all keys exist
+
+Returns `true` if the object contains **all** of the supplied keys.
+
+```sql
+SELECT * FROM users WHERE payload ?& ARRAY['name', 'email', 'role'];
+```
+
+## Operator Summary
+
+| Operator | Left type | Right type  | Returns | Description               |
+| -------- | --------- | ----------- | ------- | ------------------------- |
+| `->`     | JSON      | TEXT or INT | JSON    | Field / index as JSON     |
+| `->>`    | JSON      | TEXT or INT | TEXT    | Field / index as text     |
+| `#>`     | JSON      | TEXT[]      | JSON    | Multi-element path as JSON|
+| `#>>`    | JSON      | TEXT[]      | TEXT    | Multi-element path as text|
+| `@>`     | JSON      | JSON        | BOOL    | Left contains right       |
+| `<@`     | JSON      | JSON        | BOOL    | Left contained in right   |
+| `?`      | JSON      | TEXT        | BOOL    | Key exists                |
+| `?|`     | JSON      | TEXT[]      | BOOL    | Any key exists            |
+| `?&`     | JSON      | TEXT[]      | BOOL    | All keys exist            |
+
+## Notes
+
+- On **schemaless document** collections the top-level document payload is accessed directly as a JSON value.
+- On **strict document** collections fields are binary-encoded; the JSON operators trigger a decode step. For tight-loop analytics on strict collections, prefer direct column projections over JSON navigation.
+- Operator precedence follows PostgreSQL conventions. When mixing with boolean operators, add parentheses: `WHERE (payload ? 'email') AND status = 'active'`.
+- Indexed containment queries (`@>`) benefit from a `CREATE SEARCH INDEX` or a dedicated secondary index on the field being tested.

@@ -1,0 +1,89 @@
+---
+title: COPY FROM / COPY TO
+description: Bulk import and export of collections using NDJSON, JSON array, and CSV formats.
+---
+
+# COPY FROM / COPY TO
+
+`COPY` moves data between a NodeDB collection and a file on the server's filesystem. It is the fastest way to load or dump large datasets.
+
+## COPY FROM — import
+
+```sql
+COPY <collection> FROM '<path>' [WITH (FORMAT <fmt> [, DELIMITER '<char>'] [, HEADER <bool>])]
+```
+
+Reads the file at `<path>` on the server and inserts every record into `<collection>`. The format is either specified explicitly or auto-detected from the file extension.
+
+### Auto-detected formats
+
+| Extension           | Format       |
+| ------------------- | ------------ |
+| `.ndjson`, `.jsonl` | NDJSON       |
+| `.json`             | JSON array   |
+| `.csv`              | CSV          |
+
+### Examples
+
+```sql
+-- NDJSON (one JSON object per line) — format auto-detected from extension
+COPY users FROM '/data/users.ndjson';
+
+-- JSON array (a single top-level array of objects)
+COPY users FROM '/data/users.json' WITH (FORMAT json_array);
+
+-- CSV with header row (default when FORMAT csv)
+COPY orders FROM '/data/orders.csv' WITH (FORMAT csv);
+
+-- CSV without header row
+COPY orders FROM '/data/orders.csv' WITH (FORMAT csv, HEADER false);
+
+-- CSV with non-comma delimiter
+COPY products FROM '/data/products.tsv' WITH (FORMAT csv, DELIMITER '\t');
+```
+
+### WITH options
+
+| Option      | Values                          | Default           | Description                             |
+| ----------- | ------------------------------- | ----------------- | --------------------------------------- |
+| `FORMAT`    | `ndjson`, `json_array`, `csv`   | auto from extension | File format                           |
+| `DELIMITER` | Any single character            | `,`               | Field separator (CSV only)              |
+| `HEADER`    | `true` / `false`                | `true`            | Whether the first CSV row is a header   |
+
+## COPY TO — export
+
+```sql
+COPY <collection> TO '<path>' [WITH (FORMAT <fmt> [, DELIMITER '<char>'] [, HEADER <bool>])]
+COPY (SELECT ...) TO '<path>' [WITH (...)]
+```
+
+Writes every row from `<collection>` (or the result of a SELECT) to a file at `<path>` on the server. The format is auto-detected from the extension or specified explicitly.
+
+### Examples
+
+```sql
+-- Export entire collection as NDJSON
+COPY users TO '/exports/users.ndjson';
+
+-- Export with explicit format
+COPY users TO '/exports/users.json' WITH (FORMAT json_array);
+
+-- Export as CSV with header
+COPY orders TO '/exports/orders.csv' WITH (FORMAT csv);
+
+-- Export the result of a query
+COPY (SELECT id, name, email FROM users WHERE status = 'active')
+    TO '/exports/active_users.csv' WITH (FORMAT csv);
+
+-- Query export as NDJSON
+COPY (SELECT * FROM orders WHERE created_at > '2025-01-01')
+    TO '/exports/recent_orders.ndjson';
+```
+
+## Notes
+
+- Paths are resolved on the **server** filesystem. The client never streams file bytes — this is not `\copy` (psql client-side copy).
+- `COPY FROM STDIN` is reserved for the backup/restore path and is not available as a general import mechanism.
+- Rows that fail type coercion during import are rejected with a parse error; no partial-row insertion occurs.
+- `COPY TO` is non-transactional: the file is written even if the session is later rolled back.
+- The `COPY (SELECT ...) TO` form supports all SELECT features including JOINs, CTEs, and WHERE clauses.

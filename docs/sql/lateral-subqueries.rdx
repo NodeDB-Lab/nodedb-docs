@@ -1,0 +1,118 @@
+---
+title: Lateral Subqueries
+description: LATERAL FROM and JOIN LATERAL — correlated subqueries in the FROM clause with three planner modes.
+---
+
+# Lateral Subqueries
+
+A `LATERAL` subquery in the `FROM` clause (or in a `JOIN`) can reference columns from tables listed earlier in the same `FROM` clause. Without `LATERAL`, a subquery cannot see the outer tables.
+
+## Syntax
+
+### LATERAL in FROM (comma join)
+
+```sql
+SELECT <cols>
+FROM <outer_table> [AS <alias>],
+     LATERAL (SELECT ... WHERE ... = <outer_table>.<col>) AS <lateral_alias>
+```
+
+### JOIN LATERAL
+
+```sql
+SELECT <cols>
+FROM <outer_table> [AS <alias>]
+[LEFT] JOIN LATERAL (<subquery>) AS <lateral_alias> ON true
+```
+
+`ON true` is idiomatic when the correlation condition is already inside the subquery's `WHERE` clause. `LEFT JOIN LATERAL` preserves outer rows for which the subquery returns no rows (it produces `NULL` for the lateral columns).
+
+## Examples
+
+### Top-N per group
+
+Return the three most recent orders for each user:
+
+```sql
+SELECT u.id, u.name, o.id AS order_id, o.created_at
+FROM users u
+JOIN LATERAL (
+    SELECT id, created_at
+    FROM orders
+    WHERE user_id = u.id
+    ORDER BY created_at DESC
+    LIMIT 3
+) AS o ON true;
+```
+
+### Expand array column into rows
+
+```sql
+SELECT p.id, tag
+FROM products p,
+     LATERAL (SELECT unnest(p.tags) AS tag) AS t;
+```
+
+### LEFT JOIN LATERAL — keep users with no orders
+
+```sql
+SELECT u.id, o.last_order_at
+FROM users u
+LEFT JOIN LATERAL (
+    SELECT MAX(created_at) AS last_order_at FROM orders WHERE user_id = u.id
+) AS o ON true;
+```
+
+## Planning modes
+
+The planner selects one of three execution strategies automatically based on the shape of the correlation in the subquery.
+
+### Hash-join rewrite
+
+When the subquery is equi-correlated (the `WHERE` clause has `inner.col = outer.col` with no non-equi predicates) and has **no `LIMIT`**, the planner removes the correlation and rewrites the query as a regular hash join. This is the most efficient path.
+
+```sql
+-- Equi-correlated, no LIMIT → hash-join rewrite
+SELECT u.id, o.total
+FROM users u,
+LATERAL (SELECT total FROM orders WHERE user_id = u.id) AS o;
+```
+
+### LateralTopK
+
+When the subquery is equi-correlated **and has a `LIMIT k`**, the planner emits a `LateralTopK` plan. For each outer row it performs a bounded index-seek on the inner collection and returns at most `k` rows. This is the plan used for "top-N per group" queries and is the most common LATERAL shape.
+
+```sql
+-- Equi-correlated + LIMIT → LateralTopK
+SELECT u.id, o.id
+FROM users u
+JOIN LATERAL (
+    SELECT id FROM orders WHERE user_id = u.id ORDER BY created_at DESC LIMIT 5
+) o ON true;
+```
+
+### LateralLoop
+
+When the subquery has non-equi correlations (e.g., range predicates, expressions, or function calls involving the outer column), the planner emits a `LateralLoop` plan. For each outer row the full inner subquery is evaluated. To prevent runaway execution, `LateralLoop` is limited to **100 000 outer rows**; queries that would exceed this cap are rejected at planning time with a clear error.
+
+```sql
+-- Non-equi correlation → LateralLoop
+SELECT e.id, recent.id AS nearby_event
+FROM events e,
+LATERAL (
+    SELECT id FROM events
+    WHERE ts BETWEEN e.ts - INTERVAL '5 minutes' AND e.ts + INTERVAL '5 minutes'
+      AND id <> e.id
+    LIMIT 10
+) AS recent;
+```
+
+<Callout kind="tip" title="Performance guidance">
+Prefer equi-correlated LATERAL with a LIMIT when possible — the `LateralTopK` plan uses an index seek per outer row rather than a full scan. If you need a non-equi correlation over a large outer set, add a `WHERE` clause on the outer table to reduce the outer row count below 100 000.
+</Callout>
+
+## Notes
+
+- The `LATERAL` keyword must appear before the opening `(` of the subquery.
+- `LATERAL (SELECT ...)` must produce a `SELECT` body — set operations (`UNION`, `INTERSECT`, etc.) at the top level of the lateral body are not supported.
+- References to outer columns must be to tables listed **before** the `LATERAL` in the `FROM` clause. Forward references are not allowed.
