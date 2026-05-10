@@ -1,0 +1,191 @@
+---
+title: Quotas
+description: Three-tier resource hierarchy — global, database, tenant. Memory, connections, QPS, WAL priority, cache weight, maintenance CPU.
+---
+
+# Quotas
+
+NodeDB enforces resource quotas across four hierarchical levels: global cluster ceiling, per-database budget, per-tenant budget within each database, and engine-internal usage. Quotas protect the cluster from noisy neighbors, burst overages, and fairness violations.
+
+## Three-Tier Hierarchy
+
+Resources flow through a three-level authorization gate before reaching the Data Plane:
+
+```
+Global ceiling (cluster-wide)
+  ↓
+Database budget (per-database, set at CREATE)
+  ↓
+Tenant budget (per-tenant within database)
+  ↓
+Engine internal usage (per-engine within tenant)
+```
+
+**Enforcement points** (in admission order):
+
+1. **Tenant quota check** — Rate limiting and concurrency per `(database, tenant)` pair
+2. **Database quota check** — Rate limiting and concurrency per `database`
+3. **Global pressure check** — Cluster-level backpressure if request queues overflow
+4. **Memory allocation** — Hierarchical reservation from global → database → tenant → engine
+
+## Database-Level Quotas
+
+Set quotas at database creation or alter after:
+
+```sql
+CREATE DATABASE sales WITH QUOTA (
+    max_memory_bytes    = 1073741824,  -- 1 GB
+    max_storage_bytes   = 10737418240, -- 10 GB
+    max_qps             = 1000,
+    max_connections     = 100,
+    cache_weight        = 2,
+    priority_class      = 'critical',
+    maintenance_cpu_pct = 25
+);
+
+ALTER DATABASE sales SET QUOTA (max_qps = 2000, cache_weight = 3);
+```
+
+### Quota Fields
+
+| Field | Meaning | Default | Notes |
+|-------|---------|---------|-------|
+| `max_memory_bytes` | RAM ceiling | Unlimited (within global) | Per-database L0 + index memory |
+| `max_storage_bytes` | Durable storage ceiling | Unlimited | All engines, all shards combined |
+| `max_qps` | Queries per second | Unlimited | Hard limit; returns `DATABASE_QUOTA_EXCEEDED` when exceeded |
+| `max_connections` | Concurrent connection cap | 1000 | Per-database; new logins rejected when full |
+| `cache_weight` | Relative LRU cache share | 1 | 0–100; higher weight = larger cache allocation |
+| `priority_class` | WAL fsync priority | `standard` | `critical \| standard \| bulk`; see [Priority Classes](#priority-classes) |
+| `maintenance_cpu_pct` | Background work budget | 25 | % of core time for compaction, HNSW maintenance, etc. |
+
+## Tenant-Level Quotas
+
+Tenants inherit quotas from the database, but can be further subdivided:
+
+```sql
+ALTER TENANT marketing IN DATABASE sales SET QUOTA (
+    max_memory_bytes  = 536870912,  -- 512 MB (half the database)
+    max_qps           = 500,         -- half the database's 1000
+    max_connections   = 50
+);
+
+SHOW TENANT QUOTA FOR marketing IN DATABASE sales;
+```
+
+**Sum-of-tenant constraint**: The sum of all tenant quotas within a database cannot exceed the database quota. NodeDB enforces this at write time:
+
+```sql
+-- This fails with QUOTA_OVERCOMMIT: tenant limits sum to 2500, but database max_qps is 1000
+ALTER TENANT team_a IN DATABASE sales SET QUOTA (max_qps = 600);
+ALTER TENANT team_b IN DATABASE sales SET QUOTA (max_qps = 1000);  -- ERROR
+```
+
+## Inspecting Quotas and Usage
+
+Check what's set and what's being used:
+
+```sql
+SHOW DATABASE QUOTA FOR sales;
+SHOW DATABASE USAGE FOR sales;
+
+SHOW TENANT QUOTA FOR marketing IN DATABASE sales;
+SHOW TENANT USAGE FOR marketing IN DATABASE sales;
+```
+
+**Quota** output columns: `database`, `max_memory_bytes`, `max_storage_bytes`, `max_qps`, `max_connections`, `cache_weight`, `priority_class`, `maintenance_cpu_pct`
+
+**Usage** output columns: `database`, `memory_bytes`, `storage_bytes`, `qps_current`, `qps_p99`, `active_connections`, `maintenance_cpu_seconds`
+
+## Priority Classes and WAL Commitment
+
+Write-ahead log (WAL) fsync is the most expensive operation. NodeDB batches writes into three independent priority groups so critical databases don't wait behind bulk workloads:
+
+| Priority | Behavior | Use Case |
+|----------|----------|----------|
+| `critical` | Own fsync group, committed first | Production payment system, real-time analytics |
+| `standard` | Default batch group (most databases) | User-facing API, transactional |
+| `bulk` | Extended timeout, lower fsync rate | Batch ETL, daily reports, backfill |
+
+Set priority at database creation or alter:
+
+```sql
+CREATE DATABASE critical_payments WITH QUOTA (priority_class = 'critical');
+ALTER DATABASE bulk_processing SET QUOTA (priority_class = 'bulk');
+```
+
+A write to a `critical` database blocks until its fsync completes; a write to `bulk` waits longer but doesn't delay `critical` or `standard` commits.
+
+## Weighted-Fair Queue on the SPSC Bridge
+
+Each Data Plane core has a request ring buffer. To prevent one database from saturating an entire core, requests are scheduled via **deficit round-robin (DRR)** weighted by `priority_class`:
+
+- `critical` databases get first pick each scheduling cycle
+- `standard` databases get next
+- `bulk` databases get the remainder
+
+If one database saturates its share of the core, it throttles only its own writes. Co-resident databases stay responsive.
+
+## Document Cache — Per-Database Allocation
+
+The in-memory document cache is shared across all databases proportional to their `cache_weight`:
+
+```sql
+-- This database gets 10x the cache share of others
+ALTER DATABASE hot_reads SET QUOTA (cache_weight = 10);
+```
+
+When the cache fills, NodeDB evicts entries from the database with the highest current-vs-weight overshoot. A hot database cannot evict a cold database below its proportional fair share.
+
+## Background Task Budget
+
+Maintenance tasks (vector HNSW link cleanup, graph edge sweeps, timeseries segment compaction, array tile compaction, FTS LSM compaction) are CPU-hungry. Each database has a quota on how much core time maintenance can consume per minute:
+
+```sql
+ALTER DATABASE large_vector_search SET QUOTA (maintenance_cpu_pct = 50);  -- 50% of core time
+```
+
+The scheduler tracks CPU-seconds spent in maintenance per database per minute. Tasks over-cap are deferred to the next window. This prevents one database's compaction from starving interactive queries in another.
+
+## Hierarchical Rate Limiting
+
+Requests are bucketed at four scopes (most-specific first; first to deny wins):
+
+```
+user:{user_id} → org:{org_id} → tenant:{tenant_id} → database:{database_id}
+```
+
+The database bucket has capacity equal to `max_qps`. A request hitting any bucket's rate limit returns `DATABASE_QUOTA_EXCEEDED` or `TENANT_QUOTA_EXCEEDED` depending on which bucket triggered.
+
+## Error Codes
+
+Quota enforcement produces these errors:
+
+| Error | Trigger |
+|-------|---------|
+| `TENANT_QUOTA_EXCEEDED` | Tenant rate limit or concurrency exhausted |
+| `DATABASE_QUOTA_EXCEEDED` | Database rate limit or concurrency exhausted |
+| `SERVER_OVERLOAD` | Global cluster backpressure (queue > 95%) |
+| `QUOTA_OVERCOMMIT` | Sum of tenant quotas > database quota (or database > global) |
+| `TENANT_VECTOR_DIM_EXCEEDED` | Vector dimension exceeds tenant `max_vector_dim` |
+| `TENANT_GRAPH_DEPTH_EXCEEDED` | Graph traversal depth exceeds tenant `max_graph_depth` |
+
+See [error codes reference](../reference/error-codes.md) for full details.
+
+## Metrics and Observability
+
+All quota-related metrics are labeled by database and (where applicable) tenant:
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `nodedb_database_qps` | gauge | `database="..."` |
+| `nodedb_database_memory_bytes` | gauge | `database="..."` |
+| `nodedb_database_storage_bytes` | gauge | `database="..."` |
+| `nodedb_database_active_connections` | gauge | `database="..."` |
+| `nodedb_database_bridge_queue_depth` | gauge | `database="..."` |
+| `nodedb_database_wal_commit_latency_p99` | histogram | `database="..."` |
+| `nodedb_database_maintenance_cpu_seconds` | counter | `database="..."` |
+| `nodedb_tenant_qps` | gauge | `database="..."`, `tenant="..."` |
+| `nodedb_tenant_memory_bytes` | gauge | `database="..."`, `tenant="..."` |
+| `nodedb_tenant_storage_bytes` | gauge | `database="..."`, `tenant="..."` |
+
+Scrape your Prometheus instance for these metrics and alert on `_p99` latency growth or queue depth > 85%.

@@ -1,0 +1,190 @@
+---
+title: Moving Tenants Between Databases
+description: Offline MOVE TENANT for relocating a tenant across databases with crash-safe phased recovery.
+---
+
+# Moving Tenants Between Databases
+
+**MOVE TENANT** relocates a tenant's data from one database to another. The move is **offline** — the tenant's connections are temporarily paused during migration.
+
+## Why Move a Tenant?
+
+Common reasons:
+
+- **Regional rebalancing** — move customer data to a closer region
+- **Database consolidation** — merge customers from one database to another
+- **Quota reallocation** — move to a database with higher limits
+- **Compliance** — shift data to a jurisdiction-specific database
+
+## Basic Syntax
+
+```sql
+MOVE TENANT acme FROM us_east TO us_west;
+```
+
+The move is atomic: either the tenant is fully relocated, or fully remains at the source.
+
+## Migration Phases
+
+MOVE TENANT is a five-phase process. Each phase is durable to WAL + Raft:
+
+### Phase 1: Pre-flight
+
+NodeDB validates that all collections the tenant has data in exist in the target database with compatible schemas. No state changes yet.
+
+If validation fails (missing collections or schema mismatch), the move aborts immediately.
+
+### Phase 2: Drain
+
+Active sessions for the tenant on the source are revoked. New writes are rejected. In-flight transactions are allowed to complete with a bounded timeout (default: 30 seconds).
+
+If timeout expires without all in-flight completing, the move aborts. The tenant's sessions are un-revoked and writes resume. Client code should retry the MOVE TENANT after in-flight workload quiets.
+
+### Phase 3: Snapshot
+
+Source creates a consistent backup of the tenant to an in-cluster temporary area. The backup is durable when flushed to storage.
+
+If snapshot fails (disk full, I/O error), the move aborts. The drain is reversed and writes resume on source.
+
+### Phase 4: Cutover
+
+In a single Raft proposal, NodeDB atomically:
+1. Drops the tenant from source
+2. Restores the tenant into target
+3. Updates the tenant↔database catalog mapping
+
+This proposal is atomic at Raft commit — there is no partial state. If the proposal fails, the snapshot artifact remains in temp storage; the tenant is unaffected on source.
+
+### Phase 5: Resume
+
+Writes are accepted on the target database. The temporary snapshot is reaped.
+
+## Crash Recovery
+
+If NodeDB crashes mid-move, startup replays the move journal:
+
+```
+Last durable phase: Pre-flight
+  → On restart, re-run Pre-flight (idempotent) and continue from Phase 2
+
+Last durable phase: Drain
+  → On restart, detect drain is in progress, un-revoke sessions, abort
+
+Last durable phase: Snapshot
+  → On restart, complete snapshot or clean up and abort
+
+Last durable phase: Cutover
+  → On restart, the Cutover proposal was committed to Raft
+    (so the move is already applied on all replicas). Clean up temp snapshot.
+
+Last durable phase: Resume
+  → Move completed; temp snapshot already reaped.
+```
+
+The journal guarantees no silent partial state.
+
+## Idempotent Retry
+
+If MOVE TENANT succeeds but the client crashes before reading the response, re-issuing the command returns `MOVE_TENANT_ALREADY_AT_TARGET` immediately:
+
+```sql
+MOVE TENANT acme FROM us_east TO us_west;
+-- Client crashes; connection lost
+
+-- On recovery, re-issue:
+MOVE TENANT acme FROM us_east TO us_west;
+-- Response: MOVE_TENANT_ALREADY_AT_TARGET
+```
+
+## Failure Scenarios and Recovery
+
+| Phase       | Failure                    | Action                                        | Recovery                                         |
+| ----------- | -------------------------- | --------------------------------------------- | ------------------------------------------------ |
+| Pre-flight  | Schema mismatch            | Abort immediately                             | Fix target schema; retry                         |
+| Drain       | Timeout on in-flight       | Abort; un-revoke sessions                     | Wait for workload to quiet; retry                |
+| Snapshot    | Disk full / I/O error      | Abort; delete partial snapshot; un-revoke    | Free disk; retry                                 |
+| Cutover     | Raft proposal fails        | Abort; snapshot remains; un-revoke            | Investigate Raft quorum; retry                   |
+| Crash       | Restart during any phase   | Replay journal; resume or compensate          | Automatic; no manual action needed               |
+
+## Required Role
+
+MOVE TENANT requires superuser privileges. See [RBAC](rbac) for the full permission matrix.
+
+```sql
+GRANT SUPERUSER ON DATABASE us_east TO admin;
+```
+
+## Supported Mode: Offline
+
+`MOVE TENANT` is an offline operation. The drain phase revokes all sessions for the tenant on the source database before the snapshot/cutover phases run, so there is a (typically brief) window during which clients see connection-revocation errors and must reconnect. This is by design: the offline path keeps the cutover atomic and auditable, and the bounded-drain timeout makes failure modes deterministic.
+
+If a no-downtime cross-database move is required, perform it at the application layer using dual-write to both databases until the cutover, then `MOVE TENANT` an empty (already-mirrored) shadow.
+
+## Practical Examples
+
+### Rebalancing a Region
+
+Move customer `acme` from overloaded `us_east` to `us_west`:
+
+```sql
+-- Check target exists and has room
+SHOW DATABASES;
+
+-- Check in-flight activity
+SELECT COUNT(*) FROM _system.active_sessions WHERE tenant_id = 'acme' AND database = 'us_east';
+
+-- Move during low-traffic window (e.g., 2 AM)
+MOVE TENANT acme FROM us_east TO us_west;
+
+-- Verify
+SELECT database FROM _system.tenants WHERE name = 'acme';
+```
+
+### Consolidating Databases
+
+Move multiple customers from `old_db` to `new_db`:
+
+```sql
+-- Move them sequentially to avoid drain timeouts
+MOVE TENANT customer_a FROM old_db TO new_db;
+MOVE TENANT customer_b FROM old_db TO new_db;
+MOVE TENANT customer_c FROM old_db TO new_db;
+
+-- Check old_db is empty
+SHOW DATABASE USAGE FOR old_db;
+-- Should show 0 tenants
+
+-- Safe to drop
+DROP DATABASE old_db;
+```
+
+### Compliance-Driven Relocation
+
+Move EU customer data to EU-only database:
+
+```sql
+-- Create EU-exclusive database (if not present)
+CREATE DATABASE eu_prod WITH (quota_storage_bytes = 107374182400);
+
+-- Move customer
+MOVE TENANT eu_customer FROM global_prod TO eu_prod;
+
+-- Verify
+SHOW DATABASE LINEAGE FOR eu_prod;  -- shows all tenants now
+```
+
+## Monitoring
+
+Monitor move progress via system tables:
+
+```sql
+SELECT * FROM _system.move_tenant_journal WHERE tenant = 'acme';
+```
+
+Returns: `phase`, `source_database`, `target_database`, `last_durable_lsn`, `status`.
+
+In production, set alerts for:
+
+- Move duration > expected (e.g., > 5 min)
+- Drain timeout (repeat attempts indicate persistent in-flight)
+- Failures requiring manual recovery

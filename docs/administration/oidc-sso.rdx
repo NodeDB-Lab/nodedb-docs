@@ -1,0 +1,316 @@
+---
+title: OIDC Single Sign-On
+description: Bearer-token authentication via OIDC providers on the native and HTTP entry points.
+---
+
+# OIDC Single Sign-On
+
+Authenticate users via external OpenID Connect providers (Okta, Auth0, Keycloak, etc.) without storing passwords in NodeDB.
+
+## Overview
+
+NodeDB validates JWT bearer tokens against your OIDC provider's public key set (JWKS), maps JWT claims to database access, and creates ephemeral authenticated sessions. No permanent user records are required for SSO logins.
+
+**Wire-protocol scope**: OIDC bearer tokens work on the **native protocol** and **HTTP**. pgwire (PostgreSQL protocol) does not support bearer tokens natively and uses SCRAM-SHA-256 only. If you need pgwire OIDC, configure a pgwire proxy or run separate SCRAM users alongside SSO.
+
+## Registering a Provider
+
+Register your OIDC provider's details:
+
+```sql
+CREATE OIDC PROVIDER okta WITH (
+    issuer      = 'https://yourorgname.okta.com/',
+    jwks_url    = 'https://yourorgname.okta.com/.well-known/oauth2/default/v1/keys',
+    audience    = 'https://nodedb.example.com',
+    claim_mapping = [
+        { claim_name = 'email', claim_value = null, effect = {
+            default_database = 'self_service'
+          } },
+        { claim_name = 'groups', claim_value = 'engineering', effect = {
+            add_databases = ['engineering_prod'],
+            add_roles = ['data_analyst']
+          } }
+    ]
+);
+```
+
+**Fields:**
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `issuer` | Yes | Token issuer URL (e.g., https://accounts.google.com) |
+| `jwks_url` | Yes | Public key set URL for signature validation |
+| `audience` | Yes | Expected JWT `aud` claim; mismatches are rejected |
+| `claim_mapping` | Yes | Array of rules mapping JWT claims to NodeDB identity fields |
+
+NodeDB fetches the JWKS once, caches it in memory, and refreshes it when:
+- A token arrives with an unknown key ID (`kid`)
+- The cache TTL expires (typically 24 hours)
+- You explicitly reload via `ALTER OIDC PROVIDER ... REFRESH JWKS`
+
+## Claim Mapping
+
+Claim mapping rules translate JWT claims into NodeDB identity fields and access grants. Each rule specifies:
+
+- `claim_name` — JWT claim name to match (e.g., `email`, `groups`, `org_id`)
+- `claim_value` — (optional) specific value to match; if omitted, rule applies to all values
+- `effect` — what happens when the rule matches:
+  - `default_database` — set as the user's default database for queries
+  - `add_databases` — grant access to these databases
+  - `add_roles` — assign these roles to the session
+
+**Example**: An Okta JWT like:
+
+```json
+{
+  "sub": "00u1234567890abcdef",
+  "email": "alice@acme.com",
+  "groups": ["engineering", "admins"],
+  "org_id": 1
+}
+```
+
+Maps to:
+
+```sql
+claim_mapping = [
+    { claim_name = 'email', claim_value = null, effect = {
+        default_database = 'analytics'
+      } },
+    { claim_name = 'groups', claim_value = 'engineering', effect = {
+        add_databases = ['engineering_db'],
+        add_roles = ['data_analyst']
+      } },
+    { claim_name = 'groups', claim_value = 'admins', effect = {
+        add_roles = ['cluster_admin']
+      } }
+]
+```
+
+The session inherits all matching rules' effects. If multiple rules grant database access, the union is used.
+
+**Failure modes:**
+- Missing claim → no effect (rule skipped)
+- Claim value doesn't match the rule's `claim_value` → rule skipped
+- Unknown role in `add_roles` → error at provider creation time
+
+## Updating a Provider
+
+Modify JWKS URL, audience, or claim mappings after creation:
+
+```sql
+ALTER OIDC PROVIDER okta SET (
+    audience = 'https://api.example.com'
+);
+
+ALTER OIDC PROVIDER okta SET (
+    claim_mapping = [
+        { claim_name = 'email', claim_value = null, effect = {
+            default_database = 'analytics'
+          } },
+        { claim_name = 'dept_name', claim_value = 'sales', effect = {
+            add_databases = ['sales_db'],
+            add_roles = ['sales_role']
+          } }
+    ]
+);
+```
+
+Changes take effect immediately for new logins. Existing sessions tied to the provider remain valid until token expiry.
+
+## Listing Providers
+
+See all configured OIDC providers:
+
+```sql
+SHOW OIDC PROVIDERS;
+```
+
+**Output columns:**
+
+| Column | Meaning |
+|--------|---------|
+| `name` | Provider name (e.g., `okta`) |
+| `issuer` | Token issuer URL |
+| `audience` | Expected `aud` claim |
+| `jwks_url` | Public key set URL |
+| `claim_mapping` | Array of mapping rules (summary) |
+| `created_at` | Timestamp |
+
+## Removing a Provider
+
+Drop a provider:
+
+```sql
+DROP OIDC PROVIDER okta;
+```
+
+Existing sessions using tokens from that provider are revoked at their next request.
+
+## Validating JWT Tokens
+
+NodeDB validates tokens in this order:
+
+1. **Decode header** → extract `kid` (key ID), `alg` (algorithm), `iss` (issuer)
+2. **Look up provider** by issuer
+3. **Fetch/cache JWKS** → retrieve public key for `kid`
+4. **Validate signature** → verify JWT signature matches the public key
+5. **Check audience** → `aud` claim must match the provider's configured audience
+6. **Check expiry** → `exp` claim must be in the future
+7. **Apply claim mapping** → extract fields, map to identity fields
+8. **Build identity** → create ephemeral `AuthenticatedIdentity` (no database user record needed)
+
+**Supported algorithms**: RS256, ES256 (RSA and ECDSA).
+
+## End-to-End Example
+
+### Step 1: Configure the Provider
+
+```sql
+CREATE OIDC PROVIDER auth0 WITH (
+    issuer   = 'https://your-tenant.us.auth0.com/',
+    jwks_url = 'https://your-tenant.us.auth0.com/.well-known/jwks.json',
+    audience = 'https://api.example.com',
+    claim_mapping = [
+        { claim_name = 'email', claim_value = null, effect = {
+            default_database = 'production'
+          } },
+        { claim_name = 'https://api.example.com/roles', claim_value = 'readwrite', effect = {
+            add_roles = ['readwrite']
+          } }
+    ]
+);
+```
+
+### Step 2: Get a Token from Auth0
+
+User logs in via your web app, Auth0 issues a JWT:
+
+```
+eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.
+eyJzdWIiOiIxMjM0NTY3ODkwIiwiZW1haWwiOiJqb2huQGFjbWUuY29tIiwi
+aHR0cHM6Ly9hcGkuZXhhbXBsZS5jb20vcm9sZXMiOlsicmVhZHdyaXRlIl0s
+ImF1ZCI6Imh0dHBzOi8vYXBpLmV4YW1wbGUuY29tIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjE3MTYyMzkwMjJ9.
+...signature...
+```
+
+### Step 3: Authenticate to NodeDB
+
+Send the token in the `Authorization` header:
+
+```bash
+curl -H "Authorization: Bearer eyJhbGciOi..." \
+     http://localhost:6480/v1/query \
+     -d '{"sql": "SELECT 1"}'
+```
+
+Or via native protocol (e.g., with `nodedb-client`):
+
+```rust
+let auth = AuthMethod::OidcBearer {
+    token: "eyJhbGciOi...".to_string(),
+    provider: "auth0".to_string(),
+};
+let session = nodedb_client::connect("localhost:6432", auth).await?;
+```
+
+### Step 4: Query as the Authenticated User
+
+NodeDB validates the token and applies claim mapping rules:
+
+```
+Token decoded and validated:
+  email = "john@acme.com"
+  https://api.example.com/roles = "readwrite"
+  audience = "https://api.example.com"  ✓
+  iss = "https://your-tenant.us.auth0.com/"  ✓
+  exp > now()  ✓
+
+Claim mapping applied:
+  Rule 1 (email): matches → default_database = production
+  Rule 2 (roles = readwrite): matches → add_roles = [readwrite]
+
+Session created:
+  username = "john@acme.com" (from email claim)
+  default_database = "production"
+  roles = [readwrite]
+
+Query executed as authenticated session
+```
+
+## Token Lifetime and Session Close
+
+Sessions created via OIDC inherit the token's lifetime:
+
+```
+session.token_expiry = jwt.exp
+```
+
+When a session's token expires, the connection closes with error `TOKEN_EXPIRED`. The user must re-authenticate with a fresh token.
+
+If both an idle timeout and token expiry are configured on the database, the session closes at whichever comes first:
+
+```
+close_at = min(idle_deadline, token_expiry)
+```
+
+## Token Refresh
+
+OIDC bearer tokens typically have short lifetimes (minutes to hours). Refresh is handled entirely by the client:
+
+1. Client detects token expiry (or error `TOKEN_EXPIRED` from NodeDB)
+2. Client calls Auth0's token refresh endpoint (if available)
+3. Client reconnects to NodeDB with the new token
+4. New session created with the new token's expiry
+
+NodeDB does not participate in token refresh — it validates whatever token is presented.
+
+## Audit Trail
+
+Every OIDC login is recorded:
+
+```sql
+SHOW AUDIT WHERE event_type = 'auth_success' AND database = 'sales';
+```
+
+**Audit record includes:**
+- Provider name (e.g., `auth0`)
+- JWT subject (`sub` claim) for forensics
+- Username (from claim mapping)
+- Timestamp
+- Client IP
+
+Failures are also logged:
+
+```sql
+SHOW AUDIT WHERE event_type = 'auth_failure' AND reason LIKE '%oidc%';
+```
+
+## Required Role
+
+Creating, altering, or dropping OIDC providers requires:
+
+```
+CREATE OIDC PROVIDER — ClusterAdmin or Superuser
+ALTER OIDC PROVIDER  — ClusterAdmin or Superuser
+DROP OIDC PROVIDER   — ClusterAdmin or Superuser
+```
+
+Regular users cannot modify providers.
+
+## Troubleshooting
+
+**Token rejected: invalid signature**
+- JWKS cache may be stale. Manually refresh: `ALTER OIDC PROVIDER <name> REFRESH JWKS`
+- Check that the issuer matches exactly (including trailing `/`)
+
+**Token rejected: audience mismatch**
+- JWT `aud` claim doesn't match the configured audience. Check both the token and the provider config.
+
+**Login succeeds but permission denied immediately**
+- Claim mapping may have failed (missing required claim). Check the claim-mapping rules and the JWT contents.
+
+**OIDC provider not found**
+- Provider was dropped or the `provider` field in the login request is misspelled. List providers: `SHOW OIDC PROVIDERS`
+
+See [authentication](./authentication.rdx) for general auth troubleshooting.

@@ -144,12 +144,21 @@ navigation = [
     { group = "Configuration", pages = [
       "administration/configuration",
     ] },
+    { group = "Databases", pages = [
+      "administration/databases",
+      "administration/database-clone",
+      "administration/database-mirror",
+      "administration/move-tenant",
+      "administration/quotas",
+    ] },
     { group = "Security", pages = [
       "administration/authentication",
+      "administration/oidc-sso",
       "administration/rbac",
       "administration/rls",
       "administration/tls",
       "administration/audit-logging",
+      "administration/session-management",
       "administration/multi-tenancy",
     ] },
     { group = "Operations", pages = [

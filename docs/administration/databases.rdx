@@ -1,0 +1,222 @@
+---
+title: Databases
+description: The Database primitive — top-level container above tenants. Owns the collection namespace and quota budget.
+---
+
+# Databases
+
+A **Database** is a top-level container that owns the collection namespace and quota budget. It is the unit of clone, mirror, and backup. One database hosts multiple tenants; a tenant's data does not span databases.
+
+## What is a Database?
+
+A Database is a deployment unit — typically one per app, environment, or region. It provides:
+
+- **Collection namespace** — all collection names are scoped per database. The same collection name can exist in different databases with no conflict.
+- **Quota parent** — the database owns a resource budget (storage, memory, connections). Tenants inherit from the database quota.
+- **Durability boundary** — backups, clones, and mirrors operate at the database level.
+- **Access control** — database-level roles (`DatabaseOwner`, `DatabaseEditor`, `DatabaseReader`) determine who can manage collections within it.
+
+For scaling across regions or tenants, use one database per environment and separate tenants within it. Do not create one database per customer — use [Multi-Tenancy](multi-tenancy) instead.
+
+## The Default Database
+
+NodeDB reserves `DatabaseId(0)` for the `default` database. This database:
+
+- Always exists and cannot be dropped
+- Serves as the fallback if no database is specified
+- Is the migration target for legacy single-database deployments
+- Has the durable identity `DatabaseId(0)` even if renamed
+
+## Creating a Database
+
+```sql
+CREATE DATABASE emp_prod;
+CREATE DATABASE staging WITH (quota_storage_bytes = 107374182400);
+```
+
+The `quota_storage_bytes` option sets the database-level storage quota (default: unlimited). See [Quotas](#quotas) for all available quota options.
+
+## Dropping a Database
+
+```sql
+DROP DATABASE staging;
+```
+
+By default, `DROP DATABASE` fails if the database contains collections. Use `CASCADE` to drop with all collections:
+
+```sql
+DROP DATABASE staging CASCADE;
+```
+
+Use `FORCE` to drop and automatically materialize any dependent clones (see [Cloning Databases](database-clone)) before removal:
+
+```sql
+DROP DATABASE staging FORCE;
+```
+
+The default database cannot be dropped.
+
+## Renaming and Altering
+
+Rename a database:
+
+```sql
+ALTER DATABASE staging RENAME TO emp_staging;
+```
+
+The durable identity is `DatabaseId`, not the name. Renaming is a catalog-only operation (fast, non-disruptive).
+
+Update quotas:
+
+```sql
+ALTER DATABASE emp_prod SET QUOTA quota_storage_bytes = 214748364800;
+```
+
+## Listing Databases
+
+```sql
+SHOW DATABASES;
+```
+
+Returns:
+
+| Column             | Type      | Description                          |
+| ------------------ | --------- | ------------------------------------ |
+| `name`             | `text`    | Database name                        |
+| `database_id`      | `integer` | Durable unique identifier            |
+| `status`           | `text`    | `Active` or `Degraded`               |
+| `created_at`       | `timestamp` | Creation timestamp                  |
+| `collection_count` | `integer` | Number of collections in database    |
+| `tenant_count`     | `integer` | Number of tenants using database     |
+| `parent_clone`     | `text`    | Source database name if cloned; null otherwise |
+| `quota_bytes`      | `integer` | Storage quota in bytes               |
+
+## Connecting to a Database
+
+### pgwire (PostgreSQL Protocol)
+
+Specify the database in the connection string:
+
+```bash
+psql -h localhost -p 6432 -d emp_prod -U alice
+```
+
+Or switch mid-session:
+
+```bash
+psql> \c emp_prod
+```
+
+Switching databases aborts any open transaction, invalidates prepared statements, and re-binds the session.
+
+### HTTP
+
+Use the `X-NodeDB-Database` header (preferred):
+
+```bash
+curl -H "X-NodeDB-Database: emp_prod" http://localhost:6480/v1/query
+```
+
+Or query parameter fallback:
+
+```bash
+curl http://localhost:6480/v1/query?database=emp_prod
+```
+
+### Native Client
+
+```rust
+use nodedb_client::ConnectionBuilder;
+
+let conn = ConnectionBuilder::new("localhost:6432")
+    .database("emp_prod")
+    .user("alice")
+    .password("secret")
+    .connect()
+    .await?;
+```
+
+## Session Resolution Chain
+
+When a new session connects, the database is resolved in this order:
+
+1. **Explicit** — connection string / startup message `database` parameter
+2. **User default** — `DEFAULT DATABASE` set for the user (see [User Defaults](#user-defaults))
+3. **Tenant default** — configured default for the tenant (if using [Multi-Tenancy](multi-tenancy))
+4. **Fallback** — `default` database
+
+The first match is used. Once set, the session's database is immutable until switched via `\c` / `USE DATABASE`.
+
+## User Defaults
+
+Set a default database for a user:
+
+```sql
+ALTER USER alice SET DEFAULT DATABASE emp_prod;
+```
+
+When `alice` connects without specifying a database, she is routed to `emp_prod`.
+
+## Database Roles and Grants
+
+Three database-level roles control who can access and manage a database:
+
+- **`DatabaseOwner`** — full control: create/alter/drop collections, grant permissions
+- **`DatabaseEditor`** — read/write collections, cannot alter schema or grants
+- **`DatabaseReader`** — read-only access
+
+Grant a role to a user:
+
+```sql
+GRANT DATABASE_OWNER ON DATABASE emp_prod TO alice;
+GRANT DATABASE_READER ON DATABASE emp_prod TO bob;
+```
+
+Revoke with:
+
+```sql
+REVOKE DATABASE_OWNER ON DATABASE emp_prod FROM alice;
+```
+
+See [RBAC](rbac) for the full privilege matrix.
+
+## Cross-Database Queries Are Forbidden
+
+A collection in a different database returns `COLLECTION_NOT_FOUND` — identical to querying a collection that does not exist anywhere. This design prevents accidental cross-database leaks.
+
+To query data across databases, open two separate connections:
+
+```rust
+let conn_a = ConnectionBuilder::new("localhost:6432").database("db_a").connect().await?;
+let conn_b = ConnectionBuilder::new("localhost:6432").database("db_b").connect().await?;
+
+let rows_a = conn_a.query("SELECT * FROM collections_table").await?;
+let rows_b = conn_b.query("SELECT * FROM collections_table").await?;
+
+// Merge in application code
+```
+
+## Per-Database Metrics
+
+Prometheus metrics are exposed per database with labels:
+
+```
+nodedb_database_collection_count{database="emp_prod"} 42
+nodedb_database_storage_bytes{database="emp_prod"} 1099511627776
+nodedb_database_memory_bytes{database="emp_prod"} 536870912
+nodedb_database_connections_active{database="emp_prod"} 8
+nodedb_database_qps{database="emp_prod"} 1500
+nodedb_database_errors_total{database="emp_prod",code="UNAUTHORIZED"} 5
+```
+
+Use these for dashboards, alerting, and capacity planning. See [Monitoring](monitoring) for integration.
+
+## Common Errors
+
+| Error                            | Cause                               | Solution                           |
+| -------------------------------- | ----------------------------------- | --------------------------------- |
+| `DATABASE_NOT_FOUND`             | Database does not exist             | Create with `CREATE DATABASE`     |
+| `CANNOT_DROP_DEFAULT_DATABASE`   | Attempted to drop `default`         | Use a different database name      |
+| `COLLECTION_NOT_FOUND`           | Collection exists in different DB   | Switch to correct database         |
+| `ACCESS_DENIED`                  | User lacks privilege on database    | `GRANT DATABASE_READER` or higher |
+| `CLONE_DEPENDENCY`               | Cannot drop DB with dependent clone | Use `DROP DATABASE … FORCE`       |

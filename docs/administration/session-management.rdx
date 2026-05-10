@@ -1,0 +1,206 @@
+---
+title: Session Management
+description: SHOW SESSIONS, KILL SESSION, idle timeout, lockout, login rate limit.
+---
+
+# Session Management
+
+Manage active user connections with monitoring, termination, and automatic timeout controls.
+
+## Listing Sessions
+
+View all active sessions across the cluster:
+
+```sql
+SHOW SESSIONS;
+SHOW SESSIONS IN DATABASE sales;
+SHOW SESSIONS WHERE user = 'alice';
+```
+
+**Output columns:**
+
+| Column | Meaning |
+|--------|---------|
+| `session_id` | Unique session identifier (UUID) |
+| `addr` | Client IP and port |
+| `user` | Username |
+| `database` | Connected database name |
+| `tenant` | Tenant ID |
+| `started_at` | Connection timestamp (UTC) |
+| `last_active_ms` | Milliseconds since last statement |
+| `idle_timeout_secs` | Database's idle timeout setting |
+| `token_expiry_ms` | JWT/token lifetime (0 if password auth) |
+| `bytes_in` | Total bytes received |
+| `bytes_out` | Total bytes sent |
+| `current_statement_digest` | Statement hash if query running |
+
+## Killing a Session
+
+Force-terminate a session immediately:
+
+```sql
+KILL SESSION 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
+```
+
+**Authorization**: Requires `Superuser`, `ClusterAdmin`, or ownership of the session's database.
+
+**Behavior**:
+- Returns error `SESSION_NOT_FOUND` (SQLSTATE 42704) if the session ID doesn't exist
+- For an active query, closes the connection at the next request boundary
+- For an idle connection, force-closes immediately
+- Emits an audit row with `KillReason::AdminKill` for forensics
+
+## Idle Timeout
+
+Automatically close idle connections after a configurable duration:
+
+```sql
+ALTER DATABASE sales SET IDLE_TIMEOUT 1800;  -- 30 minutes
+ALTER DATABASE sales SET IDLE_TIMEOUT 0;     -- Disable (default)
+```
+
+**Behavior**:
+- The Control Plane runs a background timer that checks sessions every 10 seconds
+- A session is idle if `time_now - last_activity > idle_timeout`
+- Closes with error `SESSION_IDLE_TIMEOUT`
+- Emits an audit row with `KillReason::IdleTimeout`
+- Only affects sessions where idle timeout is enabled; password-auth sessions track `last_active_ms` on every statement
+
+## Kill Reasons
+
+Every session termination is tagged with a reason for audit and debugging:
+
+| Kill Reason | Trigger |
+|-------------|---------|
+| `Alive` | Session active (not killed) |
+| `UserDropped` | User account deleted (DROP USER) |
+| `IdleTimeout` | Exceeded database idle timeout |
+| `TokenExpired` | JWT/OIDC token lifetime ended |
+| `AdminKill` | KILL SESSION command |
+
+Check the audit log to see which sessions closed and why:
+
+```sql
+SHOW AUDIT WHERE event_type = 'session_revoked' AND database = 'sales';
+```
+
+## Session Revocation
+
+When a user's permissions change, existing sessions are automatically updated:
+
+### Hard Revocation (Connection Closes)
+
+Triggered by:
+- `DROP USER alice`
+- User soft-delete (setting `is_active = false`)
+- Full role purge (removing all roles)
+
+Action: Connection closes at the next request boundary with error `SESSION_REVOKED`. An audit entry is written before the connection closes.
+
+### Soft Revocation (Identity Rehydrated)
+
+Triggered by:
+- `GRANT ROLE admin TO alice`
+- `REVOKE ROLE admin FROM alice`
+- `ALTER USER alice SET ROLE newrole`
+
+Action: On the next statement, the session re-fetches the user record, rebuilds the `AuthenticatedIdentity`, and swaps it atomically. No reconnect needed; the user sees their new permissions immediately.
+
+## In-Flight Permission Propagation
+
+Grant a role in one connection, and another open connection sees it immediately:
+
+**Connection 1:**
+```sql
+GRANT ROLE admin TO alice;
+```
+
+**Connection 2 (already logged in as alice):**
+```sql
+-- Runs your statement with updated permissions (no reconnect)
+SELECT * FROM admin_view;  -- Now allowed
+```
+
+This works because:
+- `GRANT/REVOKE` bumps the user's version counter
+- Request entry checks the version; if it moved, rebuilds the identity and swaps the cached `Arc`
+- No disconnect, no token refresh — just a cheap version check on each request
+
+## Persistent Login Lockout
+
+After repeated failed login attempts, an account is locked:
+
+```sql
+-- Account locked after 5 failed attempts, unlocks after 30 minutes
+```
+
+**Behavior**:
+- Lockout state is persisted in the `_system.lockout_state` table and survives restart
+- On login, the server checks if the account is locked before attempting SCRAM/Argon2
+- A failed login increments the counter; a successful login resets it
+- Locked accounts are automatically unlocked after the lockout duration expires
+- Audit log records `LockoutTriggered` with the IP address for forensics
+
+Check which accounts are locked (superuser only):
+
+```sql
+SELECT username, failed_count, locked_until_ms, last_failure_ip
+FROM _system.lockout_state
+WHERE failed_count > 0;
+```
+
+## Pre-Auth Login Rate Limiting
+
+Two token buckets limit login attempts *before* password verification (to prevent username enumeration):
+
+| Bucket | Capacity | Window |
+|--------|----------|--------|
+| `login_ip:{addr}` | 30 attempts/min | 1 minute sliding |
+| `login_user:{username}` | 10 attempts/min | 1 minute sliding |
+
+Whichever bucket triggers first causes a login rate-limit denial.
+
+**Security properties**:
+- Constant-time error path: regardless of whether the rate limit is exceeded or the password is wrong, the error is always generic `INVALID_CREDENTIALS` with uniform delay
+- No information leakage: an attacker cannot determine if a username exists or if they've hit the IP limit
+- In-memory only: restarts reset the window
+
+## Session Cap
+
+The cluster has a maximum number of concurrent sessions:
+
+```
+cluster.max_active_sessions = 10000 (default)
+```
+
+When reached, new logins return `SESSION_CAP_EXCEEDED`. This is a safety valve to prevent resource exhaustion. Increase if your user count grows.
+
+## Audit Denial Events
+
+Permission denials and session closures are logged with full context:
+
+| Audit Event | Trigger |
+|-------------|---------|
+| `PermissionDenied` | Query denied due to RLS or role check |
+| `RlsRejected` | Row-level security policy rejected access |
+| `SessionRevoked` | Connection force-closed (admin or revocation) |
+| `LockoutTriggered` | Account locked due to failed attempts |
+| `LoginRateLimited` | Login denied due to IP or username rate limit |
+
+Query the audit log to analyze denials:
+
+```sql
+SHOW AUDIT WHERE event_type = 'permission_denied'
+    AND database = 'sales'
+    AND created_at > now() - interval '1 hour';
+```
+
+See [audit-logging](./audit-logging.rdx) for full details.
+
+## Required Roles
+
+| Operation | Required Role |
+|-----------|---------------|
+| `KILL SESSION` | `Superuser` or `DatabaseOwner` of that session's database |
+| `ALTER DATABASE SET IDLE_TIMEOUT` | `ClusterAdmin` or `Superuser` |
+| `SHOW SESSIONS` | Any user (shows their own + other tenants' if privileged) |

@@ -1,0 +1,199 @@
+---
+title: Cloning Databases
+description: Copy-on-write CLONE DATABASE for branching, point-in-time staging, and forensic snapshots.
+---
+
+# Cloning Databases
+
+A **clone** is a copy-on-write (CoW) database created at a point-in-time snapshot of a source. Reads delegate to the source; writes go to the clone. Returns in milliseconds regardless of source size.
+
+## What is a Clone?
+
+When you clone a database, NodeDB:
+
+1. Records the source database and a point-in-time LSN (Log Sequence Number)
+2. Creates a new database with the same collections
+3. Copies only the catalog metadata — zero storage copying
+4. Routes reads to the source for data not yet written in the clone
+5. Copies rows to the clone on first write (copy-on-write)
+
+This means a clone of a 100 GB database returns in milliseconds and initially uses negligible storage.
+
+## Creating a Clone
+
+Clone at the latest commit:
+
+```sql
+CLONE DATABASE staging FROM prod;
+```
+
+Clone at a specific point in time:
+
+```sql
+CLONE DATABASE prod_yesterday FROM prod AS OF SYSTEM TIME 1730000000000;
+```
+
+The timestamp is in milliseconds since epoch. NodeDB resolves it to the nearest LSN and captures that snapshot. Reads on `prod_yesterday` see `prod`'s state at that moment.
+
+## Read-Path Delegation
+
+Until a row is written in the clone, reads are served from the source at the chosen LSN:
+
+```
+1. Query the clone for a row
+2. If the row exists in the clone → return it
+3. If the row was explicitly deleted in the clone → return not-found
+4. If the row exists only in the source → return it (delegated read)
+5. If the row doesn't exist anywhere → return not-found
+```
+
+This delegation is transparent — your query is unaware it is reading from the source.
+
+## Write-on-Clone (Copy-Up)
+
+When you first modify a row that exists only in the source:
+
+```sql
+UPDATE staging.users SET status = 'active' WHERE id = 100;
+```
+
+If row 100 exists only in the source:
+
+1. The row is **copied up** from the source to the clone
+2. The UPDATE is applied
+3. The copy is durably recorded
+4. Subsequent reads see the clone's copy
+
+Delete on a source-only row inserts a **tombstone** — the row is invisible to subsequent reads without being physically removed.
+
+All writes are durable through the WAL and Raft replication.
+
+## Bitemporal Correctness
+
+If the source is [bitemporal](bitemporal), the clone preserves time-travel semantics:
+
+```sql
+SELECT * FROM staging.events AS OF SYSTEM TIME 1729000000000 WHERE event_id = 42;
+```
+
+- If query time ≤ clone's LSN → read from source at that time
+- If query time > clone's LSN → read from clone (clone did not exist before its creation)
+- If query time < clone creation → empty result with metadata note
+
+This is why cloning from a point-in-time staging database works: you see the exact historical state at clone time, then your own edits afterward.
+
+## Materializing a Clone
+
+Background materialization gradually copies all rows from source to clone, freeing the clone from source dependency:
+
+```sql
+ALTER DATABASE staging MATERIALIZE;
+```
+
+This blocks until all rows are copied. Useful when you want to:
+
+- Drop the source database
+- Stop relying on source's read-path performance
+- Create an independent snapshot for long-term archival
+
+Before materializing completes, the clone remains usable — reads continue delegating if needed.
+
+## Viewing Lineage
+
+See the ancestor chain of a clone:
+
+```sql
+SHOW DATABASE LINEAGE FOR staging;
+```
+
+Returns:
+
+```
+ source_database | created_at_ms | as_of_ms | status
+-----------------+---------------+----------+----------
+ prod            | 1730000000000 | null     | Shadowed
+```
+
+For nested clones (clone of a clone):
+
+```
+ source_database | created_at_ms | as_of_ms | status
+-----------------+---------------+----------+----------
+ prod            | 1730000000000 | null     | Shadowed
+ staging         | 1730086400000 | null     | Shadowed
+```
+
+## Clone Depth Limits
+
+Clone depth is limited to 8 levels to prevent query-path explosion. Attempting to clone from a clone-8 returns `CLONE_DEPTH_EXCEEDED`.
+
+To exceed the limit, materialize the source clone first:
+
+```sql
+ALTER DATABASE staging MATERIALIZE;
+CLONE DATABASE stage2 FROM staging;  -- now staging is Materialized, so this succeeds
+```
+
+## Restrictions and Errors
+
+| Restriction              | Solution                             |
+| ----------------------- | ------------------------------------ |
+| Cannot clone a mirror    | Promote the mirror first; then clone |
+| Clone depth > 8          | Materialize source; retry            |
+| Source dropped with dependents | Use `DROP DATABASE … FORCE` |
+
+## Practical Examples
+
+### Point-in-Time Staging
+
+Clone production at 1 AM daily for staging/QA tests:
+
+```sql
+-- 1 AM: Create daily snapshot
+CLONE DATABASE qa_daily_$(date +%Y%m%d) FROM prod AS OF SYSTEM TIME (EXTRACT(EPOCH FROM '2026-05-10 01:00:00'::timestamp) * 1000)::bigint;
+
+-- QA team tests against the snapshot
+-- After testing: DROP or materialize for archival
+```
+
+### Forensic Snapshots
+
+Clone at the time of a suspected incident:
+
+```sql
+-- Incident at 1730000000000 (ms)
+CLONE DATABASE incident_snapshot FROM prod AS OF SYSTEM TIME 1730000000000;
+
+-- Investigate without modifying production
+SELECT * FROM incident_snapshot.events WHERE status = 'failed';
+```
+
+### Blue-Green Deployment
+
+Create a staging clone, apply schema changes, validate, then promote:
+
+```sql
+CLONE DATABASE blue FROM prod;
+ALTER TABLE blue.users ADD COLUMN new_field INT;
+-- Run tests on blue
+-- Once validated, swap DNS / connection strings
+```
+
+## Composition with Other Features
+
+**Quotas:** A clone inherits the source's quota settings. Adjust independently:
+
+```sql
+ALTER DATABASE staging SET QUOTA quota_storage_bytes = 53687091200;
+```
+
+**Mirroring:** A clone can be mirrored (preview-environment DR). A mirror cannot be cloned — promote first.
+
+**Multi-engine:** Clones work across all engines (vector, graph, columnar, etc.) transparently.
+
+## Performance Notes
+
+- **Clone creation**: O(catalog size), typically < 100 ms even for TB sources
+- **Materialization**: Background, respects database maintenance budget. Small rows (< 1 KB) typically materialize at 100K–500K rows/sec
+- **Read overhead while Shadowed**: Negligible — clone check is a fast hashtable lookup
+- **Write overhead while Shadowed**: Single copy-up latency per source row; subsequent writes unaffected

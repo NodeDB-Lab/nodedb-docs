@@ -1,0 +1,259 @@
+---
+title: Mirroring Databases
+description: MIRROR DATABASE for cross-region read replicas via Raft observer. Promote one-way for DR.
+---
+
+# Mirroring Databases
+
+A **mirror** is a continuously-updated read-only copy of a database in a different cluster. It replicates the source's Raft log and applies all writes under its own storage layer. Promotion converts a mirror to a writable, independent database.
+
+## What is a Mirror?
+
+Mirrors are useful for:
+
+- **Read replicas** in a distant region (faster reads for users far from origin)
+- **Disaster recovery** — promote if origin is lost (one-way, permanent)
+- **Data locality** — copy entire database to compliance-required regions
+
+Unlike [clones](database-clone) (which delegate reads to source), mirrors apply all writes locally. Unlike active-active replication, mirrors are read-only until promoted.
+
+## Creating a Mirror
+
+```sql
+MIRROR DATABASE replica FROM prod MODE = async;
+```
+
+### Modes
+
+**`async` (default):**
+- Mirror trails source; lag is observable
+- Recommended for cross-region use (no latency penalty on source)
+- Lag threshold for `Degraded` status: 5 seconds (configurable)
+
+**`sync`:**
+- Source waits for mirror ACK before committing writes
+- Not recommended cross-region (adds source write latency)
+- Lag threshold: 100 ms
+- Use only for same-cluster high-availability mirrors
+
+## Mirror Lifecycle
+
+A mirror progresses through statuses:
+
+```
+Bootstrapping { bytes_done, bytes_total }
+    ↓
+Following
+    ↓ (if lag > threshold)
+Degraded { lag_ms }
+    ↓ (if disconnected)
+Disconnected
+    ↓ (on promotion)
+Promoted
+```
+
+### Bootstrap Phase
+
+When you create a mirror:
+
+1. Source creates a consistent snapshot at LSN = S₀
+2. Snapshot streams to mirror cluster over QUIC (cross-cluster transport)
+3. Mirror applies snapshot and sets `last_applied = S₀`
+4. Mirror requests log entries from S₀ + 1 onward
+5. Source streams and mirror applies
+6. Status flips to `Following`
+
+Bootstrap time depends on database size. Progress is tracked in `bytes_done` and `bytes_total`.
+
+### Following Phase
+
+Source continuously streams log entries to mirror. Writes apply with bounded lag. Status remains `Following` if lag < threshold.
+
+### Degraded Phase
+
+If mirror lag exceeds the threshold (5 s for async, 100 ms for sync), status becomes `Degraded { lag_ms }`. Writes still apply normally; degraded is informational.
+
+Common causes:
+
+- Network congestion
+- Mirror apply bottleneck
+- Source burst write rate
+
+Monitor the `nodedb_database_mirror_lag_ms` metric for alert thresholds.
+
+### Disconnected Phase
+
+If the mirror loses connection to source, status becomes `Disconnected`. Reconnection is automatic with exponential backoff. Reads continue serving stale data.
+
+## Read Consistency on a Mirror
+
+Before promotion, mirrors are read-only. Three consistency levels are supported:
+
+**`Strong` (leader read):**
+```sql
+SELECT * FROM replica.users WHERE id = 100 CONSISTENCY = 'strong';
+```
+Returns `STALE_READ_NOT_LEADER` with a hint to query the source instead.
+
+**`BoundedStaleness(duration)` (default):**
+```sql
+SELECT * FROM replica.users WHERE id = 100 CONSISTENCY = 'bounded_staleness(5s)';
+```
+Served against `last_applied` if lag ≤ duration. Returns error if lag > duration.
+
+**`Eventual`:**
+```sql
+SELECT * FROM replica.users WHERE id = 100 CONSISTENCY = 'eventual';
+```
+Served immediately from whatever state is locally available.
+
+## Write Rejection Pre-Promotion
+
+All writes to a non-promoted mirror return `MIRROR_READ_ONLY`:
+
+```sql
+INSERT INTO replica.users VALUES (...);
+-- Error: MIRROR_READ_ONLY
+```
+
+This prevents accidental writes that would be lost on promotion.
+
+## Promotion
+
+Permanently convert a mirror to a writable, independent database:
+
+```sql
+ALTER DATABASE replica PROMOTE;
+```
+
+### What Happens
+
+1. Mirror stops observing source
+2. Mirror becomes a normal Raft group with its own leader election
+3. Mirror accepts writes
+4. `MirrorStatus` → `Promoted`
+5. `mirror_origin` is retained for audit; no functional purpose
+
+### One-Way and Permanent
+
+Promotion is irreversible. There is no `DEMOTE` command. Once promoted:
+
+- The former mirror is a standalone database
+- Source is unaffected (not notified)
+- To re-establish mirroring: `DROP` the promoted database and create a fresh clone or mirror
+
+This design reflects typical DR scenarios where source is unreachable or lost.
+
+## Mirror Status Inspection
+
+```sql
+SHOW DATABASE MIRROR STATUS FOR replica;
+```
+
+Returns:
+
+| Column            | Type      | Description                         |
+| ----------------- | --------- | ----------------------------------- |
+| `mode`            | `text`    | `sync` or `async`                   |
+| `status`          | `text`    | `Bootstrapping`, `Following`, `Degraded`, `Disconnected`, `Promoted` |
+| `last_applied`    | `integer` | LSN most recently applied           |
+| `lag_ms`          | `integer` | Estimated lag in milliseconds       |
+| `source_cluster`  | `text`    | Cluster ID of source                |
+| `source_database` | `text`    | Database name on source             |
+| `bytes_done`      | `integer` | Bootstrap progress (if Bootstrapping) |
+| `bytes_total`     | `integer` | Total size (if Bootstrapping)       |
+
+## Lag Observability
+
+Monitor mirror lag with Prometheus:
+
+```
+nodedb_database_mirror_lag_ms{database="replica"}
+```
+
+Set alerting thresholds based on your RTO/RPO requirements. For example:
+
+- **Warning**: lag > 30 s
+- **Critical**: lag > 300 s OR status = `Disconnected` for > 5 min
+
+## Failure Modes and Recovery
+
+| Failure                      | Behavior                                  | Recovery                                    |
+| ---------------------------- | ----------------------------------------- | ------------------------------------------- |
+| Network partition            | Status → `Disconnected`; reads stale      | Automatic reconnect with backoff            |
+| Mirror apply too slow        | Backpressure throttles source send rate   | Automatic; monitor lag metric               |
+| Source data loss             | Mirror is a replica, not a backup         | Use [Backup](backup-recovery) for data-loss recovery |
+| Mirror data loss             | Drop mirror; re-mirror (re-runs bootstrap) | Recreate with `MIRROR DATABASE` again      |
+| Mirror crash (before promote) | Restart resumes from persisted `last_applied` | Automatic; no data loss                    |
+| Source unavailable indefinitely | Promote to make mirror independent       | `ALTER DATABASE … PROMOTE`                 |
+
+## Composition with Other Features
+
+**Cloning:** A clone CAN be mirrored (useful for preview-environment DR). A mirror CANNOT be cloned — promote first if you need a clone of the mirror.
+
+**Quotas:** Mirror inherits source's quota. Adjust after bootstrap completes:
+
+```sql
+ALTER DATABASE replica SET QUOTA quota_storage_bytes = 107374182400;
+```
+
+**Multi-engine:** Mirrors work across all engines (vector, graph, columnar, etc.).
+
+## Practical Examples
+
+### Cross-Region Read Replica
+
+Create async mirror on a distant cluster for local reads:
+
+```sql
+-- On us-west cluster (origin)
+MIRROR DATABASE eu-replica FROM prod MODE = async;
+-- Deployed to eu-west cluster
+
+-- Clients in EU read from eu-replica (low latency)
+-- Writes still go to us-west origin
+```
+
+Monitor lag to ensure SLA compliance:
+
+```
+nodedb_database_mirror_lag_ms{database="eu-replica"} < 5000  # 5 sec
+```
+
+### Disaster Recovery Standby
+
+Create a mirror on standby hardware. On origin failure, promote:
+
+```sql
+-- Standby cluster
+MIRROR DATABASE standby FROM prod MODE = async;
+
+-- Origin lost? Promote standby to take over
+ALTER DATABASE standby PROMOTE;
+
+-- Update connection strings to point to former standby
+-- (now an independent writable database)
+```
+
+### Pre-Deployment Validation
+
+Clone the prod database, mirror the clone to a staging cluster, and test:
+
+```sql
+-- On prod cluster
+CLONE DATABASE pre_deploy FROM prod;
+MIRROR DATABASE staging_val FROM pre_deploy MODE = async;
+-- Deploy staging_val to staging cluster
+
+-- Validate schema / data
+-- If OK: promote staging to serve traffic
+-- If not: drop and retry
+```
+
+## Permissions
+
+Both `MIRROR DATABASE` and `ALTER DATABASE … PROMOTE` require superuser privileges. See [RBAC](rbac) for the full permission matrix.
+
+```sql
+GRANT SUPERUSER ON DATABASE prod TO admin;
+```
