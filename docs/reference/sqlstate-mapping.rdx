@@ -21,4 +21,15 @@ NodeDB maps internal error codes to PostgreSQL SQLSTATE codes for pgwire compati
 | Numeric overflow      | 22003    | Numeric value out of range   |
 | Division by zero      | 22012    | Division by zero             |
 | Rate limit exceeded   | 54001    | Too many resources           |
+| Tenant quota exceeded | 54001    | Too many resources           |
+| Database quota exceeded | 54001  | Too many resources           |
+| Server overload       | 54001    | Too many resources           |
+| Quota overcommit      | 54000    | Program limit exceeded       |
+| Database not found    | 42P01    | Undefined table              |
+| Mirror read only      | 25006    | Read-only SQL transaction    |
+| Stale read on mirror  | 0A000    | Feature not supported        |
+| Clone depth exceeded  | 54000    | Program limit exceeded       |
+| Session not found     | 42704    | Undefined object             |
+| Session idle timeout  | 08006    | Connection failure           |
+| Session revoked       | 08006    | Connection failure           |
 | Internal error        | XX000    | Internal error               |

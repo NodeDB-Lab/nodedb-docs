@@ -28,7 +28,53 @@ level = "standard"
 
 ## Key Events
 
-AuthSuccess, AuthFailure, AuthzDenied, PrivilegeChange, SessionConnect/Disconnect, AdminAction, TenantCreated/Deleted, SnapshotBegin/End, RestoreBegin/End, CertRotation, KeyRotation, NodeJoined/Left, QueryExec, RlsDenied, RowChange.
+### Authentication & Session Events
+
+AuthSuccess, AuthFailure, PermissionDenied, SessionConnect/Disconnect, SessionRevoked, LockoutTriggered, LoginRateLimited.
+
+### Database Lifecycle Events
+
+DatabaseCreated, DatabaseDropped, DatabaseRenamed, DatabaseQuotaChanged, DatabaseCloned, DatabaseMirrored, DatabasePromoted, DatabaseMaterialized, TenantMoved, DatabaseBackedUp, DatabaseRestored, DatabaseAuditDmlChanged, DatabaseIdleTimeoutChanged.
+
+### Authorization & Audit Events
+
+PrivilegeChange, RlsRejected, AdminAction, TenantCreated/Deleted.
+
+### System Events
+
+SnapshotBegin/End, RestoreBegin/End, CertRotation, KeyRotation, NodeJoined/Left, QueryExec, RowChange, OidcProviderChanged.
+
+All events carry `database_id` when applicable, enabling filtering of audit trails per database.
+
+## DML Audit (Optional Per-Database)
+
+Enable audit logging of all data modifications on a per-database basis:
+
+```sql
+ALTER DATABASE production SET AUDIT_DML = 'writes';   -- INSERT, UPDATE, DELETE only
+ALTER DATABASE production SET AUDIT_DML = 'all';      -- All queries
+ALTER DATABASE production SET AUDIT_DML = 'none';     -- Disabled (default)
+```
+
+When enabled, every write produces a `DmlAudit` entry carrying:
+- User ID, database, collection, operation type, row ID, LSN
+- Statement digest and execution timestamp
+- Sourced from the Event Plane (non-blocking to writers)
+
+## Per-Database Audit Filtering
+
+Filter audit entries by database:
+
+```sql
+SHOW AUDIT IN DATABASE production;
+SHOW AUDIT IN DATABASE production WHERE event_type = 'DmlAudit';
+```
+
+## Hash Chain Integrity
+
+Every audit entry includes a SHA-256 hash of the previous entry. The chain extends each entry's hash with `database_id` when scoped, preserving compatibility with pre-database entries whose `database_id` was null.
+
+If any record is modified, the chain breaks and tampering is detected.
 
 ## SIEM Export
 
@@ -37,3 +83,5 @@ CREATE CHANGE STREAM audit_export ON _system.audit
     DELIVERY WEBHOOK 'https://siem.example.com/ingest'
     WITH (format = 'json', hmac_secret = 'your-secret');
 ```
+
+See (session-management) for session revocation audit events and (oidc-sso) for authentication provider changes.

@@ -20,6 +20,8 @@ psql -h localhost -p 6432 -U alice
 
 ## API Keys
 
+### Basic API Key Usage
+
 ```sql
 CREATE API KEY 'my-service' ROLE readwrite;
 DROP API KEY 'my-service';
@@ -28,6 +30,38 @@ DROP API KEY 'my-service';
 ```bash
 curl -H "Authorization: Bearer <api-key>" http://localhost:6480/v1/query
 ```
+
+### Database Scoping
+
+API keys can be scoped to specific databases, restricting the key's access:
+
+```sql
+CREATE API KEY 'web-app' FOR user alice WITH DATABASES (prod_orders, prod_users);
+CREATE API KEY 'analytics' FOR user bob WITH DATABASES (analytics_db);
+
+SHOW API KEYS;    -- displays accessible_databases for each key
+```
+
+An API key with an empty database list inherits the owner's accessible databases at bind time. A non-empty list is an explicit restriction — the key can only access the listed databases.
+
+### Service Accounts
+
+Service accounts are privileged accounts designed for application-to-database connections:
+
+```sql
+CREATE SERVICE ACCOUNT etl_worker FOR DATABASE analytics_db;
+ALTER SERVICE ACCOUNT etl_worker SET DATABASES (analytics_db, staging_db);
+
+CREATE API KEY 'etl-key' FOR SERVICE ACCOUNT etl_worker;
+```
+
+Service accounts are scoped to a single tenant (inherited from the caller) and support per-database access control, inheriting or narrowing their scope when API keys are created on them.
+
+## OIDC / SSO
+
+NodeDB supports OpenID Connect (OIDC) for enterprise Single Sign-On integration. See (oidc-sso) for complete configuration, claim mapping, token refresh, and session lifetime management.
+
+OIDC bearer tokens are supported on the **native protocol and HTTP** entry points only. pgwire connections use SCRAM-SHA-256 exclusively.
 
 ## JWKS (JWT)
 
@@ -46,6 +80,7 @@ JWT claims map to `$auth.*` session variables for RLS:
 | `role`    | `$auth.role`     | `WHERE $auth.role = 'admin'`   |
 | `org_id`  | `$auth.org_id`   | `WHERE org_id = $auth.org_id`  |
 | `scope`   | `$auth.scopes`   | Scope-based access control     |
+| `database_id` | `$auth.database_id` | `WHERE db_shard = $auth.database_id` |
 
 Supported algorithms: RS256, ES256.
 

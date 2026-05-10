@@ -36,6 +36,56 @@ NodeDB uses `NodeDbError` — a struct with numeric `ErrorCode`, human-readable 
 | `AUTHORIZATION_DENIED` | 2000 | Check RBAC grants           |
 | `SYNC_DELTA_REJECTED`  | 3001 | CRDT sync constraint failed |
 
+## Database Boundary Errors
+
+| Error | Code | Resolution |
+| --- | --- | --- |
+| `DATABASE_NOT_FOUND` | 1101 | Verify database name; check `SHOW DATABASES` |
+| `CANNOT_DROP_DEFAULT_DATABASE` | 1102 | The `default` database is reserved; drop user databases instead |
+
+## Database Quota Errors (7000–7099)
+
+| Error | Code | Resolution |
+| --- | --- | --- |
+| `SERVER_OVERLOAD` | 7000 | Cluster under heavy pressure; retry with exponential backoff |
+| `TENANT_QUOTA_EXCEEDED` | 7001 | Tenant's rate/concurrency/memory limit exhausted; reduce load or raise quota via `ALTER TENANT … IN DATABASE … SET QUOTA` |
+| `DATABASE_QUOTA_EXCEEDED` | 7002 | Database's rate/concurrency/memory limit exhausted; reduce load or raise quota via `ALTER DATABASE … SET QUOTA` |
+| `QUOTA_OVERCOMMIT` | 5001 | Sum of tenant quotas exceeds database quota, or database quota exceeds global; rebalance quotas |
+| `TENANT_VECTOR_DIM_EXCEEDED` | 1023 | Vector embedding dimensionality exceeds tenant's `max_vector_dim`; reduce dimensionality or raise quota |
+| `TENANT_GRAPH_DEPTH_EXCEEDED` | 1024 | Graph traversal depth exceeds tenant's `max_graph_depth`; reduce traversal depth or raise quota |
+| `SESSION_CAP_EXCEEDED` | 7003 | Cluster session capacity exhausted; close idle sessions or raise `max_active_sessions` |
+
+## Database Clone Errors (5000–5099)
+
+| Error | Code | Resolution |
+| --- | --- | --- |
+| `CLONE_DEPTH_EXCEEDED` | 5002 | Clone lineage exceeds `MAX_CLONE_DEPTH = 8`; promote source clone to materialize and flatten lineage |
+| `CLONE_DEPENDENCY` | 5003 | Source database has dependent clones; `DROP` clones first or use `DROP DATABASE source FORCE` to trigger materialization |
+| `CANNOT_CLONE_MIRROR` | 5004 | Mirrors are read-only and create ambiguous bitemporal lineage; `PROMOTE` the mirror first, then clone |
+
+## Database Mirror Errors (1100–1199, 6000–6099)
+
+| Error | Code | Resolution |
+| --- | --- | --- |
+| `MIRROR_READ_ONLY` | 1103 | Mirror is read-only until promoted; use `ALTER DATABASE <mirror> PROMOTE` to switch to writable mode |
+| `STALE_READ_NOT_LEADER` | 1104 | `Strong` consistency requested on a mirror (which is stale); use `BoundedStaleness` or `Eventual` consistency, or connect to the source database for strong reads |
+| `MIRROR_DEGRADED` | 6001 | Mirror lag exceeds threshold (default: 5 s async, 100 ms sync); check source–mirror network and availability |
+| `MIRROR_DISCONNECTED` | 6002 | Mirror disconnected from source; reconnecting with exponential backoff |
+
+## Move Tenant Errors
+
+| Error | Code | Resolution |
+| --- | --- | --- |
+| `MOVE_TENANT_ALREADY_AT_TARGET` | 5005 | Tenant already moved to target database; re-issuing is idempotent (safe to retry) |
+
+## Session Lifecycle Errors (2000–2099)
+
+| Error | Code | Resolution |
+| --- | --- | --- |
+| `SESSION_REVOKED` | 2001 | Session terminated due to identity change (DROP USER, role revocation, or soft-delete via `is_active=false`); reconnect to authenticate |
+| `SESSION_IDLE_TIMEOUT` | 2002 | Session closed due to inactivity exceeding `idle_session_timeout_secs`; reconnect and keep activity |
+| `SESSION_NOT_FOUND` | 1105 | `KILL SESSION` targeted a non-existent session ID; verify `SHOW SESSIONS` for active session IDs |
+
 ## Error Construction
 
 Errors are created via constructors: `NodeDbError::storage("detail")`, `NodeDbError::collection_not_found("users")`, etc.

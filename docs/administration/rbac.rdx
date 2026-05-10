@@ -14,8 +14,65 @@ description: Role-based access control with GRANT, REVOKE, and built-in role hie
 | `admin`        | All operations + DDL           |
 | `tenant_admin` | Admin within a tenant          |
 | `superuser`    | Unrestricted (cross-tenant)    |
+| `cluster_admin` | Cluster-wide admin operations without full superuser capabilities |
 
 Higher roles inherit all permissions of lower roles.
+
+## Database-Scoped Roles
+
+NodeDB supports roles scoped to specific databases:
+
+```sql
+GRANT DATABASE_OWNER ON DATABASE analytics TO alice;
+GRANT DATABASE_EDITOR ON DATABASE analytics TO bob;
+GRANT DATABASE_READER ON DATABASE analytics TO charlie;
+
+ALTER USER alice SET DEFAULT DATABASE analytics;
+```
+
+| Role | Permissions | Scope |
+| --- | --- | --- |
+| `DATABASE_OWNER(db)` | All operations within database, including schema and user management | Specific database |
+| `DATABASE_EDITOR(db)` | SELECT, INSERT, UPDATE, DELETE on collections | Specific database |
+| `DATABASE_READER(db)` | SELECT only | Specific database |
+
+## ClusterAdmin Role
+
+The `ClusterAdmin` role enables privileged cluster operations without granting full superuser access. ClusterAdmins can perform cluster-wide administration tasks but cannot bypass row-level security or read data from databases they don't own.
+
+```sql
+GRANT ROLE cluster_admin TO alice;
+
+-- ClusterAdmin can:
+ALTER DATABASE ... RENAME TO;
+ALTER DATABASE ... SET QUOTA;
+ALTER DATABASE ... SET IDLE_TIMEOUT;
+CREATE OIDC PROVIDER;
+ALTER OIDC PROVIDER;
+```
+
+## Admin DDL Gating Matrix
+
+Certain administrative DDL operations are gated by required roles. Attempting an operation without the required role returns `INSUFFICIENT_PRIVILEGE` and emits a `PermissionDenied` audit entry.
+
+| DDL Operation | Required Role | Notes |
+| --- | --- | --- |
+| `CREATE DATABASE` | Superuser or ClusterAdmin | Requires cluster-wide privilege |
+| `DROP DATABASE` (non-default) | Superuser | Permanent deletion; limited to superuser |
+| `DROP DATABASE ... FORCE` | Superuser | Force-drop with cascade safety override |
+| `ALTER DATABASE ... RENAME` | Superuser or ClusterAdmin | Cosmetic change; durable identity is `DatabaseId` |
+| `ALTER DATABASE ... SET QUOTA` | Superuser or ClusterAdmin | Changes resource limits |
+| `ALTER DATABASE ... SET IDLE_TIMEOUT` | Superuser or ClusterAdmin | Session timeout configuration |
+| `ALTER DATABASE ... SET AUDIT_DML` | Superuser or ClusterAdmin | Changes audit behavior |
+| `ALTER DATABASE ... MATERIALIZE` | Superuser, ClusterAdmin, or DatabaseOwner | Materializes a clone |
+| `ALTER DATABASE ... PROMOTE` | Superuser only | One-way mirror promotion; locked to superuser due to operational risk |
+| `CLONE DATABASE` | Superuser | Cross-database operation requiring cluster privilege |
+| `MIRROR DATABASE` | Superuser | Read-only replica setup |
+| `MOVE TENANT` | Superuser | Cross-database tenant relocation |
+| `BACKUP DATABASE` | Superuser or DatabaseOwner | Export entire database |
+| `RESTORE DATABASE` | Superuser | Disaster recovery operation |
+| `KILL SESSION` | Superuser, ClusterAdmin, or session-owner | Terminate a session |
+| `CREATE/ALTER/DROP OIDC PROVIDER` | Superuser or ClusterAdmin | SSO configuration |
 
 ## Custom Roles
 
@@ -55,3 +112,5 @@ AS BEGIN RETURN (SELECT COUNT(*) FROM audit_log); END;
 SHOW GRANTS FOR analyst;
 SHOW PERMISSIONS;
 ```
+
+See (databases) for database creation, quota, and management. See (quotas) for resource limits. See (audit-logging) for permission denial auditing. See (oidc-sso) for OIDC provider setup and claim mapping.

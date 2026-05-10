@@ -5,6 +5,114 @@ description: CREATE, ALTER, and DROP statements for collections, indexes, trigge
 
 # DDL (Data Definition Language)
 
+## Database Management
+
+```sql
+-- Create database with optional quota settings
+CREATE DATABASE emp_prod WITH (
+    max_memory_bytes = 1073741824,
+    max_storage_bytes = 10737418240,
+    max_qps = 1000,
+    max_connections = 100,
+    cache_weight = 1,
+    priority_class = 'standard',
+    maintenance_cpu_pct = 25
+);
+
+-- Drop database
+DROP DATABASE emp_prod;          -- errors if non-empty
+DROP DATABASE emp_prod CASCADE;  -- drops all collections
+DROP DATABASE emp_prod FORCE;    -- forces materialization of dependent clones, then drops
+
+-- Rename database
+ALTER DATABASE emp_prod RENAME TO emp_prod_old;
+
+-- Set or update quota
+ALTER DATABASE emp_prod SET QUOTA (
+    max_memory_bytes = 2147483648,
+    max_qps = 2000,
+    cache_weight = 2
+);
+
+-- Enable DML audit
+ALTER DATABASE emp_prod SET AUDIT_DML = 'writes';  -- 'none' | 'writes' | 'all'
+
+-- Set idle session timeout
+ALTER DATABASE emp_prod SET IDLE_TIMEOUT 1800;  -- seconds; 0 = disabled
+
+-- Clone database
+CLONE DATABASE staging FROM emp_prod AS OF SYSTEM TIME 1730000000000;
+CLONE DATABASE preview FROM emp_prod AS OF LATEST;
+
+-- Force materialization of a clone (blocks until complete)
+ALTER DATABASE staging MATERIALIZE;
+
+-- Mirror database
+MIRROR DATABASE emp_eu FROM emp_prod MODE = async;
+MIRROR DATABASE emp_eu FROM emp_prod MODE = sync;
+
+-- Promote mirror to writable
+ALTER DATABASE emp_eu PROMOTE;
+
+-- Move tenant between databases (offline, requires all sessions drained)
+MOVE TENANT acme FROM emp_us TO emp_eu;
+
+-- Set per-tenant quota within a database
+ALTER TENANT acme IN DATABASE emp_prod SET QUOTA (
+    max_memory_bytes = 536870912,
+    max_qps = 500,
+    max_connections = 50,
+    max_vector_dim = 1536,
+    max_graph_depth = 5
+);
+
+-- Session management
+USE DATABASE emp_prod;  -- or pgwire \c emp_prod
+SHOW DATABASES;
+SHOW DATABASE LINEAGE FOR staging;
+SHOW DATABASE MIRROR STATUS FOR emp_eu;
+SHOW DATABASE QUOTA FOR emp_prod;
+SHOW DATABASE USAGE FOR emp_prod;
+SHOW TENANT QUOTA FOR acme IN DATABASE emp_prod;
+SHOW TENANT USAGE FOR acme IN DATABASE emp_prod;
+SHOW SESSIONS;
+SHOW SESSIONS IN DATABASE emp_prod;
+KILL SESSION '550e8400-e29b-41d4-a716-446655440000';
+SHOW AUDIT IN DATABASE emp_prod WHERE event_type = 'database_cloned';
+
+-- Role and access
+GRANT DATABASE_OWNER ON DATABASE emp_prod TO alice;
+GRANT DATABASE_EDITOR ON DATABASE emp_prod TO bob;
+GRANT DATABASE_READER ON DATABASE emp_prod TO charlie;
+GRANT CREATE COLLECTION ON DATABASE emp_prod TO developers_role;
+GRANT SELECT ON DATABASE emp_prod TO analysts_role;
+ALTER USER alice SET DEFAULT DATABASE emp_prod;
+
+-- API keys with database scope
+CREATE API KEY prod_key FOR alice WITH DATABASES (emp_prod, emp_staging);
+ALTER API KEY prod_key SET DATABASES (emp_prod);
+SHOW API KEYS;
+
+-- Service accounts with database scope
+CREATE SERVICE ACCOUNT sa_prod FOR DATABASE emp_prod;
+ALTER SERVICE ACCOUNT sa_prod SET DATABASES (emp_prod, emp_staging);
+DROP SERVICE ACCOUNT sa_prod;
+
+-- OIDC / SSO providers
+CREATE OIDC PROVIDER corp_sso WITH (
+    issuer = 'https://idp.corp.com',
+    jwks_uri = 'https://idp.corp.com/.well-known/jwks.json',
+    audience = 'nodedb-prod'
+);
+ALTER OIDC PROVIDER corp_sso SET CLAIM MAPPING (
+    { claim: 'groups', value: 'eng', effect: 'add_databases = (emp_prod)' }
+);
+DROP OIDC PROVIDER corp_sso;
+SHOW OIDC PROVIDERS;
+```
+
+See the administration guides for detailed walkthroughs: [Database Management](../administration/databases), [Database Clone](../administration/database-clone), [Database Mirror](../administration/database-mirror), [Move Tenant](../administration/move-tenant), [Quotas](../administration/quotas), [Session Management](../administration/session-management), [OIDC / SSO](../administration/oidc-sso).
+
 ## Collections
 
 ```sql

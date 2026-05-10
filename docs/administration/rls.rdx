@@ -31,6 +31,27 @@ CREATE RLS POLICY org_filter ON docs FOR READ USING (org_id = $auth.org_id) REST
 CREATE RLS POLICY not_deleted ON docs FOR READ USING (status != 'deleted') RESTRICTIVE;
 ```
 
+## Session Context Variables
+
+RLS policies can reference the authenticated session context via `$auth.*` variables:
+
+| Variable | Type | Description |
+| --- | --- | --- |
+| `$auth.id` | string | User ID (from JWT `sub` or user record) |
+| `$auth.username` | string | Username |
+| `$auth.role` | string | Current role |
+| `$auth.tenant_id` | u64 | Tenant ID of the authenticated user |
+| `$auth.database_id` | u64 | Database ID of the session |
+
+Example combining tenant and database scoping:
+
+```sql
+CREATE RLS POLICY multi_scope ON data FOR READ
+  USING (tenant_id = $auth.tenant_id AND database_shard = $auth.database_id);
+```
+
+Substitution is fail-closed: if the auth context lacks a required variable (e.g., `$auth.database_id` is null), the query rejects the row rather than allowing wide-open access.
+
 ## Cross-Engine Behavior
 
 RLS filters are injected at plan time, before engine dispatch:

@@ -52,6 +52,39 @@ curl http://localhost:6480/health/ready   # WAL recovered, ready for queries
 | Connection      | Active connections, auth failures               |
 | Replication     | Raft log lag, replication latency               |
 | Storage         | WAL fsync latency, segment count, compaction debt |
+| Database        | Per-database resource usage and performance     |
+| Tenant          | Per-tenant query rates and memory usage         |
+
+## Per-Database & Per-Tenant Metrics
+
+Database-scoped and tenant-scoped metrics enable precise monitoring of multi-tenant deployments.
+
+### Per-Database Metrics
+
+All metrics labeled with `database="<name>"`:
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| `nodedb_database_qps` | counter | Queries per second for the database |
+| `nodedb_database_memory_bytes` | gauge | Memory currently used by the database |
+| `nodedb_database_storage_bytes` | gauge | Storage footprint of all collections in the database |
+| `nodedb_database_connections` | gauge | Active connections to the database |
+| `nodedb_database_bridge_queue_depth` | gauge | Pending requests in SPSC bridge for the database |
+| `nodedb_database_wal_commit_latency_p99` | histogram | 99th percentile WAL commit latency for writes to the database |
+| `nodedb_database_maintenance_cpu_seconds` | counter | Cumulative CPU time spent on background maintenance tasks |
+| `nodedb_database_mirror_lag_ms` | gauge | Replication lag for mirror databases (zero if not mirrored) |
+
+### Per-Tenant Metrics
+
+All metrics labeled with `database="<name>"` and `tenant="<name>"`:
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| `nodedb_tenant_qps` | counter | Queries per second for the tenant |
+| `nodedb_tenant_memory_bytes` | gauge | Memory currently used by the tenant |
+| `nodedb_tenant_storage_bytes` | gauge | Storage footprint of the tenant's data |
+
+These metrics are emitted from the dispatch layer (qps), memory governor (memory), WAL (storage), connection listener (connections), and background scheduler (maintenance_cpu_seconds), ensuring consistent attribution across request processing.
 
 ## Cross-shard transaction metrics
 

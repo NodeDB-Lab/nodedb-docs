@@ -64,3 +64,36 @@ SDKs surface these via `client.limits()`. See [Native Protocol — Handshake](..
 | ------------ | ------------ |
 | memory_limit | 1 GiB        |
 | Docker       | 75% of RAM   |
+
+## Database Boundary
+
+| Setting | Value | Notes |
+| --- | --- | --- |
+| `DatabaseId` reserved range | 0–1023 | System databases; user IDs start at 1024 |
+| `default` database | `DatabaseId(0)` | Cannot be dropped; always exists |
+
+## Clone & Mirror
+
+| Setting | Value | Notes |
+| --- | --- | --- |
+| `MAX_CLONE_DEPTH` | 8 | Maximum clone lineage depth; `CLONE_DEPTH_EXCEEDED` if exceeded |
+| Mirror lag threshold (async) | 5 s (default) | Configurable per mirror; `MIRROR_DEGRADED` when exceeded |
+| Mirror lag threshold (sync) | 100 ms (default) | Configurable per mirror; `MIRROR_DEGRADED` when exceeded |
+
+## Role & Auth
+
+| Setting | Value | Notes |
+| --- | --- | --- |
+| `MAX_ROLE_INHERITANCE_DEPTH` | 8 | Maximum depth of role inheritance chain |
+| Login rate limit (`login_ip`) | 30 per minute | Per IP address; returns `INVALID_CREDENTIALS` after capacity exhausted |
+| Login rate limit (`login_user`) | 10 per minute | Per username; returns `INVALID_CREDENTIALS` after capacity exhausted |
+
+## Per-Database Quota Defaults
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `cache_weight` | 1 | Relative weight for doc cache eviction |
+| `priority_class` | `standard` | `critical` (own fsync group, committed first), `standard` (batched normally), `bulk` (extended timeout) |
+| `maintenance_cpu_pct` | 25 | Percentage of core time available for background compaction |
+| `idle_session_timeout_secs` | 0 | Session idle timeout; 0 = disabled |
+| `audit_dml` | `none` | `none` (disabled), `writes` (DML inserts/updates/deletes), `all` (includes selects) |

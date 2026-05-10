@@ -7,6 +7,16 @@ description: Tenant isolation, quotas, backup, and GDPR purge.
 
 Each tenant has fully isolated storage, indexes, and security policies. Cross-tenant data access is impossible by design.
 
+## Scope: Database vs Tenant
+
+**Database** is the deployment unit — a collection-namespace owner, the quota parent, and the unit of clone, mirror, and backup. One Origin instance hosts many databases.
+
+**Tenant** is a customer within a deployment — a row-level scoping label inside collections within a database. One database hosts many tenants.
+
+A tenant's data does not span databases. To move a tenant across databases, use `MOVE TENANT`. Cross-database queries are forbidden — applications that need to access multiple databases must open separate connections.
+
+See (databases) for database creation, quota, and backup operations.
+
 ## Creating Tenants
 
 ```sql
