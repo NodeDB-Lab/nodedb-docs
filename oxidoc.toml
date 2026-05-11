@@ -7,18 +7,41 @@ base_url = "https://nodedb.dev"
 edit_url = "https://github.com/NodeDB-Lab/nodedb-docs/blob/main"
 
 [theme]
-primary = "#3b82f6"
-accent = "#2dd4bf"
+primary = "#6366f1"
+accent = "#818cf8"
+font = "Inter"
 code_font = "JetBrains Mono"
 dark_mode = "system"
 custom_css = ["assets/custom.css"]
+
+[components.custom]
+LandingNav = "/assets/js/landing-nav.js"
+LandingHero = "/assets/js/landing-hero.js"
+CodeWindow = "/assets/js/code-window.js"
+Faq = "/assets/js/faq.js"
+WaitlistForm = "/assets/js/waitlist-form.js"
 
 [routing.root]
 homepage = "home.rdx"
 
 [routing]
-header_links = [{ label = "Docs", href = "/docs" }]
+header_links = [
+  { label = "Docs",      href = "/docs" },
+  { label = "Use Cases", href = "/use-cases" },
+]
 navigation = [
+  { path = "/use-cases", dir = "use-cases", groups = [
+    { group = "Industries", pages = [
+      "ai-llm",
+      "fintech-trading",
+      "healthcare",
+      "geospatial-logistics",
+      "gaming-social",
+      "iot-edge",
+      "ecommerce-search",
+    ] },
+  ] },
+
   { path = "/docs", dir = "docs", groups = [
 
     # ── Introduction ───────────────────────────────────────────────

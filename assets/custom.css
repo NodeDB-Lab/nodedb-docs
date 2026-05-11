@@ -1,513 +1,856 @@
-/* ── NodeDB Custom Theme ──────────────────────────────────────────────
-   Built around the logo gradient: #3B82F6 (blue) → #2DD4BF (teal)
-   ──────────────────────────────────────────────────────────────────── */
+/* ── NodeDB theme ──────────────────────────────────────────────────────
+   Landing page (`/`) is dark-only — near-black #0F1115 + indigo #6366F1,
+   mirroring nodedb.dev's marketing page. Docs (`/docs`, `/use-cases`)
+   keep light/dark/system. Landing styles are scoped to `.oxidoc-landing`
+   and `.oxidoc-header-landing` so they never leak into the docs.
+   ────────────────────────────────────────────────────────────────────── */
 
-/* ── Color Palette ────────────────────────────────────────────────── */
+/* ── Self-hosted fonts ─────────────────────────────────────────────────
+   Inter + JetBrains Mono (latin subset, variable woff2) served from
+   /assets/fonts so first paint has no cross-origin render-blocking request
+   to fonts.googleapis.com. `Inter Fallback` is a metric-matched local Arial
+   face so the swap to Inter doesn't reflow text (was a CLS contributor on
+   the hero headline). */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+  src: url('/assets/fonts/inter-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/assets/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter Fallback';
+  src: local('Arial');
+  ascent-override: 90%;
+  descent-override: 22.43%;
+  line-gap-override: 0%;
+  size-adjust: 107.12%;
+}
 
 :root {
-  --oxidoc-primary: #3b82f6;
-  --oxidoc-accent: #2dd4bf;
-  --oxidoc-bg: #ffffff;
-  --oxidoc-bg-secondary: #f8fafc;
-  --oxidoc-text: #0f172a;
-  --oxidoc-text-secondary: #475569;
-  --oxidoc-border: #e2e8f0;
-  --oxidoc-code-bg: #f1f5f9;
-  --oxidoc-success: #10b981;
-  --oxidoc-warning: #f59e0b;
-  --oxidoc-error: #ef4444;
-  --oxidoc-info: #3b82f6;
+  --oxidoc-primary: #6366f1;
+  --oxidoc-accent: #818cf8;
+  --oxidoc-font-sans: 'Inter', 'Inter Fallback', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --oxidoc-font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
 
-  --ndb-gradient: linear-gradient(135deg, #3b82f6, #2dd4bf);
-  --ndb-gradient-soft: linear-gradient(135deg, #3b82f640, #2dd4bf30);
-  --ndb-gradient-subtle: linear-gradient(135deg, #3b82f610, #2dd4bf10);
-  --ndb-glow-blue: rgba(59, 130, 246, 0.4);
-  --ndb-glow-teal: rgba(45, 212, 191, 0.4);
+  /* Landing palette */
+  --ndb-bg: #0f1115;
+  --ndb-bg-2: #1a1d24;
+  --ndb-bg-3: #2a2e39;
+  --ndb-border: rgba(255, 255, 255, 0.08);
+  --ndb-border-strong: #2a2e39;
+  --ndb-text: #ffffff;
+  --ndb-text-2: #9ca3af;
+  --ndb-text-3: #6b7280;
+  --ndb-indigo-400: #818cf8;
+  --ndb-indigo-500: #6366f1;
+  --ndb-indigo-600: #4f46e5;
+  --ndb-purple: #a855f7;
+  --ndb-grad: linear-gradient(135deg, #818cf8, #a855f7);
+  --ndb-glow: rgba(99, 102, 241, 0.22);
 }
 
-[data-theme="dark"] {
-  --oxidoc-primary: #60a5fa;
-  --oxidoc-accent: #5eead4;
-  --oxidoc-bg: #0b1120;
-  --oxidoc-bg-secondary: #111827;
-  --oxidoc-text: #e2e8f0;
-  --oxidoc-text-secondary: #94a3b8;
-  --oxidoc-border: #1e293b;
-  --oxidoc-code-bg: #1e293b;
-  --oxidoc-success: #34d399;
-  --oxidoc-warning: #fbbf24;
-  --oxidoc-error: #f87171;
-  --oxidoc-info: #60a5fa;
-
-  --ndb-gradient: linear-gradient(135deg, #60a5fa, #5eead4);
-  --ndb-gradient-soft: linear-gradient(135deg, #60a5fa30, #5eead420);
-  --ndb-gradient-subtle: linear-gradient(135deg, #60a5fa08, #5eead408);
-  --ndb-glow-blue: rgba(96, 165, 250, 0.3);
-  --ndb-glow-teal: rgba(94, 234, 212, 0.3);
+[data-theme='dark'] {
+  --oxidoc-primary: #818cf8;
+  --oxidoc-accent: #a5b4fc;
 }
 
-/* ── Animations ───────────────────────────────────────────────────── */
+html { scroll-behavior: smooth; }
+body { font-family: var(--oxidoc-font-sans); }
 
-@keyframes ndb-fade-up {
-  from { opacity: 0; transform: translateY(24px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
+/* ════════════════════════════════════════════════════════════════════
+   LANDING PAGE — dark scope
+   ════════════════════════════════════════════════════════════════════ */
 
-@keyframes ndb-fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
+body:has(.oxidoc-landing) { background: var(--ndb-bg); }
 
-@keyframes ndb-slide-in-left {
-  from { opacity: 0; transform: translateX(-20px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-
-@keyframes ndb-gradient-shift {
-  0%, 100% { background-position: 0% 50%; }
-  50%      { background-position: 100% 50%; }
-}
-
-@keyframes ndb-pulse-glow {
-  0%, 100% { box-shadow: 0 0 20px var(--ndb-glow-blue), 0 0 40px transparent; }
-  50%      { box-shadow: 0 0 30px var(--ndb-glow-blue), 0 0 60px var(--ndb-glow-teal); }
-}
-
-@keyframes ndb-float {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-6px); }
-}
-
-@keyframes ndb-shimmer {
-  0%   { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
-
-@keyframes ndb-dot-pulse {
-  0%, 100% { opacity: 0.15; }
-  50%      { opacity: 0.3; }
-}
-
-/* ── Header ───────────────────────────────────────────────────────── */
-
-header,
-.oxidoc-header {
-  backdrop-filter: blur(12px) saturate(1.4);
-  background: rgba(255, 255, 255, 0.8) !important;
-  border-bottom: 1px solid var(--oxidoc-border);
-  transition: background 0.3s ease, box-shadow 0.3s ease;
-}
-
-[data-theme="dark"] header,
-[data-theme="dark"] .oxidoc-header {
-  background: rgba(11, 17, 32, 0.85) !important;
-}
-
-header .logo img,
-.oxidoc-header .logo img {
-  transition: transform 0.3s ease, filter 0.3s ease;
-}
-
-header .logo img:hover,
-.oxidoc-header .logo img:hover {
-  transform: scale(1.08);
-  filter: drop-shadow(0 0 8px var(--ndb-glow-blue));
-}
-
-/* ── Hero Section ─────────────────────────────────────────────────── */
-
-.oxidoc-hero {
+.oxidoc-landing {
+  background: var(--ndb-bg);
+  color: var(--ndb-text);
   position: relative;
-  overflow: hidden;
-  padding: 6rem 2rem 5rem !important;
-  background:
-    linear-gradient(135deg, #3b82f618 0%, transparent 50%),
-    linear-gradient(225deg, #2dd4bf20 0%, transparent 50%),
-    radial-gradient(ellipse 80% 50% at 20% 100%, #3b82f630, transparent),
-    radial-gradient(ellipse 60% 50% at 80% 100%, #2dd4bf30, transparent),
-    linear-gradient(to bottom, var(--oxidoc-bg), #f0f7ff) !important;
+  overflow-x: hidden;
 }
 
-[data-theme="dark"] .oxidoc-hero {
-  background:
-    linear-gradient(135deg, #3b82f625 0%, transparent 50%),
-    linear-gradient(225deg, #2dd4bf28 0%, transparent 50%),
-    radial-gradient(ellipse 80% 50% at 20% 100%, #3b82f640, transparent),
-    radial-gradient(ellipse 60% 50% at 80% 100%, #2dd4bf35, transparent),
-    linear-gradient(to bottom, var(--oxidoc-bg), #0d1a30) !important;
-}
-
-/* Animated dot grid background */
-.oxidoc-hero::before {
-  content: "";
+/* Radial purple glow behind the hero */
+.oxidoc-landing::before {
+  content: '';
   position: absolute;
-  inset: 0;
-  background-image: radial-gradient(circle, var(--oxidoc-border) 1px, transparent 1px);
-  background-size: 32px 32px;
-  animation: ndb-dot-pulse 4s ease-in-out infinite;
+  top: -8%;
+  left: 50%;
+  width: min(80vw, 1100px);
+  height: 52vh;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, var(--ndb-glow) 0%, rgba(15, 17, 21, 0) 70%);
   pointer-events: none;
+  z-index: 0;
 }
 
-.oxidoc-hero h1 {
-  background: var(--ndb-gradient);
-  background-size: 200% 200%;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  animation: ndb-gradient-shift 6s ease infinite, ndb-fade-up 0.8s ease both;
-  font-size: 4rem !important;
-  font-weight: 800 !important;
-  letter-spacing: -0.03em;
-}
+.oxidoc-landing > * { position: relative; z-index: 1; }
 
-.oxidoc-hero > p,
-.oxidoc-hero > div > p {
-  animation: ndb-fade-up 0.8s ease 0.15s both;
-  font-size: 1.25rem !important;
-  max-width: 44rem;
-  margin-inline: auto;
-  color: var(--oxidoc-text-secondary);
-  line-height: 1.7;
-}
+/* Replace the oxidoc theme header with our own <LandingNav> — the built-in
+   landing header hides its links and shows a search/dark-mode toolbar that
+   looks broken on the dark page. */
+body:has(.oxidoc-landing) .oxidoc-header-landing,
+body:has(.oxidoc-landing) .oxidoc-sidebar-landing,
+body:has(.oxidoc-landing) .oxidoc-sidebar-overlay,
+body:has(.oxidoc-landing) .oxidoc-skip-nav { display: none !important; }
 
-/* Hero CTA buttons */
-.oxidoc-hero a[href],
-.oxidoc-hero .hero-action {
-  animation: ndb-fade-up 0.8s ease 0.3s both;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
+/* ── Top navigation (custom) ───────────────────────────────────────── */
 
-.oxidoc-hero a[href]:first-of-type,
-.oxidoc-hero .hero-action:first-of-type {
-  background: var(--ndb-gradient) !important;
-  background-size: 200% 200% !important;
-  animation: ndb-gradient-shift 4s ease infinite, ndb-fade-up 0.8s ease 0.3s both;
-  border: none !important;
-  color: #fff !important;
-  font-weight: 600;
-  padding: 0.75rem 2rem;
+/* `min-height` on the client-rendered components reserves their layout so
+   filling them in on DOMContentLoaded doesn't shift the page (CLS). Values
+   are tuned to the rendered height; desktop overrides are below. */
+.oxidoc-landing landingnav { display: block; min-height: 4.5rem; border-bottom: 1px solid var(--ndb-border); }
+.ndb-nav {
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 1.15rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ndb-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  text-decoration: none;
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.2rem;
+  letter-spacing: -0.01em;
+}
+.ndb-nav-brand img { width: 1.7rem; height: 1.7rem; }
+.ndb-nav-links { display: flex; align-items: center; gap: 1.3rem; }
+.ndb-nav-link {
+  color: var(--ndb-text-2);
+  text-decoration: none;
+  font-size: 0.92rem;
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+.ndb-nav-link:hover { color: #fff; }
+.ndb-nav-icon { color: var(--ndb-text-2); display: inline-flex; transition: color 0.15s ease; }
+.ndb-nav-icon:hover { color: #fff; }
+.ndb-nav-cta {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  text-decoration: none;
+  padding: 0.5rem 1.05rem;
   border-radius: 9999px;
-  box-shadow: 0 4px 16px var(--ndb-glow-blue);
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: background 0.2s ease;
+}
+.ndb-nav-cta:hover { background: rgba(255, 255, 255, 0.2); }
+@media (max-width: 600px) {
+  .ndb-nav-link { display: none; }
+  .ndb-nav-links { gap: 1rem; }
 }
 
-.oxidoc-hero a[href]:first-of-type:hover,
-.oxidoc-hero .hero-action:first-of-type:hover {
+/* ── Hero (custom <LandingHero>) ───────────────────────────────────── */
+
+.oxidoc-landing landinghero { display: block; min-height: 50rem; }
+.ndb-hero {
+  max-width: 58rem;
+  margin: 0 auto;
+  padding: 2.75rem 1.5rem 3rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Product Hunt badge card */
+.ndb-ph-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.5rem 0.95rem 0.5rem 0.55rem;
+  border: 1px solid var(--ndb-border-strong);
+  background: rgba(26, 29, 36, 0.85);
+  backdrop-filter: blur(8px);
+  border-radius: 0.85rem;
+  box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.7);
+  text-decoration: none;
+  margin-bottom: 2.25rem;
+  transition: transform 0.18s ease, border-color 0.18s ease;
+}
+.ndb-ph-badge:hover { transform: scale(1.04); border-color: #3a3f4c; }
+.ndb-ph-mark {
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #ff6154;
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ndb-ph-text { display: flex; flex-direction: column; text-align: left; line-height: 1; }
+.ndb-ph-kicker {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: 700;
+  color: var(--ndb-text-3);
+  margin-bottom: 0.22rem;
+}
+.ndb-ph-name { font-size: 0.85rem; font-weight: 700; color: #fff; }
+
+/* Headline */
+.ndb-hero-title {
+  font-size: clamp(2.5rem, 6.4vw, 4.6rem);
+  font-weight: 800;
+  line-height: 1.04;
+  letter-spacing: -0.035em;
+  color: #fff;
+  margin: 0 0 1.4rem;
+}
+.ndb-hero-title br { display: none; }
+@media (min-width: 768px) {
+  .ndb-hero-title br { display: inline; }
+  /* Wider viewport → less text wrapping → shorter components; shrink the
+     reserved heights to match so there's no empty gap. */
+  .oxidoc-landing landinghero { min-height: 34rem; }
+  .oxidoc-landing faq { min-height: 35rem; }
+  .oxidoc-landing waitlistform { min-height: 7rem; }
+}
+.ndb-grad-text {
+  background: linear-gradient(100deg, #818cf8 10%, #a855f7 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.ndb-hero-sub {
+  font-size: clamp(1.02rem, 1.9vw, 1.22rem);
+  line-height: 1.7;
+  color: var(--ndb-text-2);
+  max-width: 41rem;
+  margin: 0 auto 2.4rem;
+}
+
+/* Action buttons (rounded-xl, with icons) */
+.ndb-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  justify-content: center;
+}
+.ndb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.92rem 1.6rem;
+  border-radius: 0.85rem;
+  font-weight: 600;
+  font-size: 0.97rem;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+}
+.ndb-btn svg { flex-shrink: 0; }
+.ndb-btn:active { transform: scale(0.96); }
+.ndb-btn-primary {
+  background: var(--ndb-indigo-600);
+  color: #fff;
+  box-shadow: 0 10px 26px -8px rgba(99, 102, 241, 0.45);
+}
+.ndb-btn-primary:hover {
+  background: var(--ndb-indigo-500);
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px var(--ndb-glow-blue);
+  box-shadow: 0 16px 34px -10px rgba(99, 102, 241, 0.5);
+}
+.ndb-btn-soft { background: rgba(255, 255, 255, 0.1); color: #fff; }
+.ndb-btn-soft:hover { background: rgba(255, 255, 255, 0.18); transform: translateY(-1px); }
+.ndb-btn-outline { background: transparent; color: #fff; border-color: var(--ndb-border-strong); }
+.ndb-btn-outline:hover { border-color: #4b5563; background: rgba(255, 255, 255, 0.04); transform: translateY(-1px); }
+
+/* Hero code panel (its own section right under the hero) */
+.oxidoc-landing .ndb-hero-code { padding-top: 0.5rem; padding-bottom: 4rem; }
+.oxidoc-landing .ndb-hero-code .oxidoc-section-inner { max-width: 50rem; text-align: center; }
+.oxidoc-landing .ndb-hero-code > .oxidoc-section-inner > p {
+  margin: 1.1rem auto 0;
+  font-size: 0.86rem;
+  color: var(--ndb-text-3);
+  max-width: 38rem;
 }
 
-.oxidoc-hero-action {
-  border-radius: 9999px !important;
-}
+/* ── CodeWindow (custom, fixed palette) ────────────────────────────── */
 
-/* ── Section Styling ──────────────────────────────────────────────── */
-
-.oxidoc-section {
-  animation: ndb-fade-up 0.6s ease both;
-}
-
-/* Muted section bg enhancement */
-.oxidoc-section[class*="muted"],
-section[class*="muted"] {
-  background: var(--oxidoc-bg-secondary) !important;
-  border-top: 1px solid var(--oxidoc-border);
-  border-bottom: 1px solid var(--oxidoc-border);
-}
-
-/* ── Feature Grid ─────────────────────────────────────────────────── */
-
-.oxidoc-feature-grid {
-  gap: 1.5rem !important;
-}
-
-.oxidoc-feature {
-  background: var(--oxidoc-bg) !important;
-  border: 1px solid var(--oxidoc-border) !important;
-  border-radius: 12px !important;
-  padding: 2rem !important;
-  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
-  position: relative;
+.oxidoc-landing codewindow { display: block; min-height: 21rem; max-width: 48rem; margin: 0 auto; }
+.cw {
+  background: rgba(26, 29, 36, 0.6);
+  border: 1px solid var(--ndb-border);
+  border-radius: 1rem;
   overflow: hidden;
+  box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.6);
+  text-align: left;
+}
+.cw-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.7rem 1rem;
+  background: rgba(26, 29, 36, 0.92);
+  border-bottom: 1px solid var(--ndb-border);
+  font-family: var(--oxidoc-font-mono);
+  font-size: 0.74rem;
+  color: var(--ndb-text-3);
+}
+.cw-dots { display: flex; gap: 0.42rem; flex-shrink: 0; }
+.cw-dots i { width: 0.72rem; height: 0.72rem; border-radius: 50%; display: block; }
+.cw-dots i:nth-child(1) { background: #ff5f57; }
+.cw-dots i:nth-child(2) { background: #febc2e; }
+.cw-dots i:nth-child(3) { background: #28c840; }
+.cw-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cw-lang { flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.08em; }
+.cw-body {
+  margin: 0;
+  padding: 1.4rem 1.5rem;
+  overflow-x: auto;
+  font-family: var(--oxidoc-font-mono);
+  font-size: 0.84rem;
+  line-height: 1.75;
+  color: #d4d4d8;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.cw-body code { font: inherit; color: inherit; background: none; padding: 0; border: 0; }
+/* Fixed token colours — never change with the colour scheme */
+.cw-kw { color: #c084fc; }
+.cw-fn { color: #60a5fa; }
+.cw-st { color: #34d399; }
+.cw-cm { color: #6b7280; font-style: italic; }
+.cw-nm { color: #f59e0b; }
+
+/* ── Code blocks (dark window chrome) ──────────────────────────────── */
+
+.oxidoc-landing .oxidoc-codeblock {
+  background: rgba(26, 29, 36, 0.6);
+  border: 1px solid var(--ndb-border);
+  border-radius: 1rem;
+  overflow: hidden;
+  box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.6);
+  text-align: left;
+  margin: 2rem auto;
+}
+.oxidoc-landing .oxidoc-codeblock-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.7rem 1rem 0.7rem 4.5rem;
+  background: rgba(26, 29, 36, 0.9);
+  border-bottom: 1px solid var(--ndb-border);
+  position: relative;
+  font-family: var(--oxidoc-font-mono);
+  font-size: 0.74rem;
+  color: var(--ndb-text-3);
+}
+/* macOS traffic lights — kept clear of the filename via header padding-left */
+.oxidoc-landing .oxidoc-codeblock-header::before {
+  content: '';
+  position: absolute;
+  left: 1.1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0.72rem;
+  height: 0.72rem;
+  border-radius: 50%;
+  background: #ff5f57;
+  box-shadow: 1.1rem 0 0 #febc2e, 2.2rem 0 0 #28c840;
+}
+.oxidoc-landing .oxidoc-codeblock-header span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oxidoc-landing .oxidoc-codeblock-header span:last-child {
+  flex-shrink: 0;
+  margin-left: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.oxidoc-landing .oxidoc-codeblock pre,
+.oxidoc-landing .oxidoc-code-wrapper pre {
+  background: transparent;
+  border: none;
+  margin: 0;
+  padding: 1.4rem 1.5rem;
+  font-family: var(--oxidoc-font-mono);
+  font-size: 0.84rem;
+  line-height: 1.75;
+  color: #d4d4d8;
+  overflow-x: auto;
 }
 
-.oxidoc-feature::before {
+/* The landing page is dark-only but carries no [data-theme], so on a light
+   system theme oxidoc's base styles would resolve their colour vars to light
+   values — pale borders, near-white code/secondary backgrounds, near-black
+   syntax tokens. Pin the dark values for the whole landing scope. */
+.oxidoc-landing {
+  --oxidoc-border: rgba(255, 255, 255, 0.08);
+  --oxidoc-bg-secondary: rgba(26, 29, 36, 0.85);
+  --oxidoc-code-bg: rgba(26, 29, 36, 0.6);
+  --oxidoc-text-secondary: #9ca3af;
+  --oxidoc-tok-keyword: #c084fc;
+  --oxidoc-tok-string: #34d399;
+  --oxidoc-tok-comment: #6b7280;
+  --oxidoc-tok-number: #f59e0b;
+  --oxidoc-tok-function: #60a5fa;
+  --oxidoc-tok-type: #f472b6;
+  --oxidoc-tok-operator: #a5b4fc;
+  --oxidoc-tok-punctuation: #9ca3af;
+  --oxidoc-tok-property: #22d3ee;
+  --oxidoc-tok-variable: #d4d4d8;
+  --oxidoc-tok-builtin: #60a5fa;
+  --oxidoc-tok-attr: #fcd34d;
+}
+.oxidoc-landing .oxidoc-code-wrapper > pre {
+  background: rgba(26, 29, 36, 0.6);
+  border: 1px solid var(--ndb-border);
+  border-radius: 0.85rem;
+  box-shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.5);
+}
+.oxidoc-landing .oxidoc-copy-code {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ndb-text-2);
+  border: 1px solid var(--ndb-border);
+  border-radius: 0.5rem;
+}
+.oxidoc-landing .oxidoc-copy-code:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
+
+/* ── Sections ──────────────────────────────────────────────────────── */
+
+.oxidoc-landing .oxidoc-section { padding: 5rem 1.5rem; }
+.oxidoc-landing .oxidoc-section-inner { max-width: 72rem; margin: 0 auto; }
+.oxidoc-landing .oxidoc-section-muted {
+  background: rgba(255, 255, 255, 0.02);
+  border-top: 1px solid var(--ndb-border);
+  border-bottom: 1px solid var(--ndb-border);
+}
+
+.oxidoc-landing .oxidoc-section h2 {
+  font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-align: center;
+  margin: 0 0 1rem;
+  padding-bottom: 0;
+  border-bottom: 0;
+  color: var(--ndb-text);
+}
+.oxidoc-landing .oxidoc-section > .oxidoc-section-inner > p {
+  text-align: center;
+  max-width: 44rem;
+  margin: 0 auto 3rem;
+  color: var(--ndb-text-2);
+  line-height: 1.75;
+}
+
+/* ── Feature & card grids ──────────────────────────────────────────── */
+
+.oxidoc-landing .oxidoc-feature-grid,
+.oxidoc-landing .oxidoc-card-grid {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+}
+
+.oxidoc-landing .oxidoc-feature,
+.oxidoc-landing .oxidoc-card {
+  background: rgba(26, 29, 36, 0.5);
+  border: 1px solid var(--ndb-border);
+  border-radius: 1rem;
+  padding: 1.75rem;
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+.oxidoc-landing .oxidoc-feature:hover,
+.oxidoc-landing .oxidoc-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(129, 140, 248, 0.4);
+  background: rgba(26, 29, 36, 0.8);
+}
+.oxidoc-landing .oxidoc-feature-icon { font-size: 1.6rem; margin-bottom: 0.6rem; }
+.oxidoc-landing .oxidoc-feature-title,
+.oxidoc-landing .oxidoc-card-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--ndb-text);
+  margin: 0 0 0.6rem;
+}
+.oxidoc-landing .oxidoc-feature-desc,
+.oxidoc-landing .oxidoc-card-body {
+  color: var(--ndb-text-2);
+  font-size: 0.92rem;
+  line-height: 1.65;
+}
+.oxidoc-landing .oxidoc-feature-desc ul { margin: 0; padding-left: 1.1rem; }
+.oxidoc-landing .oxidoc-feature-desc li { margin: 0.45rem 0; }
+.oxidoc-landing .oxidoc-feature-desc strong,
+.oxidoc-landing .oxidoc-card-body strong { color: #e5e7eb; }
+.oxidoc-landing a.oxidoc-card { text-decoration: none; }
+
+/* ── Before / After ────────────────────────────────────────────────── */
+
+.oxidoc-landing .ndb-ba-grid { grid-template-columns: 1fr; }
+@media (min-width: 820px) {
+  .oxidoc-landing .ndb-ba-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* Cards: red-tinted "before", indigo→purple "after". No generic hover. */
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:first-child {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.05);
+}
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:last-child {
+  border-color: rgba(99, 102, 241, 0.4);
+  background: linear-gradient(160deg, rgba(99, 102, 241, 0.1), rgba(168, 85, 247, 0.06));
+}
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:hover { transform: none; }
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:first-child:hover {
+  background: rgba(239, 68, 68, 0.05);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:last-child:hover {
+  background: linear-gradient(160deg, rgba(99, 102, 241, 0.1), rgba(168, 85, 247, 0.06));
+  border-color: rgba(99, 102, 241, 0.55);
+}
+
+/* No big icon above the title; the title is the small uppercase label,
+   followed by a muted one-line descriptor (first <p> of the body). */
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature-icon { display: none; }
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature-title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  margin: 0 0 0.15rem;
+}
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:first-child .oxidoc-feature-title { color: #f87171; }
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:last-child .oxidoc-feature-title { color: var(--ndb-indigo-400); }
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature-desc > p:first-child {
+  font-size: 0.8rem;
+  color: var(--ndb-text-3);
+  margin: 0 0 1.1rem;
+}
+
+/* List items: each row prefixed with a coloured ✗ / ✓ icon (inline SVG so
+   the strokes match the reference's FontAwesome marks, not chunky glyphs). */
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature-desc ul { list-style: none; margin: 0; padding: 0; }
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature-desc li {
+  position: relative;
+  padding-left: 1.65rem;
+  margin: 0.55rem 0;
+  line-height: 1.55;
+  font-size: 0.93rem;
+}
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature-desc li::before {
   content: "";
   position: absolute;
-  top: 0;
   left: 0;
-  right: 0;
-  height: 3px;
-  background: var(--ndb-gradient);
-  opacity: 0;
-  transition: opacity 0.25s ease;
+  top: 0.32em;
+  width: 0.9rem;
+  height: 0.9rem;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
 }
-
-.oxidoc-feature:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 12px 32px rgba(59, 130, 246, 0.1), 0 4px 12px rgba(0, 0, 0, 0.04);
-  border-color: var(--oxidoc-primary) !important;
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:first-child .oxidoc-feature-desc li::before {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23f87171' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M5 5 15 15M15 5 5 15'/%3E%3C/svg%3E");
 }
-
-.oxidoc-feature:hover::before {
-  opacity: 1;
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:last-child .oxidoc-feature-desc li::before {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%234ade80' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 10.5 8.5 15 16 6'/%3E%3C/svg%3E");
 }
-
-[data-theme="dark"] .oxidoc-feature:hover {
-  box-shadow: 0 12px 32px rgba(59, 130, 246, 0.15), 0 4px 12px rgba(0, 0, 0, 0.2);
+/* The closing row keeps its inline emoji (⚠️ / ✨); no ✗/✓, separated by a rule. */
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature-desc li:last-child {
+  margin-top: 0.95rem;
+  padding-top: 0.95rem;
+  padding-left: 0;
+  border-top: 1px solid var(--ndb-border);
+  color: var(--ndb-text-3);
 }
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:last-child .oxidoc-feature-desc li:last-child { color: var(--ndb-text-2); }
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:first-child .oxidoc-feature-desc li:last-child::before,
+.oxidoc-landing .ndb-ba-grid .oxidoc-feature:last-child .oxidoc-feature-desc li:last-child::before { content: none; }
 
-/* Staggered entrance for features */
-.oxidoc-feature:nth-child(1) { animation: ndb-fade-up 0.5s ease 0.1s both; }
-.oxidoc-feature:nth-child(2) { animation: ndb-fade-up 0.5s ease 0.2s both; }
-.oxidoc-feature:nth-child(3) { animation: ndb-fade-up 0.5s ease 0.3s both; }
-.oxidoc-feature:nth-child(4) { animation: ndb-fade-up 0.5s ease 0.4s both; }
-.oxidoc-feature:nth-child(5) { animation: ndb-fade-up 0.5s ease 0.5s both; }
-.oxidoc-feature:nth-child(6) { animation: ndb-fade-up 0.5s ease 0.6s both; }
+/* ── Tables (on landing) ───────────────────────────────────────────── */
 
-.oxidoc-feature h3,
-.oxidoc-feature [class*="title"] {
-  font-weight: 700 !important;
-  color: var(--oxidoc-text) !important;
-}
-
-/* Feature icon styling */
-.oxidoc-feature [class*="icon"] {
-  font-size: 2rem;
-  margin-bottom: 0.75rem;
-  display: inline-block;
-  animation: ndb-float 3s ease-in-out infinite;
-  animation-play-state: paused;
-}
-
-.oxidoc-feature:hover [class*="icon"] {
-  animation-play-state: running;
-}
-
-/* ── Card Grid ────────────────────────────────────────────────────── */
-
-.oxidoc-card-grid {
-  gap: 1.5rem !important;
-}
-
-.oxidoc-card {
-  background: var(--oxidoc-bg) !important;
-  border: 1px solid var(--oxidoc-border) !important;
-  border-radius: 12px !important;
-  padding: 1.75rem !important;
-  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
-  text-decoration: none !important;
-  position: relative;
+.oxidoc-landing table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--ndb-border);
+  border-radius: 0.85rem;
   overflow: hidden;
+  font-size: 0.92rem;
+}
+.oxidoc-landing th,
+.oxidoc-landing td { padding: 0.8rem 1rem; text-align: left; border-bottom: 1px solid var(--ndb-border); }
+.oxidoc-landing th {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--ndb-text-2);
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+}
+.oxidoc-landing td { color: var(--ndb-text-2); }
+.oxidoc-landing tr:last-child td { border-bottom: none; }
+.oxidoc-landing tbody tr:hover td { background: rgba(255, 255, 255, 0.03); }
+.oxidoc-landing td strong { color: #e5e7eb; }
+.oxidoc-landing :not(pre) > code {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--ndb-border);
+  border-radius: 0.35rem;
+  padding: 0.12em 0.38em;
+  font-size: 0.85em;
+  color: #c7d2fe;
 }
 
-.oxidoc-card::after {
-  content: "\2192";
-  position: absolute;
-  right: 1.5rem;
-  bottom: 1.5rem;
-  font-size: 1.25rem;
-  color: var(--oxidoc-primary);
-  opacity: 0;
-  transform: translateX(-8px);
-  transition: opacity 0.25s ease, transform 0.25s ease;
+/* ── FAQ (custom <Faq>) ────────────────────────────────────────────────
+   Own accordion — no <details>, no oxidoc theming to fight. Smooth height
+   animation via grid-template-rows 0fr→1fr (same trick the reference uses).
+   Toggled by `.is-open` on .ndb-faq-item (faq.js). */
+
+.oxidoc-landing .ndb-faq .oxidoc-section-inner { max-width: 50rem; }
+.oxidoc-landing faq { display: block; min-height: 42rem; }
+
+.ndb-faq-item {
+  background: rgba(26, 29, 36, 0.5);
+  border: 1px solid var(--ndb-border);
+  border-radius: 0.85rem;
+  margin-bottom: 0.75rem;
+  overflow: hidden;
+  transition: background 0.2s ease, border-color 0.2s ease;
 }
+.ndb-faq-item:hover { border-color: rgba(129, 140, 248, 0.25); }
+.ndb-faq-item.is-open { background: rgba(26, 29, 36, 0.85); }
 
-.oxidoc-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.1);
-  border-color: var(--oxidoc-primary) !important;
+.ndb-faq-q {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.15rem 1.4rem;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ndb-text);
+  text-align: left;
 }
-
-.oxidoc-card:hover::after {
-  opacity: 1;
-  transform: translateX(0);
+.ndb-faq-q:hover .ndb-faq-icon { color: var(--ndb-text); }
+.ndb-faq-icon {
+  flex-shrink: 0;
+  font-size: 1.85rem;
+  font-weight: 300;
+  line-height: 1;
+  color: var(--ndb-text-3);
+  transition: transform 0.25s ease, color 0.2s ease;
 }
+.ndb-faq-item.is-open .ndb-faq-icon { transform: rotate(45deg); color: var(--ndb-indigo-400); }
 
-/* Staggered entrance for cards */
-.oxidoc-card:nth-child(1) { animation: ndb-fade-up 0.5s ease 0.1s both; }
-.oxidoc-card:nth-child(2) { animation: ndb-fade-up 0.5s ease 0.2s both; }
-.oxidoc-card:nth-child(3) { animation: ndb-fade-up 0.5s ease 0.3s both; }
-.oxidoc-card:nth-child(4) { animation: ndb-fade-up 0.5s ease 0.4s both; }
-
-/* ── Code Blocks ──────────────────────────────────────────────────── */
-
-pre {
-  border-radius: 10px !important;
-  border: 1px solid var(--oxidoc-border) !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+.ndb-faq-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
-
-[data-theme="dark"] pre {
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
-  border-color: #1e293b !important;
+.ndb-faq-item.is-open .ndb-faq-panel { grid-template-rows: 1fr; }
+.ndb-faq-a {
+  overflow: hidden;
+  min-height: 0;
+  padding: 0 1.4rem;
+  color: var(--ndb-text-2);
+  font-size: 0.93rem;
+  line-height: 1.72;
 }
-
-code {
-  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
-  font-size: 0.9em;
-}
-
-/* Inline code gradient accent */
-:not(pre) > code {
-  background: var(--oxidoc-code-bg) !important;
-  padding: 0.15em 0.4em;
-  border-radius: 5px;
-  border: 1px solid var(--oxidoc-border);
+.ndb-faq-item.is-open .ndb-faq-a { padding: 0.1rem 1.4rem 1.3rem; }
+.ndb-faq-a code {
+  color: #c7d2fe;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--ndb-border);
+  border-radius: 0.35rem;
+  padding: 0.1em 0.35em;
   font-size: 0.85em;
 }
+.ndb-faq-a em { color: #cbd5e1; font-style: italic; }
 
-/* ── Tables ───────────────────────────────────────────────────────── */
+/* ── Final CTA + waitlist ──────────────────────────────────────────────
+   Order (top→bottom): heading + description (<CTA>), then the email form,
+   then the secondary action buttons — all rendered inside <WaitlistForm>. */
 
-table {
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid var(--oxidoc-border);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
-}
-
-th {
-  background: var(--ndb-gradient-subtle) !important;
-  font-weight: 600;
-  text-transform: uppercase;
-  font-size: 0.8rem;
-  letter-spacing: 0.05em;
-  color: var(--oxidoc-text-secondary) !important;
-}
-
-tr:hover td {
-  background: var(--ndb-gradient-subtle);
-}
-
-/* ── CTA Section ──────────────────────────────────────────────────── */
-
-.oxidoc-cta {
-  position: relative;
-  background: var(--ndb-gradient) !important;
-  border-radius: 16px !important;
-  padding: 3rem 2rem !important;
-  color: #fff !important;
-  text-align: center;
-  overflow: hidden;
-}
-
-.oxidoc-cta::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(circle at 20% 50%, rgba(255, 255, 255, 0.1), transparent 50%),
-    radial-gradient(circle at 80% 50%, rgba(255, 255, 255, 0.08), transparent 50%);
-  pointer-events: none;
-}
-
-.oxidoc-cta h2,
-.oxidoc-cta [class*="title"] {
-  color: #fff !important;
+.oxidoc-landing .ndb-final .oxidoc-section-inner { max-width: 40rem; text-align: center; }
+.oxidoc-landing .ndb-final .oxidoc-cta { background: none; padding: 0; text-align: center; }
+.oxidoc-landing .ndb-final .oxidoc-cta::before { display: none; }
+.oxidoc-landing .ndb-final .oxidoc-cta-title {
+  font-size: clamp(1.85rem, 3.5vw, 2.5rem);
   font-weight: 800;
+  color: #fff;
+  margin: 0 0 0.85rem;
+}
+.oxidoc-landing .ndb-final .oxidoc-cta-description {
+  color: var(--ndb-text-2);
+  font-size: 1.05rem;
+  margin: 0 auto 2rem;
+  max-width: 34rem;
 }
 
-.oxidoc-cta p,
-.oxidoc-cta [class*="description"] {
-  color: rgba(255, 255, 255, 0.9) !important;
+/* Waitlist form + secondary actions (custom <WaitlistForm> component) */
+.oxidoc-landing waitlistform { display: block; min-height: 13rem; max-width: 30rem; margin: 0 auto; }
+.ndb-wl-form { display: flex; flex-direction: column; gap: 0.75rem; }
+@media (min-width: 480px) { .ndb-wl-form { flex-direction: row; } }
+/* `display:flex` above otherwise wins over [hidden]'s display:none */
+.ndb-wl-form[hidden] { display: none; }
+.ndb-wl-email {
+  flex: 1;
+  padding: 0.9rem 1.1rem;
+  border-radius: 0.7rem;
+  background: var(--ndb-bg-2);
+  border: 1px solid var(--ndb-border-strong);
+  color: #fff;
+  font: inherit;
+  font-size: 0.95rem;
 }
-
-.oxidoc-cta a[href] {
-  background: rgba(255, 255, 255, 0.95) !important;
-  color: #1e3a5f !important;
+.ndb-wl-email::placeholder { color: var(--ndb-text-3); }
+.ndb-wl-email:focus { outline: none; border-color: var(--ndb-indigo-500); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2); }
+.ndb-wl-submit {
+  padding: 0.9rem 1.6rem;
+  border-radius: 0.7rem;
+  background: var(--ndb-indigo-600);
+  color: #fff;
+  font: inherit;
   font-weight: 600;
-  border-radius: 9999px;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s ease, transform 0.15s ease;
+}
+.ndb-wl-submit:hover:not(:disabled) { background: var(--ndb-indigo-500); }
+.ndb-wl-submit:active { transform: scale(0.97); }
+.ndb-wl-submit:disabled { opacity: 0.7; cursor: default; }
+.ndb-wl-msg { margin-top: 1rem; font-size: 0.9rem; padding: 1rem 1.1rem; border-radius: 0.7rem; text-align: left; }
+.ndb-wl-error { color: #fca5a5; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); }
+.ndb-wl-success { color: #86efac; background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); }
+.ndb-wl-success strong { color: #bbf7d0; }
+
+.ndb-wl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: center;
+  margin-top: 1.6rem;
+}
+.ndb-wl-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1.05rem;
+  border-radius: 0.7rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--ndb-border);
+  color: var(--ndb-text);
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+}
+.ndb-wl-btn svg { flex-shrink: 0; }
+.ndb-wl-btn:hover { background: rgba(255, 255, 255, 0.11); transform: translateY(-1px); }
+.ndb-wl-btn-ph { background: rgba(255, 97, 84, 0.1); border-color: rgba(255, 97, 84, 0.3); }
+.ndb-wl-btn-ph:hover { background: rgba(255, 97, 84, 0.18); border-color: rgba(255, 97, 84, 0.55); }
+.ndb-wl-ph-mark {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #ff6154;
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.oxidoc-cta a[href]:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+/* ── Banner / Product Hunt strip ───────────────────────────────────── */
+
+body:has(.oxidoc-landing) .oxidoc-banner {
+  background: linear-gradient(90deg, rgba(79, 70, 229, 0.18), rgba(168, 85, 247, 0.18), rgba(79, 70, 229, 0.18));
+  border-bottom: 1px solid rgba(99, 102, 241, 0.3);
+  color: #d1d5db;
+  text-align: center;
+  font-size: 0.88rem;
+  padding: 0.65rem 1rem;
 }
+body:has(.oxidoc-landing) .oxidoc-banner a { color: #fff; text-decoration: none; font-weight: 600; }
+body:has(.oxidoc-landing) .oxidoc-banner a:hover { text-decoration: underline; }
+body:has(.oxidoc-landing) .oxidoc-banner-close { color: #9ca3af; }
 
-/* ── Sidebar ──────────────────────────────────────────────────────── */
+/* ── Footer on landing ─────────────────────────────────────────────── */
 
-.oxidoc-sidebar a {
-  border-radius: 6px;
-  transition: background 0.15s ease, color 0.15s ease, padding-left 0.15s ease;
+body:has(.oxidoc-landing) footer {
+  background: var(--ndb-bg);
+  border-top: 1px solid var(--ndb-border-strong);
+  color: var(--ndb-text-3);
 }
+body:has(.oxidoc-landing) footer a { color: var(--ndb-text-3); }
+body:has(.oxidoc-landing) footer a:hover { color: var(--ndb-text); }
 
-.oxidoc-sidebar a:hover {
-  background: var(--ndb-gradient-subtle);
-}
+/* ════════════════════════════════════════════════════════════════════
+   DOCS — light / dark polish (light-touch)
+   ════════════════════════════════════════════════════════════════════ */
 
-.oxidoc-sidebar a[aria-current="page"],
+.oxidoc-sidebar a { border-radius: 6px; transition: background 0.15s ease, color 0.15s ease; }
+.oxidoc-sidebar a[aria-current='page'],
 .oxidoc-sidebar a.active {
-  background: var(--ndb-gradient-soft) !important;
-  color: var(--oxidoc-primary) !important;
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--oxidoc-primary);
   font-weight: 600;
-  border-left: 3px solid var(--oxidoc-primary);
 }
-
-/* Sidebar group titles */
-.oxidoc-sidebar [class*="group-title"],
 .oxidoc-sidebar h3,
-.oxidoc-sidebar h4 {
+.oxidoc-sidebar h4,
+.oxidoc-sidebar [class*='group-title'] {
   text-transform: uppercase;
   font-size: 0.7rem;
   letter-spacing: 0.08em;
-  color: var(--oxidoc-text-secondary);
   font-weight: 700;
 }
 
-/* ── Callouts ─────────────────────────────────────────────────────── */
+::selection { background: rgba(99, 102, 241, 0.3); }
+:focus-visible { outline: 2px solid var(--oxidoc-primary); outline-offset: 2px; }
 
-.oxidoc-callout {
-  border-radius: 10px !important;
-  border-left-width: 4px !important;
-}
-
-/* ── Scroll-to-top / Misc ─────────────────────────────────────────── */
-
-::selection {
-  background: #3b82f640;
-  color: var(--oxidoc-text);
-}
-
-[data-theme="dark"] ::selection {
-  background: #60a5fa40;
-}
-
-/* Smooth scrolling */
-html {
-  scroll-behavior: smooth;
-}
-
-/* Focus ring */
-:focus-visible {
-  outline: 2px solid var(--oxidoc-primary);
-  outline-offset: 2px;
-}
-
-/* ── Responsive ───────────────────────────────────────────────────── */
+/* ── Responsive ────────────────────────────────────────────────────── */
 
 @media (max-width: 768px) {
-  .oxidoc-hero h1 {
-    font-size: 2.5rem !important;
-  }
-
-  .oxidoc-hero {
-    padding: 4rem 1.5rem 3rem !important;
-  }
-
-  .oxidoc-cta {
-    padding: 2rem 1.5rem !important;
-    border-radius: 12px !important;
-  }
+  .oxidoc-landing .oxidoc-section { padding: 3.5rem 1.25rem; }
+  .oxidoc-landing .oxidoc-hero { padding: 2.5rem 1.25rem 3.5rem; }
 }
 
-/* ── Reduced Motion ───────────────────────────────────────────────── */
+/* ── Reduced motion ────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  html { scroll-behavior: auto; }
 }
