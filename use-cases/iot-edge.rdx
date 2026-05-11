@@ -1,0 +1,172 @@
+---
+title: IoT & Edge
+description: High-throughput sensor ingestion, ND array tiles for batch telemetry, retention policies, and CRDT edge-to-cloud sync via NodeDB-Lite — one stack from device to cloud.
+---
+
+IoT stacks typically span a time-series database for sensor data, an object store or array database for bulk telemetry, and a synchronisation layer for edge devices. NodeDB covers all three: the Timeseries engine handles streaming ingestion, the Array engine stores multi-dimensional batch telemetry (replacing InfluxDB + TileDB separately), and NodeDB-Lite runs the same engines embedded on edge hardware, syncing deltas to Origin over CRDT when connectivity allows.
+
+## Engines used
+
+| Engine | Role |
+|---|---|
+| **Timeseries** | Streaming sensor ingestion, continuous aggregates, retention |
+| **Array** | ND telemetry tiles (spectrometry, radar, camera frames), batch analytics |
+| **Document (schemaless)** | Device registry, configuration, alert rules with CRDT sync |
+| **Key-Value** | Last-known device state, command queues |
+
+## Streaming sensor ingestion — Timeseries engine
+
+The Timeseries engine is append-only, with a `TIME_KEY` column driving partition-by-time and block skip, plus per-collection retention.
+
+```sql
+CREATE COLLECTION sensor_readings (
+  ts        TIMESTAMP TIME_KEY,
+  device_id VARCHAR,
+  metric    VARCHAR,
+  value     FLOAT,
+  unit      VARCHAR
+) WITH (engine='timeseries', partition_by='1d', retention='180d');
+
+-- Bulk import (NDJSON / JSON array / CSV auto-detected)
+COPY sensor_readings FROM '/var/spool/readings.ndjson';
+
+-- Or INSERT for low-volume devices
+INSERT INTO sensor_readings (ts, device_id, metric, value, unit) VALUES
+  (now(), 'device-001', 'temperature', 23.4, 'C'),
+  (now(), 'device-001', 'humidity',    61.2, '%'),
+  (now(), 'device-001', 'co2_ppm',     412,  'ppm');
+
+-- 15-minute summaries
+SELECT
+  time_bucket('15m', ts) AS bucket,
+  device_id,
+  avg(CASE WHEN metric = 'temperature' THEN value END) AS avg_temp,
+  max(CASE WHEN metric = 'co2_ppm'     THEN value END) AS max_co2
+FROM sensor_readings
+WHERE ts >= now() - INTERVAL '24 hours'
+GROUP BY bucket, device_id
+ORDER BY bucket DESC;
+```
+
+For line-protocol producers (Telegraf, Vector), enable the ILP listener (`ports.ilp = 8086`) and push directly:
+
+```bash
+echo "env,device=device-001 temperature=23.4,humidity=61.2 1735689600000000000" | nc localhost 8086
+```
+
+## Multi-dimensional telemetry — Array engine
+
+Instruments like spectrometers, LiDAR scanners, and thermal cameras produce ND arrays of readings. The Array engine stores them in compressed Z-order tiles with per-tile ND-MBR statistics — replacing a separate TileDB or Zarr deployment. It uses its own DDL family (`CREATE ARRAY`), not `CREATE COLLECTION`.
+
+```sql
+-- A 3D spectrometry array: (device, wavelength, time). Dimensions are
+-- integer-typed with half-open domains [lo, hi).
+CREATE ARRAY spectral_readings
+  DIMS (
+    device_id     INT64 DOMAIN [0, 100000),
+    wavelength_nm INT32 DOMAIN [300, 1100),
+    ts_epoch      INT64 DOMAIN [0, 9223372036854775807)
+  )
+  ATTRS (intensity FLOAT32, noise_floor FLOAT32)
+  TILE_EXTENTS (1, 128, 3600)
+  WITH (cell_order = 'Z-ORDER', audit_retain_ms = 7776000000);  -- 90 days
+
+-- Insert cells from a scan session
+INSERT INTO ARRAY spectral_readings (device_id, wavelength_nm, ts_epoch, intensity, noise_floor) VALUES
+  ($dev, 500, $t, 0.41, 0.02),
+  ($dev, 501, $t, 0.43, 0.02),
+  ($dev, 502, $t, 0.40, 0.02);
+
+-- Force in-memory tiles to durable storage
+SELECT ARRAY_FLUSH('spectral_readings');
+
+-- Slice: wavelengths 500–600 nm for one device over a time window
+SELECT wavelength_nm, avg(intensity) AS avg_intensity
+FROM ARRAY_SLICE(
+  'spectral_readings',
+  { device_id: [$dev, $dev + 1), wavelength_nm: [500, 600), ts_epoch: [$t0, $t1) },
+  ['intensity']
+)
+GROUP BY wavelength_nm
+ORDER BY wavelength_nm;
+
+-- Reduce a dimension: total intensity per wavelength, collapsing time
+SELECT * FROM ARRAY_AGG('spectral_readings', 'intensity', 'SUM', 'ts_epoch');
+```
+
+## Edge deployment — NodeDB-Lite
+
+Edge gateways run NodeDB-Lite: the full engine set in an embeddable library with no network dependencies. Data is written locally and synced to Origin via Loro CRDT deltas when connectivity is available.
+
+```sql
+-- On the edge device (NodeDB-Lite, embedded in a Rust/C/Swift process)
+
+-- Local timeseries writes survive network outages
+INSERT INTO local_readings (ts, sensor_id, metric, value)
+VALUES (now(), $sensor_id, 'vibration_g', $g);
+
+-- Device configuration arrives via a shape subscription scoped to this device
+SUBSCRIBE SHAPE ON device_config WHERE device_id = $me;
+SELECT value FROM device_config WHERE key = 'alert_thresholds';
+```
+
+```swift
+// iOS / embedded Swift
+let db = NodeDbLite.open(path: "edge.db")
+db.execute("INSERT INTO local_readings ...")
+db.sync(url: "wss://origin.example.com/sync", token: authToken)
+```
+
+<Callout kind="tip" title="Sync on reconnect">
+CRDT sync is transparent — the edge process doesn't implement retry logic, conflict resolution, or delta tracking. Declare a `conflict_policy` on the collection (`lww` or `field_merge`) and the engine produces and ships the deltas; Origin validates SQL constraints at Raft commit and replies with a `CompensationHint` if a write loses.
+</Callout>
+
+## Last-known state — Key-Value engine
+
+The KV engine stores the current state of every device for sub-millisecond dashboard reads without scanning the timeseries collection.
+
+```sql
+CREATE COLLECTION device_state (key TEXT PRIMARY KEY) WITH (engine='kv');
+
+-- Updated on every sensor publish
+UPSERT INTO device_state { key: $device_id, last_seen: now(), status: $status, battery_pct: $batt };
+
+-- Dashboard: current state of many devices at once
+SELECT * FROM device_state WHERE key = ANY($device_ids);
+```
+
+## Alerting via LIVE SELECT
+
+Trigger downstream alert handlers the moment a sensor value crosses a threshold — no polling loop.
+
+```sql
+-- Subscribe to readings that breach the CO2 alert threshold
+LIVE SELECT device_id, value, ts FROM sensor_readings
+WHERE metric = 'co2_ppm'
+  AND value > 1000;
+
+-- The handler receives each qualifying row immediately and fans out to
+-- PagerDuty, SMS, or a dashboard socket. Cancel with: CANCEL LIVE SELECT <id>;
+```
+
+## Retention and downsampling
+
+Raw readings age out via the collection's `retention`. A continuous aggregate keeps incrementally-maintained hourly summaries — no cron job, no separate pipeline.
+
+```sql
+CREATE CONTINUOUS AGGREGATE sensor_hourly ON sensor_readings AS
+  SELECT
+    time_bucket('1h', ts) AS bucket,
+    device_id,
+    metric,
+    avg(value) AS avg_val,
+    min(value) AS min_val,
+    max(value) AS max_val
+  FROM sensor_readings
+  GROUP BY bucket, device_id, metric
+WITH (refresh_interval = '5m');
+```
+
+## Why not InfluxDB + TileDB?
+
+A line-protocol time-series database can't store multi-dimensional instrument output, so you bolt on TileDB or Zarr — and now telemetry lives in two systems with two query languages and no shared identity. NodeDB keeps streaming readings and ND array tiles in one process: a query can prefilter cells by the same surrogate-identity bitmaps the rest of the engines use, and the edge runs the identical engine set embedded.

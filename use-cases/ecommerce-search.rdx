@@ -1,0 +1,177 @@
+---
+title: E-commerce & Search
+description: Hybrid BM25 + vector product search, RRF fusion ranking, recommendation graphs, and real-time inventory analytics — without Elasticsearch, a vector database, or a separate OLAP cluster.
+---
+
+E-commerce search stacks are notoriously complex: Elasticsearch for keyword search, a vector database for semantic similarity, a recommendation engine backed by a graph database, and a data warehouse for sales analytics. NodeDB provides all four as peer engines (plus Graph and FTS overlays) sharing one storage core, one query planner, and one operational surface.
+
+## Engines used
+
+| Engine | Role |
+|---|---|
+| **Full-Text Search** | BM25 keyword search, faceted filtering, autocomplete |
+| **Vector** | Semantic product search, visual similarity, embedding-based recommendations |
+| **Graph** | "Customers also bought", category navigation, brand-product relationships |
+| **Document (schemaless)** | Product catalog, flexible attributes, variant metadata |
+| **Columnar** | Sales analytics, inventory reporting, cohort analysis |
+
+## Hybrid product search
+
+The strongest e-commerce search combines keyword precision with semantic recall, then fuses the ranked lists. `rrf_score(...)` does the fusion in the planner — no application-side merge, no Elasticsearch + Pinecone glue code.
+
+```sql
+CREATE COLLECTION products;
+CREATE SEARCH INDEX ON products FIELDS title, description ANALYZER 'english' FUZZY true;
+-- One vector index per embedding column on the same collection.
+CREATE VECTOR INDEX idx_text  ON products (text_embedding)  METRIC cosine DIM 384;
+CREATE VECTOR INDEX idx_image ON products (image_embedding) METRIC cosine DIM 512;
+
+-- Hybrid search: BM25 keyword + vector semantic, fused with RRF
+SELECT
+  id,
+  title,
+  price,
+  brand,
+  rrf_score(
+    vector_distance(text_embedding, $query_vec),
+    bm25_score(description, $query_text)
+  ) AS relevance
+FROM products
+WHERE in_stock     = true
+  AND price        BETWEEN $min_price AND $max_price
+  AND category_id  = ANY($category_ids)
+ORDER BY relevance DESC
+LIMIT 20;
+```
+
+## Autocomplete and faceted filtering
+
+```sql
+-- Autocomplete: fuzzy title match, ranked by popularity
+SELECT DISTINCT id, title
+FROM products
+WHERE text_match(title, $prefix, { fuzzy: true, distance: 1 })
+ORDER BY popularity_score DESC
+LIMIT 8;
+
+-- Facet counts: products per brand in the current keyword result set
+SELECT brand, count(*) AS count
+FROM products
+WHERE text_match(description, $query_text)
+  AND in_stock = true
+GROUP BY brand
+ORDER BY count DESC
+LIMIT 15;
+```
+
+## Visual similarity search
+
+For fashion, furniture, and home goods, image-embedding similarity lets shoppers find products that look alike — searching the `image_embedding` index created above, right alongside the catalog row:
+
+```sql
+-- "Shop similar items" — products whose image embedding is closest to the
+-- viewed one, restricted to the same in-stock category.
+SELECT id, title, price, image_url,
+       image_embedding <=> $viewed_vec AS visual_distance
+FROM products
+WHERE category_id = $category_id
+  AND in_stock = true
+  AND id <> $viewed_product_id
+ORDER BY image_embedding <=> $viewed_vec
+LIMIT 12;
+```
+
+## Recommendation graph — "Customers also bought"
+
+Co-purchase relationships are graph edges layered on the `products` collection — graph is an overlay, you don't create a separate "graph collection." Traversal-based recommendations run alongside the catalog.
+
+```sql
+-- A batch job recomputes co-purchase counts and (re)writes the edge with the
+-- current weight — DELETE then INSERT, since GRAPH INSERT EDGE is insert-only.
+GRAPH DELETE EDGE IN 'products' FROM $product_a TO $product_b TYPE 'co_purchased';
+GRAPH INSERT EDGE IN 'products' FROM $product_a TO $product_b TYPE 'co_purchased'
+  PROPERTIES { weight: $copurchase_count };
+
+-- "Customers also bought": direct co-purchase neighbours of a product,
+-- ranked by co-purchase weight. Graph nodes are document rows, so their
+-- catalog fields are available in RETURN.
+MATCH (seed:Product)-[e:co_purchased]->(rec:Product)
+WHERE seed.id = $product_id
+  AND rec.in_stock = true
+RETURN rec.id, rec.title, rec.price, e.weight AS affinity
+ORDER BY e.weight DESC
+LIMIT 8;
+```
+
+## Real-time inventory — LIVE SELECT
+
+Push in-stock / out-of-stock transitions to product pages without polling. `LIVE SELECT` registers a query and streams matching changes over pgwire, WebSocket, or the native protocol.
+
+```sql
+-- A shopper viewing their wishlist subscribes to back-in-stock events
+LIVE SELECT id, title FROM products
+WHERE id = ANY($wishlist_ids)
+  AND in_stock = true;
+
+-- When a back-ordered item is restocked, every subscriber gets the row
+-- delivered immediately. Cancel with: CANCEL LIVE SELECT <subscription_id>;
+```
+
+## Sales analytics — Columnar engine
+
+The Columnar engine handles aggregation-heavy analytics across millions of orders without a separate data warehouse — per-column compression, block statistics, and predicate pushdown.
+
+```sql
+CREATE COLLECTION orders (
+  id          TEXT PRIMARY KEY,
+  placed_at   TIMESTAMP TIME_KEY,
+  status      TEXT
+) WITH (engine='columnar');
+
+-- Revenue by category, last 30 days
+SELECT
+  c.name                       AS category,
+  count(DISTINCT o.id)         AS orders,
+  sum(oi.quantity * oi.price)  AS revenue,
+  avg(oi.quantity * oi.price)  AS avg_order_value
+FROM orders o
+JOIN order_items oi  ON oi.order_id    = o.id
+JOIN products    p   ON p.id           = oi.product_id
+JOIN categories  c   ON c.id           = p.category_id
+WHERE o.placed_at >= now() - INTERVAL '30 days'
+  AND o.status    = 'completed'
+GROUP BY c.name
+ORDER BY revenue DESC;
+
+-- Conversion funnel: views → add-to-cart → purchase
+SELECT
+  time_bucket('1d', e.ts) AS day,
+  count(CASE WHEN e.event = 'product_view' THEN 1 END) AS views,
+  count(CASE WHEN e.event = 'add_to_cart'  THEN 1 END) AS add_to_cart,
+  count(CASE WHEN e.event = 'purchase'     THEN 1 END) AS purchases,
+  round(
+    count(CASE WHEN e.event = 'purchase' THEN 1 END)::numeric
+    / nullif(count(CASE WHEN e.event = 'product_view' THEN 1 END), 0) * 100,
+    2
+  ) AS conversion_pct
+FROM events e
+WHERE e.ts >= now() - INTERVAL '14 days'
+GROUP BY day
+ORDER BY day;
+```
+
+<Callout kind="tip" title="Matryoshka embeddings for tiered search">
+Store full-precision embeddings and rank the first N dimensions for a fast first pass via the `query_dim` tuning argument, then re-rank the top candidates at full precision — no reindexing:
+
+```sql
+SELECT id, title, vector_distance(text_embedding, $query_vec, query_dim => 256) AS distance
+FROM products
+WHERE in_stock = true
+ORDER BY distance
+LIMIT 100;
+```
+</Callout>
+
+## Why not Elasticsearch + a vector database?
+
+Elasticsearch handles keyword search but requires a separate vector database for semantic recall, a graph database for recommendations, and a data warehouse for analytics. Synchronising product-catalog changes across four systems is the dominant operational burden. NodeDB keeps every engine in the same process: a hybrid search + recommendation + inventory check is one SQL statement, not four API calls.

@@ -1,0 +1,134 @@
+---
+title: AI & LLM Applications
+description: Build RAG pipelines, agent memory stores, and hybrid semantic search on NodeDB — vector, graph, full-text, and document engines in one query.
+---
+
+Modern AI applications need at least three databases to function: a vector store for embeddings, a graph database for entity relationships, and a search index for keyword recall. NodeDB collapses all three into one, with a fourth engine — schemaless Document — for storing raw LLM outputs and conversation history.
+
+## Engines used
+
+| Engine | Role |
+|---|---|
+| **Vector** | HNSW similarity search, filtered ANN, multivec MaxSim |
+| **Full-Text Search** | BM25 keyword recall, 27-language analyzers |
+| **Graph** | Entity relationships, GraphRAG context expansion |
+| **Document (schemaless)** | Conversation history, LLM outputs, agent state |
+
+## Hybrid RAG retrieval
+
+A basic RAG retrieval combines vector similarity with BM25 keyword recall, then fuses the two ranked lists with Reciprocal Rank Fusion. `rrf_score(...)` does the fusion inside the planner — one statement, no application-side merge loop.
+
+```sql
+-- Hybrid search: vector ANN + BM25, fused with RRF
+SELECT
+  id,
+  content,
+  metadata,
+  rrf_score(
+    vector_distance(embedding, $query_vec),
+    bm25_score(content, $query_text)
+  ) AS score
+FROM documents
+WHERE metadata ->> 'source' = 'internal'
+ORDER BY score DESC
+LIMIT 10;
+```
+
+## GraphRAG: expand context through entity relationships
+
+Entities and their relationships are graph edges layered on the same `documents` collection — graph is an overlay, not a separate store. After vector search finds seed chunks, the fusion DSL walks those edges and merges the rankings:
+
+```sql
+-- Wire entities as edges on the documents collection
+GRAPH INSERT EDGE IN 'documents' FROM $chunk_id  TO $entity_id TYPE 'mentions';
+GRAPH INSERT EDGE IN 'documents' FROM $entity_a  TO $entity_b  TYPE 'related_to' PROPERTIES { weight: 0.8 };
+
+-- Vector search seeds → BFS along 'related_to' → RRF merge of vector rank + hop distance
+GRAPH RAG FUSION ON documents
+  QUERY $query_vec
+  VECTOR_FIELD 'embedding'
+  VECTOR_TOP_K 50
+  EXPANSION_DEPTH 2
+  EDGE_LABEL 'related_to'
+  FINAL_TOP_K 10
+  RRF_K (60.0, 35.0);
+```
+
+Need keyword relevance in the same pass? Add the `BM25` leg and the `RRF_K` tuple becomes a triple — vector, graph expansion, and BM25 all fused in one plan:
+
+```sql
+GRAPH RAG FUSION ON documents
+  QUERY $query_vec VECTOR_FIELD 'embedding' VECTOR_TOP_K 50
+  BM25 $query_text ON 'content'
+  EXPANSION_DEPTH 2 EDGE_LABEL 'related_to' FINAL_TOP_K 10
+  RRF_K (60.0, 35.0, 50.0);
+```
+
+You can also walk the entity graph directly with a Cypher-subset `MATCH`:
+
+```sql
+MATCH (c:Chunk)-[:mentions]->(e:Entity)-[:related_to*1..2]->(related:Entity)
+WHERE c.id = $chunk_id
+RETURN DISTINCT related.id
+LIMIT 20;
+```
+
+## Agent memory store
+
+Long-running agents need persistent, queryable memory. A schemaless Document collection stores arbitrary turn payloads; a vector index makes semantic recall fast.
+
+```sql
+CREATE COLLECTION agent_memory;
+CREATE VECTOR INDEX idx_mem ON agent_memory METRIC cosine DIM 1536;
+
+-- Store a turn (object-literal insert on a schemaless collection)
+INSERT INTO agent_memory
+  { session_id: $sid, turn: $n, role: $role, content: $text, embedding: $vec, created_at: now() };
+
+-- Recall: recent turns from this session + semantically similar turns from any session
+(SELECT content, role, created_at
+ FROM agent_memory
+ WHERE session_id = $sid
+ ORDER BY turn DESC
+ LIMIT 10)
+UNION ALL
+(SELECT content, role, created_at
+ FROM agent_memory
+ WHERE session_id <> $sid
+ ORDER BY embedding <=> $query_vec
+ LIMIT 5)
+ORDER BY created_at;
+```
+
+## Filtered vector search
+
+Production vector workloads almost always filter by metadata before ranking. NodeDB's NaviX adaptive-local traversal keeps ANN recall high even with tight filters — the planner builds a roaring bitmap of matching IDs and picks pre-filter, post-filter, or brute-force based on selectivity.
+
+```sql
+-- Similar products, restricted to in-stock items in the user's region
+SELECT id, name, price, embedding <=> $query_vec AS distance
+FROM products
+WHERE in_stock = true
+  AND region = $region
+  AND category_id = ANY($category_ids)
+ORDER BY embedding <=> $query_vec
+LIMIT 20;
+```
+
+<Callout kind="tip" title="Matryoshka adaptive dimensions">
+Store full-precision embeddings and rank on the first N dimensions for a fast first pass via the `query_dim` tuning argument — then re-rank the top candidates at full precision. No reindexing:
+
+```sql
+SELECT id, vector_distance(embedding, $query_vec, query_dim => 256) AS distance
+FROM products
+WHERE in_stock = true
+ORDER BY distance
+LIMIT 100;
+```
+</Callout>
+
+## Why not a dedicated vector database?
+
+Dedicated vector databases force you to maintain a separate store for every non-vector data shape. When your RAG pipeline needs keyword fallback, entity relationships, and conversation history, you end up with four systems, four consistency boundaries, and cross-system joins that travel over the network.
+
+NodeDB keeps everything in one process with a single shared snapshot. A hybrid search + graph expansion + memory recall query is one SQL statement with zero inter-process calls.

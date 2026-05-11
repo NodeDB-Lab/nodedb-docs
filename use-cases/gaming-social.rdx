@@ -1,0 +1,147 @@
+---
+title: Gaming & Social
+description: Social graphs, real-time leaderboards, offline-first mobile with CRDT sync, and live change streams — without Redis, Neo4j, or a separate pub/sub broker.
+---
+
+Gaming and social platforms stress databases in ways most workloads do not: millions of concurrent writes, graph traversals for friend feeds and matchmaking, sub-millisecond leaderboard reads, and mobile clients that must work offline and sync automatically. NodeDB handles all of these as peer engines and overlays in a single deployment.
+
+## Engines used
+
+| Engine | Role |
+|---|---|
+| **Graph** | Friend networks, guild membership, match-history traversal |
+| **Key-Value** | Leaderboards (sorted index), session tokens, inventory hot path |
+| **Document (schemaless)** | Player profiles, game state, match records with CRDT sync |
+| **Timeseries** | Match telemetry, event logs, achievement timestamps |
+| **Full-Text Search** | Player search by username, guild discovery |
+
+## Social graph — friends, guilds, follows
+
+Graph edges are an overlay on a document collection — here `players`. The CSR adjacency index handles millions of nodes and edges; friend-of-friend, mutual connections, and guild traversals run as Cypher-subset `MATCH` patterns.
+
+```sql
+CREATE COLLECTION players;
+
+-- Add a friendship (bidirectional → two edges)
+GRAPH INSERT EDGE IN 'players' FROM $player_a TO $player_b TYPE 'friend';
+GRAPH INSERT EDGE IN 'players' FROM $player_b TO $player_a TYPE 'friend';
+
+-- Friends-of-friends: people you might know (2 hops, excluding direct friends)
+MATCH (me:Player)-[:friend]->(friend:Player)-[:friend]->(candidate:Player)
+WHERE me.id = $me
+  AND candidate.id <> $me
+  AND NOT EXISTS { MATCH (me)-[:friend]->(candidate) }
+RETURN DISTINCT candidate.id, candidate.username
+LIMIT 20;
+
+-- Guild members reachable through a player's guilds
+MATCH (me:Player)-[:member_of]->(guild:Guild)<-[:member_of]-(member:Player)
+WHERE me.id = $me AND member.id <> $me
+RETURN member.id, member.username, guild.name
+LIMIT 50;
+```
+
+## Real-time leaderboard — sorted index
+
+A `SORTED INDEX` on the score column gives O(log n) rank lookups and top-k scans without a Redis sidecar. The leaderboard functions (`RANK`, `TOPK`, `SORTED_COUNT`) operate directly on it.
+
+```sql
+CREATE COLLECTION scores (player_id TEXT PRIMARY KEY) WITH (engine='kv');
+CREATE SORTED INDEX lb ON scores (score DESC) KEY player_id;
+
+-- Record a player's score after a match, keeping their best
+INSERT INTO scores (player_id, score) VALUES ($player_id, $new_score)
+ON CONFLICT (player_id) DO UPDATE
+  SET score = greatest(scores.score, EXCLUDED.score);
+
+-- Top 100 global ranks
+SELECT * FROM TOPK('lb', 100);
+
+-- A single player's rank, and the total leaderboard size
+SELECT RANK('lb', $player_id) AS rank, SORTED_COUNT('lb') AS total;
+
+-- Everyone in a score band (e.g. a bracket)
+SELECT * FROM RANGE('lb', $min_score, $max_score);
+```
+
+## Offline-first mobile — CRDT sync
+
+Mobile games must function without a network connection. NodeDB-Lite runs the same engines embedded on iOS and Android; declaring a `conflict_policy` on a collection makes its writes mergeable, and Lite syncs deltas to Origin automatically when connectivity returns.
+
+```sql
+-- Mergeable player state: concurrent edits to different fields both survive
+CREATE COLLECTION player_state WITH (conflict_policy = 'field_merge');
+
+-- The device subscribes only to its own slice of the data
+SUBSCRIBE SHAPE ON player_state WHERE player_id = $me;
+
+-- Offline: the player collects items, finishes quests — ordinary local writes
+UPSERT INTO player_state
+  { player_id: $me, inventory: $inventory, quests: $quests, updated_at: now() };
+
+-- When the network returns, NodeDB-Lite ships the CRDT deltas to Origin. The
+-- collection's conflict_policy decides the outcome: 'field_merge' merges
+-- concurrent edits to different fields; same-field clashes fall back to LWW.
+```
+
+<Callout kind="tip" title="Conflict policies">
+`lww` (last-writer-wins) is the default; `field_merge` keeps concurrent edits to different fields. Set it at creation or with `ALTER COLLECTION player_state SET conflict_policy = 'field_merge'`. See the [Conflict Policies docs](/docs/crdt-sync/conflict-policies).
+</Callout>
+
+## Live match updates — LIVE SELECT
+
+Push score updates and match events to spectators and dashboards in real time without a separate pub/sub broker. `LIVE SELECT` registers a filtered query and streams matching rows over pgwire, WebSocket, or the native protocol.
+
+```sql
+-- A spectator subscribes to one match's event feed
+LIVE SELECT * FROM match_events WHERE match_id = $match_id;
+
+-- The match engine inserts events as they occur:
+INSERT INTO match_events (match_id, event_type, player_id, data, ts)
+VALUES ($match_id, 'kill', $player_id, $event_data, now());
+
+-- Every subscriber receives the row immediately. No polling, no WebSocket
+-- server. Cancel with: CANCEL LIVE SELECT <subscription_id>;
+```
+
+## Match history and telemetry — Timeseries engine
+
+Every match generates thousands of telemetry events. The Timeseries engine ingests them at high throughput and makes them queryable for replay, anti-cheat, and balance analytics.
+
+```sql
+CREATE COLLECTION match_telemetry (
+  ts        TIMESTAMP TIME_KEY,
+  match_id  UUID,
+  player_id UUID,
+  event     VARCHAR,
+  data      JSON
+) WITH (engine='timeseries', partition_by='1d', retention='90d');
+
+INSERT INTO match_telemetry (ts, match_id, player_id, event, data)
+VALUES (now(), $match_id, $player_id, 'damage_dealt', '{"amount": 342, "weapon": "rifle"}');
+
+-- Average damage per weapon in a match — for balance analysis
+SELECT
+  data ->> 'weapon'             AS weapon,
+  avg((data ->> 'amount')::int) AS avg_damage,
+  count(*)                      AS events
+FROM match_telemetry
+WHERE match_id = $match_id
+  AND event = 'damage_dealt'
+GROUP BY weapon
+ORDER BY avg_damage DESC;
+```
+
+## Player search — Full-Text Search overlay
+
+Username and guild discovery uses the FTS overlay on the `players` collection — no Elasticsearch cluster.
+
+```sql
+CREATE SEARCH INDEX ON players FIELDS username, bio ANALYZER 'simple' FUZZY true;
+
+SELECT id, username, bio, bm25_score(username, $term) AS score
+FROM players
+WHERE text_match(username, $term, { fuzzy: true, distance: 1 })
+ORDER BY score DESC
+LIMIT 10;
+```

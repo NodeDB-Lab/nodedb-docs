@@ -1,0 +1,179 @@
+---
+title: Healthcare
+description: Schema-enforced patient records, bitemporal clinical timelines, and row-level security for HIPAA-grade data governance — all in NodeDB.
+---
+
+Healthcare data has two hard requirements that pull in opposite directions: strict schema enforcement for regulatory compliance, and flexible temporal queries for clinical timelines that capture both when care was delivered and when it was recorded. NodeDB satisfies both with its strict Document engine and native bitemporal support, while RBAC and row-level security enforce access control at the storage layer rather than in application middleware.
+
+## Engines used
+
+| Engine | Role |
+|---|---|
+| **Document (strict)** | Patient records, encounter notes, medication orders — schema-enforced Binary Tuples |
+| **Timeseries** | Vital signs, lab results, continuous monitoring streams |
+| **Full-Text Search** | Clinical note search, ICD/SNOMED code lookup |
+| **Columnar** | Population health analytics, cohort queries, reporting |
+
+## Schema-enforced patient records
+
+The strict Document engine (`engine='document_strict'`) validates every write against the declared columns and types — bad data is rejected at the storage layer, not caught later in application code. `bitemporal=true` adds system-time and valid-time tracking.
+
+```sql
+CREATE COLLECTION patients (
+  id          UUID DEFAULT gen_uuid_v7(),
+  mrn         VARCHAR,
+  dob         DATE,
+  given_name  VARCHAR,
+  family_name VARCHAR,
+  allergies   JSON,
+  org_id      UUID,
+  created_at  TIMESTAMP DEFAULT now()
+) WITH (engine='document_strict', bitemporal=true);
+
+-- NodeDB rejects table-level constraints; use a unique index for MRN uniqueness
+CREATE UNIQUE INDEX ON patients(mrn);
+
+INSERT INTO patients (mrn, dob, given_name, family_name, allergies, org_id)
+VALUES ('MRN-00001234', '1982-07-14', 'Jane', 'Doe', '["penicillin"]', $org_id);
+```
+
+## Bitemporal clinical timeline
+
+Clinical decisions depend on what was known at the time of treatment, not just what is currently recorded. System time is stored in the key (derived from the WAL LSN at Raft commit); valid time is client-assigned and stored in the value. Corrections add a new version — old versions remain queryable.
+
+```sql
+CREATE COLLECTION diagnoses (
+  id           UUID DEFAULT gen_uuid_v7(),
+  patient_id   UUID,
+  encounter_id UUID,
+  icd10_code   VARCHAR,
+  description  VARCHAR,
+  is_primary   BOOLEAN
+) WITH (engine='document_strict', bitemporal=true);
+
+-- Initial diagnosis, valid as of when the condition was present
+INSERT INTO diagnoses (patient_id, encounter_id, icd10_code, description, is_primary, valid_time)
+VALUES ($patient_id, $enc_id, 'J18.9', 'Pneumonia, unspecified', true, '2026-01-10');
+
+-- Later correction: it was actually J18.1. New version, same patient.
+INSERT INTO diagnoses (patient_id, encounter_id, icd10_code, description, is_primary, valid_time)
+VALUES ($patient_id, $enc_id, 'J18.1', 'Lobar pneumonia, unspecified', true, '2026-01-10');
+
+-- Audit query: what the database held on Jan 11, valid as of Jan 12.
+-- AS OF times are milliseconds since the Unix epoch.
+SELECT icd10_code, description
+FROM diagnoses
+AS OF SYSTEM TIME 1768175999000   -- 2026-01-11 23:59:59 UTC
+AS OF VALID  TIME 1768176000000   -- 2026-01-12 00:00:00 UTC
+WHERE patient_id = $patient_id;
+
+-- Full version history of a patient's diagnoses, in system-time order
+SELECT icd10_code, description, system_time
+FROM diagnoses
+AS OF SYSTEM TIME NULL   -- special: returns every version
+WHERE patient_id = $patient_id
+ORDER BY system_time ASC;
+```
+
+## Vital signs — Timeseries engine
+
+Continuous monitoring produces millions of readings per patient per day. The Timeseries engine's append-only design and per-column compression handle this efficiently, with per-collection retention.
+
+```sql
+CREATE COLLECTION vitals (
+  recorded_at TIMESTAMP TIME_KEY,
+  patient_id  UUID,
+  metric      VARCHAR,
+  value       FLOAT,
+  unit        VARCHAR
+) WITH (engine='timeseries', partition_by='1d', retention='3650d');
+
+INSERT INTO vitals (recorded_at, patient_id, metric, value, unit) VALUES
+  (now(), $patient_id, 'heart_rate',  72,   'bpm'),
+  (now(), $patient_id, 'spo2',        98.5, '%'),
+  (now(), $patient_id, 'systolic_bp', 118,  'mmHg');
+
+-- 5-minute rolling averages for a deterioration alert
+SELECT
+  time_bucket('5m', recorded_at) AS bucket,
+  avg(CASE WHEN metric = 'heart_rate' THEN value END) AS avg_hr,
+  avg(CASE WHEN metric = 'spo2'       THEN value END) AS avg_spo2
+FROM vitals
+WHERE patient_id = $patient_id
+  AND recorded_at >= now() - INTERVAL '30 minutes'
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+## Row-level security
+
+RLS policies filter rows transparently on every query — no application code can bypass them. Policies are injected at plan time, before engine dispatch, so they apply to vector, graph, FTS, and KV access too.
+
+```sql
+-- Records are visible only within the patient's organization
+CREATE RLS POLICY patient_org ON patients FOR READ
+  USING (org_id = $auth.org_id);
+
+-- Writes are limited to the same organization
+CREATE RLS POLICY patient_org_write ON patients FOR WRITE
+  USING (org_id = $auth.org_id);
+
+-- Restrictive policy: only clinical roles may read patient records at all
+CREATE RLS POLICY clinical_roles_only ON patients FOR READ
+  USING ($auth.role = 'physician' OR $auth.role = 'nurse'
+         OR $auth.role = 'pharmacist' OR $auth.role = 'admin') RESTRICTIVE;
+```
+
+Substitution is fail-closed: if the session's auth context lacks a referenced variable, the query rejects the row rather than allowing wide-open access.
+
+## Population health cohort query — Columnar engine
+
+Aggregate queries across millions of patients use the Columnar engine with predicate pushdown and per-column compression.
+
+```sql
+CREATE COLLECTION encounters (
+  id             UUID DEFAULT gen_uuid_v7(),
+  patient_id     UUID,
+  admit_date     TIMESTAMP,
+  discharge_date TIMESTAMP TIME_KEY
+) WITH (engine='columnar');
+
+-- 30-day readmission rate by primary-diagnosis chapter
+SELECT
+  SUBSTR(d.icd10_code, 1, 3)    AS icd_chapter,
+  count(DISTINCT e.patient_id)  AS discharges,
+  count(DISTINCT r.patient_id)  AS readmissions,
+  round(
+    count(DISTINCT r.patient_id)::numeric
+    / nullif(count(DISTINCT e.patient_id), 0) * 100,
+    1
+  ) AS readmit_rate_pct
+FROM encounters e
+JOIN diagnoses d ON d.encounter_id = e.id AND d.is_primary = true
+LEFT JOIN encounters r
+  ON r.patient_id = e.patient_id
+  AND r.admit_date BETWEEN e.discharge_date AND e.discharge_date + INTERVAL '30 days'
+  AND r.id <> e.id
+WHERE e.discharge_date >= now() - INTERVAL '90 days'
+GROUP BY icd_chapter
+ORDER BY readmit_rate_pct DESC;
+```
+
+## Clinical note search — Full-Text Search overlay
+
+FTS runs as an overlay on a Document collection, indexing note content without a separate Elasticsearch cluster. Negation uses the `NOT` keyword (at least one positive term required).
+
+```sql
+CREATE SEARCH INDEX ON clinical_notes FIELDS note_text ANALYZER 'english';
+
+-- Notes mentioning a symptom cluster, excluding ones flagged resolved
+SELECT patient_id, note_date, note_text, bm25_score(note_text, 'dyspnea tachycardia NOT resolved') AS score
+FROM clinical_notes
+WHERE text_match(note_text, 'dyspnea tachycardia NOT resolved')
+ORDER BY score DESC
+LIMIT 25;
+```
+
+<Callout kind="warning" title="HIPAA and de-identification">
+NodeDB's RBAC, RLS, and TLS form the access-control perimeter. De-identification, minimum-necessary determinations, and BAA obligations are legal and operational responsibilities — consult your compliance team before exposing data to analytics pipelines.
+</Callout>

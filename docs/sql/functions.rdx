@@ -24,7 +24,7 @@ description: Built-in scalar, aggregate, and engine-specific SQL functions.
 | `DATE_FORMAT(ts, fmt)`          | Format timestamp as string             |
 | `time_bucket(interval, ts)`     | Truncate to interval boundary          |
 
-`time_bucket` accepts: `'1s'`, `'5m'`, `'15m'`, `'1h'`, `'6h'`, `'1d'`, `'1w'`, or ISO 8601 (`'PT5M'`, `'P1D'`).
+`time_bucket` accepts the interval as a string in any of these forms: short (`'1s'`, `'5m'`, `'15m'`, `'1h'`, `'6h'`, `'1d'`, `'1w'`), long / Postgres-style (`'30 seconds'`, `'5 minutes'`, `'1 hour'`, `'2 hours 30 minutes'`, optionally with an `INTERVAL` prefix), ISO 8601 (`'PT5M'`, `'P1D'`), or a bare integer (milliseconds).
 
 ## Type Functions
 

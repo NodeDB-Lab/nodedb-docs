@@ -1,0 +1,170 @@
+---
+title: Geospatial & Logistics
+description: Real-time fleet tracking, OGC spatial predicates, graph-based routing, and time-stamped position history — all in NodeDB without PostGIS or a separate graph database.
+---
+
+Logistics platforms need at least three data systems: a spatial database for geographic queries, a time-series store for position history, and a graph database for route planning. NodeDB provides all three in one binary — OGC-compliant spatial predicates over an R*-tree index, a `TIME_KEY`-partitioned timeseries engine, and 13 graph algorithms over a CSR adjacency index — and they share a single snapshot.
+
+## Engines used
+
+| Engine | Role |
+|---|---|
+| **Spatial** | Fleet positions, zone boundaries, proximity queries, OGC predicates |
+| **Timeseries** | Position history, speed logs, ETA telemetry |
+| **Graph** | Road network, depot-to-destination routing, delivery sequencing |
+| **Key-Value** | Live vehicle state, driver assignments, hot-path lookups |
+
+## Real-time fleet tracking
+
+A `GEOMETRY SPATIAL_INDEX` column on a `WITH (engine='spatial')` collection gets an automatic R*-tree. Proximity queries over thousands of vehicles complete in milliseconds.
+
+```sql
+CREATE COLLECTION vehicles (
+  vehicle_id VARCHAR PRIMARY KEY,
+  location   GEOMETRY SPATIAL_INDEX,
+  heading    FLOAT,
+  speed_kmh  FLOAT,
+  updated_at TIMESTAMP
+) WITH (engine='spatial');
+
+CREATE COLLECTION zones (
+  zone_id   VARCHAR PRIMARY KEY,
+  name      VARCHAR,
+  zone_type VARCHAR,
+  boundary  GEOMETRY SPATIAL_INDEX,
+  active    BOOLEAN
+) WITH (engine='spatial');
+
+-- Update a vehicle's live position on each GPS ping
+INSERT INTO vehicles (vehicle_id, location, heading, speed_kmh, updated_at)
+VALUES ($vehicle_id, ST_Point($lon, $lat), $heading, $speed, now())
+ON CONFLICT (vehicle_id) DO UPDATE SET
+  location   = EXCLUDED.location,
+  heading    = EXCLUDED.heading,
+  speed_kmh  = EXCLUDED.speed_kmh,
+  updated_at = EXCLUDED.updated_at;
+
+-- All vehicles within 5 km of a point, recently seen
+SELECT
+  vehicle_id,
+  ST_Distance(location, ST_Point($lon, $lat)) AS distance_m,
+  speed_kmh,
+  heading
+FROM vehicles
+WHERE ST_DWithin(location, ST_Point($lon, $lat), 5000)
+  AND updated_at >= now() - INTERVAL '2 minutes'
+ORDER BY distance_m;
+```
+
+## Zone containment and geofencing
+
+Delivery zones, restricted areas, and service regions are polygons. Containment is a single OGC predicate.
+
+```sql
+-- Which active zone contains this delivery point?
+SELECT z.zone_id, z.name, z.zone_type
+FROM zones z
+WHERE ST_Contains(z.boundary, ST_Point($delivery_lon, $delivery_lat))
+  AND z.active = true;
+
+-- Deliveries per zone in the last day (spatial join)
+SELECT z.name, count(d.id) AS deliveries
+FROM deliveries d
+JOIN zones z ON ST_Contains(z.boundary, d.delivery_point)
+WHERE d.delivered_at >= now() - INTERVAL '1 day'
+GROUP BY z.name
+ORDER BY deliveries DESC;
+```
+
+## Position history — Timeseries engine
+
+Every GPS ping is appended to a timeseries collection for audit, replay, and ETA recalculation — without bloating the live-position spatial index.
+
+```sql
+CREATE COLLECTION position_history (
+  ts          TIMESTAMP TIME_KEY,
+  vehicle_id  VARCHAR,
+  location    GEOMETRY SPATIAL_INDEX,
+  speed_kmh   FLOAT,
+  odometer_km FLOAT
+) WITH (engine='timeseries', partition_by='1d', retention='365d');
+
+INSERT INTO position_history (ts, vehicle_id, location, speed_kmh, odometer_km)
+VALUES (now(), $vehicle_id, ST_Point($lon, $lat), $speed, $odometer);
+
+-- Reconstruct a vehicle's route for a shift
+SELECT ts, location, speed_kmh
+FROM position_history
+WHERE vehicle_id = $vehicle_id
+  AND ts BETWEEN $shift_start AND $shift_end
+ORDER BY ts;
+
+-- Average speed per hour to surface traffic patterns
+SELECT time_bucket('1h', ts) AS hour, vehicle_id, avg(speed_kmh) AS avg_speed
+FROM position_history
+WHERE ts >= now() - INTERVAL '7 days'
+GROUP BY hour, vehicle_id;
+```
+
+## Graph-based routing
+
+The road network is stored as graph edges overlaid on a document collection. NodeDB's `GRAPH PATH` does hop-shortest paths; `GRAPH ALGO SSSP` (Dijkstra) does weighted single-source shortest paths over an edge cost property — no separate graph database.
+
+```sql
+CREATE COLLECTION road_network;   -- holds the nodes; edges are an overlay
+
+-- Each road segment is a weighted edge
+GRAPH INSERT EDGE IN 'road_network' FROM $node_a TO $node_b TYPE 'road'
+  PROPERTIES { distance_m: 120, travel_time_s: 14 };
+
+-- Shortest hop path between two nodes along 'road' edges
+GRAPH PATH FROM $depot_node TO $dest_node MAX_DEPTH 50 LABEL 'road';
+
+-- Weighted shortest paths from a depot to every reachable node (Dijkstra)
+GRAPH ALGO SSSP ON road_network FROM $depot_node;
+```
+
+## Delivery sequencing — cross-engine query
+
+Combine spatial proximity (which deliveries fall in which zone) with a sequencing pass (visit order within each zone) in one query.
+
+```sql
+WITH zone_deliveries AS (
+  SELECT
+    d.id            AS delivery_id,
+    d.address_point,
+    z.zone_id,
+    z.depot_point
+  FROM deliveries d
+  JOIN zones z ON ST_Contains(z.boundary, d.address_point)
+  WHERE d.scheduled_date = current_date
+    AND d.status = 'pending'
+)
+SELECT
+  zone_id,
+  row_number() OVER (
+    PARTITION BY zone_id
+    ORDER BY ST_Distance(address_point, depot_point)
+  ) AS visit_order,
+  delivery_id,
+  address_point
+FROM zone_deliveries
+ORDER BY zone_id, visit_order;
+```
+
+<Callout kind="tip" title="Spatial + Graph in one process">
+Spatial and Graph share the same global surrogate identity space, so you can match a road node by geographic proximity (Spatial R*-tree) and immediately run a traversal or `GRAPH ALGO SSSP` from it — no ID translation, no network round-trip between engines.
+</Callout>
+
+## Live ETAs via LIVE SELECT
+
+Push position changes to rider apps the moment a vehicle moves — no polling.
+
+```sql
+-- The rider app subscribes to one vehicle's position stream
+LIVE SELECT vehicle_id, location, speed_kmh FROM vehicles
+WHERE vehicle_id = $vehicle_id;
+
+-- On each GPS ping the subscriber receives the new row, recomputes the ETA
+-- against the routing graph, and pushes it to the app.
+```

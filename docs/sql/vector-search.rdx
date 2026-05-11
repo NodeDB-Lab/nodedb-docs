@@ -150,11 +150,22 @@ LIMIT 10;
 
 Reciprocal Rank Fusion merges BM25 text results with vector similarity in a single pass.
 
-## Multi-Vector
+## Multiple vector columns per collection
 
-Collections can have multiple vector indexes on different embedding columns:
+A collection can carry several vector indexes, one per embedding column — name
+the column in parentheses after the collection. Each index gets its own metric
+and parameters; queries pick the column they search:
 
 ```sql
-CREATE VECTOR INDEX idx_text ON products METRIC cosine DIM 384;
-CREATE VECTOR INDEX idx_image ON products METRIC cosine DIM 512;
+CREATE VECTOR INDEX idx_text  ON products (text_embedding)  METRIC cosine DIM 384;
+CREATE VECTOR INDEX idx_image  ON products (image_embedding) METRIC cosine DIM 512;
+
+-- Search the text-embedding index:
+SELECT id FROM products ORDER BY text_embedding  <=> $text_vec  LIMIT 10;
+-- ...or the image-embedding index:
+SELECT id FROM products ORDER BY image_embedding <-> $image_vec LIMIT 10;
 ```
+
+Omitting `(<column>)` targets the collection's default (unnamed) vector field —
+fine when there's only one embedding column (as in the `CREATE VECTOR INDEX
+idx_embed ON articles ...` examples above).

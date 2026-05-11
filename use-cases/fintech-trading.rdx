@@ -1,0 +1,172 @@
+---
+title: Fintech & Trading
+description: Tick ingestion, OHLCV aggregates, bitemporal audit ledgers, and risk models — unified in NodeDB without Kafka fan-out or separate OLAP clusters.
+---
+
+Financial systems typically spread across a time-series database for tick data, a columnar store for analytics, a strict relational database for ledger records, and a key-value cache for positions. NodeDB unifies all four workloads, adds bitemporal support for regulatory audit trails, and handles the ingestion throughput fintech demands.
+
+## Engines used
+
+| Engine | Role |
+|---|---|
+| **Timeseries** | Tick ingestion, OHLCV, continuous aggregates, retention |
+| **Columnar** | Risk models, portfolio analytics, aggregation-heavy OLAP |
+| **Key-Value** | Current positions, order-book snapshots, hot-path cache |
+| **Document (strict)** | Immutable transaction records, bitemporal audit ledger |
+
+## Tick ingestion and OHLCV aggregates
+
+The Timeseries engine is append-only with per-column compression, a `TIME_KEY` column driving partition-by-time and block skip, and built-in retention.
+
+```sql
+CREATE COLLECTION ticks (
+  ts      TIMESTAMP TIME_KEY,
+  symbol  VARCHAR,
+  price   FLOAT,
+  volume  BIGINT
+) WITH (engine='timeseries', partition_by='1d', retention='90d');
+
+-- Ingest ticks (batch insert for throughput)
+INSERT INTO ticks (ts, symbol, price, volume) VALUES
+  ('2026-01-15 09:30:00.123', 'AAPL', 185.42, 1200),
+  ('2026-01-15 09:30:00.456', 'AAPL', 185.45,  800);
+
+-- 1-minute OHLCV bars
+SELECT DISTINCT
+  time_bucket('1m', ts)     AS bucket,
+  symbol,
+  first_value(price) OVER w_ord AS open,
+  max(price)         OVER w     AS high,
+  min(price)         OVER w     AS low,
+  last_value(price)  OVER w_ord AS close,
+  sum(volume)        OVER w     AS volume
+FROM ticks
+WHERE symbol = $symbol
+  AND ts >= now() - INTERVAL '1 hour'
+WINDOW
+  w     AS (PARTITION BY time_bucket('1m', ts), symbol),
+  w_ord AS (w ORDER BY ts ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+ORDER BY bucket DESC;
+```
+
+## Bitemporal audit ledger
+
+Regulators demand both when a transaction occurred (valid time) and when it was recorded in the system (system time). NodeDB tracks system time *in the key* (derived from the WAL LSN at Raft commit) and valid time *in the value* — no application-side audit table.
+
+```sql
+-- Bitemporal transaction ledger on the strict Document engine
+CREATE COLLECTION transactions (
+  id          UUID DEFAULT gen_uuid_v7(),
+  account_id  UUID,
+  symbol      VARCHAR,
+  quantity    DECIMAL,
+  price       DECIMAL,
+  side        VARCHAR,
+  executed_at TIMESTAMP
+) WITH (engine='document_strict', bitemporal=true);
+
+-- Record a trade with explicit valid time
+INSERT INTO transactions (account_id, symbol, quantity, price, side, executed_at, valid_time)
+VALUES ($account_id, 'MSFT', 100, 374.50, 'BUY',
+        '2026-01-15 10:00:00', '2026-01-15 10:00:00');
+
+-- Regulatory query: account state as the database recorded it on a past day,
+-- valid as of noon that day. Times are milliseconds since the Unix epoch.
+SELECT symbol, quantity, price, side, executed_at
+FROM transactions
+AS OF SYSTEM TIME 1768521599000   -- 2026-01-15 23:59:59 UTC
+AS OF VALID  TIME 1768478400000   -- 2026-01-15 12:00:00 UTC
+WHERE account_id = $account_id
+ORDER BY executed_at;
+
+-- Full lineage of a single transaction in system-time order
+SELECT id, side, quantity, price, system_time
+FROM transactions
+AS OF SYSTEM TIME NULL   -- special: returns every version
+WHERE id = $txn_id
+ORDER BY system_time ASC;
+```
+
+## Current positions — Key-Value hot path
+
+The KV engine provides O(1) point lookups for current position state, updated on every fill.
+
+```sql
+CREATE COLLECTION positions (key TEXT PRIMARY KEY) WITH (engine='kv');
+
+-- Upsert the position record on a fill
+UPSERT INTO positions
+  { key: $account_symbol, symbol: $symbol, quantity: $qty, cost_basis: $cost_basis, updated_at: now() };
+
+-- Atomic running-quantity adjustment without read-modify-write
+SELECT KV_INCR_FLOAT('positions', $account_symbol_qty_key, $delta_qty);
+
+-- Single-millisecond position lookup
+SELECT * FROM positions WHERE key = $account_symbol;
+```
+
+## Portfolio risk analytics — Columnar engine
+
+Risk calculations scan every position in a portfolio, applying factor models across millions of rows. The Columnar engine with predicate pushdown and per-column compression handles this without a separate OLAP cluster.
+
+```sql
+CREATE COLLECTION portfolio_risk (
+  account_id      UUID,
+  as_of_date      TIMESTAMP TIME_KEY,
+  market_value    DECIMAL,
+  beta            FLOAT,
+  daily_pnl       DECIMAL,
+  position_status VARCHAR
+) WITH (engine='columnar');
+
+-- Value-at-Risk across all active positions
+SELECT
+  account_id,
+  sum(market_value)                      AS total_exposure,
+  sum(market_value * beta)               AS beta_adjusted,
+  approx_percentile(daily_pnl, 0.05)     AS var_95
+FROM portfolio_risk
+WHERE as_of_date >= now() - INTERVAL '1 day'
+  AND position_status = 'active'
+GROUP BY account_id
+HAVING sum(market_value) > 100000;
+```
+
+## Cross-engine P&L attribution
+
+One query joins the timeseries tick data with the KV position record — zero network hops between engines, one shared snapshot.
+
+```sql
+-- Intraday unrealised P&L: latest tick price vs. cost basis
+SELECT
+  p.value ->> 'symbol'                AS symbol,
+  (p.value ->> 'quantity')::numeric   AS quantity,
+  (p.value ->> 'cost_basis')::numeric AS cost_basis,
+  t.last_price,
+  ((t.last_price - (p.value ->> 'cost_basis')::numeric)
+    * (p.value ->> 'quantity')::numeric) AS unrealised_pnl
+FROM positions p
+CROSS JOIN LATERAL (
+  SELECT price AS last_price
+  FROM ticks
+  WHERE symbol = p.value ->> 'symbol'
+  ORDER BY ts DESC
+  LIMIT 1
+) t;
+```
+
+<Callout kind="tip" title="Continuous aggregates">
+Define a continuous aggregate once and NodeDB refreshes it incrementally as new ticks arrive — no cron job, no separate aggregation pipeline:
+
+```sql
+CREATE CONTINUOUS AGGREGATE ohlcv_1m ON ticks AS
+  SELECT time_bucket('1m', ts) AS bucket, symbol,
+         min(price) AS low, max(price) AS high, sum(volume) AS volume
+  FROM ticks GROUP BY bucket, symbol
+WITH (refresh_interval = '5s');
+```
+</Callout>
+
+## Why not a dedicated time-series database?
+
+Purpose-built time-series databases force all non-tick data — ledger records, positions, risk factors — into external systems. Cross-system queries (tick price × position quantity × risk factor) travel over the network and require application-side joins. NodeDB keeps every engine co-located: cross-engine queries reduce to in-process roaring-bitmap intersections over a shared surrogate identity space.
