@@ -53,7 +53,7 @@ Every native connection performs a versioned handshake before any opcode frame. 
 | `magic`          | 4 B                  | `NDBA`                                                |
 | `proto_version`  | u16                  | Negotiated version (`max(proto_min_client, proto_min_server) ≤ v ≤ min(proto_max_client, proto_max_server)`) |
 | `capabilities`   | u64                  | Server-side capability bitmask                        |
-| `server_version` | length-prefixed UTF-8 | Build identifier (e.g. `"nodedb 0.1.0+abc123"`)      |
+| `server_version` | length-prefixed UTF-8 | Build identifier (e.g. `"NodeDB/0.3.0"`)             |
 | `limits`         | `Limits` struct      | Per-op caps the server enforces (see below)           |
 
 ### `HelloErrorFrame`

@@ -5,7 +5,19 @@ description: WebSocket-based CRDT sync for NodeDB-Lite clients on phones, browse
 
 # Sync Protocol
 
-WebSocket-based sync on port 9090 for NodeDB-Lite clients. CRDT deltas flow between edge devices and Origin.
+WebSocket-based sync on port 9090 for NodeDB-Lite clients. CRDT deltas flow between edge devices and Origin for all eight storage engines and their overlays.
+
+## Supported Collections
+
+All collection engines participate in sync:
+
+- **Document** (schemaless + strict)
+- **Key-Value**
+- **Columnar, Timeseries, Spatial**
+- **Vector** and **Array**
+- **Graph** and **Full-Text Search** overlays on synced collections
+
+Schema changes (new columns, new collections) are discovered automatically by connected Lite clients after the Origin catalog commit.
 
 ## How It Works
 
@@ -18,22 +30,24 @@ WebSocket-based sync on port 9090 for NodeDB-Lite clients. CRDT deltas flow betw
 
 ## Shape Subscriptions
 
-Devices subscribe to a subset of data:
+Devices subscribe to a subset of data via shape subscriptions (wire-level sync feature, not SQL):
 
-```sql
--- Client only receives data matching this filter
-SUBSCRIBE SHAPE ON users WHERE user_id = $me;
+```
+Shape subscription: users WHERE user_id = $me
 ```
 
-Changes within a device's shape are pushed in real time. Changes outside the shape are not sent.
+The client only receives data matching this filter. Changes within a device's shape are pushed in real time. Changes outside the shape are not sent.
 
 ## Compensation Hints
 
 If a local write violates a constraint on Origin, a typed `CompensationHint` is sent back:
 
-- `Rename` — duplicate key detected
-- `Merge` — concurrent edits to the same document
-- `CreateParent` — FK target doesn't exist
-- `Adjust` — CHECK constraint violation
+- `UniqueViolation` — duplicate key detected
+- `ForeignKeyMissing` — FK target doesn't exist
+- `SchemaViolation` — CHECK constraint or type rule failed
+- `IntegrityViolation` — other integrity-rule violation
+- `PermissionDenied` — insufficient privilege
+- `RateLimited` — quota or rate limit exceeded
+- `Custom` — application-specific handling
 
 The application handles the conflict — no silent data loss.

@@ -41,10 +41,10 @@ Devices can create drafts and submit them. Approval requires `manager` role — 
 
 ## Tax Rate Sync
 
-Sync relevant jurisdiction rates to devices via shape subscriptions:
+Sync relevant jurisdiction rates to devices via shape subscriptions. The device client subscribes to:
 
-```sql
-SUBSCRIBE SHAPE ON tax_rates WHERE jurisdiction IN ('US-CA', 'US-NY');
+```
+Shape: tax_rates WHERE jurisdiction IN ('US-CA', 'US-NY')
 ```
 
 Lookup at invoice time with temporal query. Reconcile on sync if rates changed.

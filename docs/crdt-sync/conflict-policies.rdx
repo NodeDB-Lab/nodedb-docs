@@ -7,27 +7,30 @@ description: Declarative per-collection conflict resolution strategies.
 
 ## Setting Policies
 
+Conflict policies are set per constraint. When a sync writes to a collection violates a constraint, the policy determines how to handle it:
+
 ```sql
-CREATE COLLECTION notes WITH (conflict_policy = 'lww');
-CREATE COLLECTION profiles WITH (conflict_policy = 'field_merge');
+ALTER COLLECTION notes SET ON CONFLICT LAST_WRITER_WINS FOR UNIQUE;
+ALTER COLLECTION profiles SET ON CONFLICT CASCADE_DEFER FOR FOREIGN_KEY;
 ```
 
 ## Available Policies
 
-| Policy        | Behavior                                         |
-| ------------- | ------------------------------------------------ |
-| `lww`         | Last-writer-wins based on timestamp (default)    |
-| `field_merge` | Per-field merge — concurrent edits to different fields merge automatically |
-
-## Field-Level Merge
-
-With `field_merge`, concurrent edits to different fields on the same document are both preserved. Concurrent edits to the same field use the LWW tiebreaker.
+| Policy           | Behavior                                         |
+| ---------------- | ------------------------------------------------ |
+| `LAST_WRITER_WINS` | Concurrent writes to the same field: timestamp-latest wins (default) |
+| `RENAME_SUFFIX` (alias `RENAME_APPEND_SUFFIX`) | Duplicate key: append suffix to ID and retry insert |
+| `CASCADE_DEFER` | Foreign key missing: defer validation until next cascade check |
+| `ESCALATE_TO_DLQ` | Violation: move the row to a dead-letter queue for manual review |
 
 ## Per-Collection Configuration
 
-The `PolicyRegistry` stores resolution strategies per collection. Each collection can have its own policy independent of others.
+Policies are stored per collection and per constraint type. Each collection can have different policies for UNIQUE, FOREIGN_KEY, and CHECK constraints:
 
 ```sql
-ALTER COLLECTION notes SET conflict_policy = 'field_merge';
+ALTER COLLECTION notes SET ON CONFLICT LAST_WRITER_WINS FOR UNIQUE;
+ALTER COLLECTION orders SET ON CONFLICT CASCADE_DEFER FOR FOREIGN_KEY;
 SHOW CONFLICT POLICY ON notes;
 ```
+
+`CUSTOM` policies are configured via the native protocol and are not available via SQL DDL.

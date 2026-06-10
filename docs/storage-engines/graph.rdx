@@ -71,15 +71,18 @@ RETURN a.name, b.name, c.name;
 ## 13 Algorithms
 
 ```sql
-GRAPH ALGO PAGERANK ON social DAMPING 0.85 ITERATIONS 20 TOLERANCE 1e-7;
-GRAPH ALGO WCC ON knowledge_graph;
-GRAPH ALGO SSSP ON routes FROM 'city:chicago';
-GRAPH ALGO COMMUNITY ON products ITERATIONS 10 RESOLUTION 1.0;
-GRAPH ALGO BETWEENNESS ON network SAMPLE 500;
-GRAPH ALGO KCORE ON collaboration;
-GRAPH ALGO TRIANGLES ON social MODE global;
-GRAPH ALGO DIAMETER ON web;
+GRAPH ALGO PAGERANK ON 'social' DAMPING 0.85 ITERATIONS 20 TOLERANCE 1e-7;
+GRAPH ALGO PAGERANK ON 'social' PERSONALIZATION {"alice": 1.0, "bob": 0.5};
+GRAPH ALGO WCC ON 'knowledge_graph';
+GRAPH ALGO SSSP ON 'routes' FROM 'city:chicago';
+GRAPH ALGO COMMUNITY ON 'products' ITERATIONS 10 RESOLUTION 1.0;
+GRAPH ALGO BETWEENNESS ON 'network' SAMPLE 500;
+GRAPH ALGO KCORE ON 'collaboration';
+GRAPH ALGO TRIANGLES ON 'social' MODE global;
+GRAPH ALGO DIAMETER ON 'web';
 ```
+
+**Personalized PageRank** biases node importance toward seed nodes via the `PERSONALIZATION` clause — a JSON object mapping node IDs to seed weights.
 
 | Algorithm         | Computes                                     |
 | ----------------- | -------------------------------------------- |
@@ -115,3 +118,20 @@ GRAPH RAG FUSION ON entities
 1. Vector search finds semantically similar seed nodes
 2. BFS expands seeds along edges
 3. RRF merges vector rank with graph hop distance
+
+## Graph Statistics
+
+The collection name is an optional single-quoted literal:
+
+```sql
+SHOW GRAPH STATS;                                       -- tenant-wide aggregate
+SHOW GRAPH STATS 'collection_name';
+SHOW GRAPH STATS 'collection_name' VERBOSE;
+SHOW GRAPH STATS 'collection_name' AS OF SYSTEM TIME <ms>;
+```
+
+Returns live edge counters and optional cardinality details:
+
+- Omitting the collection name returns tenant-wide aggregate edge counts
+- `VERBOSE` adds a per-edge-type (label) breakdown — one row per `(collection, label, edge_count)`
+- `AS OF SYSTEM TIME <ms>` retrieves historical counts (O(1) lookup from WAL snapshots)

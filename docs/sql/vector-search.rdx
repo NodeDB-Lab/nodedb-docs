@@ -13,7 +13,7 @@ FROM articles
 ORDER BY dist LIMIT 10;
 ```
 
-Returns the 10 nearest neighbors by the metric configured on the index (l2, cosine, inner_product, manhattan, chebyshev, hamming, jaccard, or pearson). The planner detects `ORDER BY vector_distance(...) LIMIT k` and rewrites it into an ANN top-k plan; no special `SEARCH` keyword is required.
+Returns the 10 nearest neighbors by the metric configured on the index (l2, cosine, inner_product, manhattan, chebyshev, hamming, jaccard, or pearson). The planner detects `ORDER BY vector_distance(...) LIMIT k` and rewrites it into an ANN top-k plan. The `SEARCH()` function is an alias for full-text search; vector search uses `ORDER BY vector_distance(...)` instead.
 
 ## Filtered Vector Search
 
@@ -116,6 +116,7 @@ CREATE COLLECTION corpus (
     vector_field='embedding',
     dim=384,
     metric='cosine',
+    storage_dtype='bf16',
     quantization='rabitq',
     m=32,
     ef_construction=200,
@@ -125,10 +126,11 @@ CREATE COLLECTION corpus (
 
 | Option            | Notes                                                                |
 | ----------------- | -------------------------------------------------------------------- |
-| `primary`         | `'document'` (default), `'strict'`, `'kv'`, or `'vector'`            |
+| `primary`         | `'document_schemaless'` (default), `'document_strict'`, `'kv'`, `'columnar'`, `'timeseries'`, `'spatial'`, `'vector'` |
 | `vector_field`    | Required when `primary='vector'`. Column name of the embedding.       |
 | `dim`             | Required. Embedding dimensionality.                                   |
 | `metric`          | `'cosine'`, `'l2'`, `'inner_product'`, etc.                          |
+| `storage_dtype`   | Raw HNSW storage precision: `'F32'` (4 B/dim, default), `'F16'` (2 B/dim), `'BF16'` (2 B/dim bfloat16, better dynamic range, preferred for embeddings). |
 | `quantization`    | Storage-level codec (same vocabulary as the query-time arg above).   |
 | `m`, `ef_construction` | HNSW build-time parameters.                                     |
 | `payload_indexes` | Per-field equality / range / boolean indexes over the metadata sidecar for filtered ANN. Replaces Pinecone metadata filters. |

@@ -23,6 +23,40 @@ psql -h localhost -p 6432
 - Server-side cursors (SCROLL, BACKWARD, MOVE, WITH HOLD)
 - Temporary tables (session-scoped)
 
+## Introspection & Administration
+
+### SHOW Commands
+
+```sql
+SHOW ROLES;
+SHOW STATS;                        -- alias: SHOW SERVER STATS
+SHOW METRICS;
+SHOW MEMORY;
+SHOW TENANTS WITH NAME <name>;
+```
+
+`SHOW STATS` returns live query latencies, throughput, and resource usage. `SHOW METRICS` exports Prometheus-format metrics. `SHOW MEMORY` shows per-engine memory allocation and jemalloc stats.
+
+### SET Commands
+
+Session-level configuration:
+
+```sql
+SET TENANT = '<name>' | <id> | DEFAULT;  -- superuser only — switch session tenant
+```
+
+### pg_catalog Compatibility
+
+NodeDB exposes virtual `pg_catalog` tables for Postgres-client compatibility, BI tools, and ORM introspection:
+
+- `pg_class` — Collections and materialized views
+- `pg_namespace` — Databases and schemas
+- `pg_attribute` — Collection columns and types
+- `pg_index` — Index metadata
+- `pg_type` — Data types
+
+Tools like DBeaver, Tableau, and SQLAlchemy automatically query these tables. No special setup required.
+
 ## Compatible Clients
 
 Any PostgreSQL client library: libpq, JDBC, psycopg2, node-postgres, SQLAlchemy, Prisma, Diesel, tokio-postgres, and more.

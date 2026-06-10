@@ -18,19 +18,25 @@ NodeDB bridges **AP** (available, partition-tolerant) on edge devices with **CP*
 
 ## Shape Subscriptions
 
-Devices subscribe to a subset of data — not the entire database:
+Devices subscribe to a subset of data — not the entire database. This is a wire-level sync feature (ShapeSubscribe message), not a SQL statement:
 
-```sql
-SUBSCRIBE SHAPE ON users WHERE user_id = $me;
-SUBSCRIBE SHAPE ON tax_rates WHERE jurisdiction IN ('US-CA', 'US-NY');
+```
+Shape subscription for: users WHERE user_id = $me
+Shape subscription for: tax_rates WHERE jurisdiction IN ('US-CA', 'US-NY')
 ```
 
-Changes within a device's shape are pushed in real time.
+Changes within a device's shape are pushed in real time via the sync protocol.
 
 ## Multiple Devices
 
 Multiple devices converge to the same state regardless of operation order. Loro's operation-based CRDTs guarantee eventual consistency without coordination.
 
-## Local Engine Capabilities
+## Supported Engines for Sync
 
-All eight engines work locally on NodeDB-Lite: document, KV, columnar, timeseries, spatial, vector, array, plus graph traversal and FTS overlays — with sub-millisecond reads and no network dependency.
+All eight engines now participate in CRDT sync:
+
+- **Data-bearing engines** — Document (schemaless + strict), KV, Columnar, Timeseries, Spatial, Vector, Array
+- **Overlay engines** — Graph traversal and Full-Text Search built on synced collections
+- **Schema changes** — DDL (new columns, collections) broadcast to connected Lite clients after Origin catalog commit; embedded clients auto-discover schema
+
+All engines work locally on NodeDB-Lite with sub-millisecond reads and no network dependency.

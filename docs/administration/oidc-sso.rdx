@@ -18,46 +18,32 @@ NodeDB validates JWT bearer tokens against your OIDC provider's public key set (
 Register your OIDC provider's details:
 
 ```sql
-CREATE OIDC PROVIDER okta WITH (
-    issuer      = 'https://yourorgname.okta.com/',
-    jwks_url    = 'https://yourorgname.okta.com/.well-known/oauth2/default/v1/keys',
-    audience    = 'https://nodedb.example.com',
-    claim_mapping = [
-        { claim_name = 'email', claim_value = null, effect = {
-            default_database = 'self_service'
-          } },
-        { claim_name = 'groups', claim_value = 'engineering', effect = {
-            add_databases = ['engineering_prod'],
-            add_roles = ['data_analyst']
-          } }
-    ]
-);
+CREATE OIDC PROVIDER okta ISSUER 'https://yourorgname.okta.com/' JWKS_URI 'https://yourorgname.okta.com/.well-known/oauth2/default/v1/keys' AUDIENCE 'https://nodedb.example.com'
+  CLAIM MAPPING
+    WHEN email = null SET DEFAULT_DATABASE = 1
+    WHEN groups = 'engineering' SET ADD DATABASES [2] ADD ROLES ['data_analyst'];
 ```
 
 **Fields:**
 
-| Field | Required | Meaning |
-|-------|----------|---------|
-| `issuer` | Yes | Token issuer URL (e.g., https://accounts.google.com) |
-| `jwks_url` | Yes | Public key set URL for signature validation |
-| `audience` | Yes | Expected JWT `aud` claim; mismatches are rejected |
-| `claim_mapping` | Yes | Array of rules mapping JWT claims to NodeDB identity fields |
+**Syntax:**
+- `ISSUER '<url>'` — Token issuer URL (e.g., https://accounts.google.com)
+- `JWKS_URI '<url>'` — Public key set URL for signature validation
+- `AUDIENCE '<aud>'` — (optional) Expected JWT `aud` claim; mismatches are rejected
+- `CLAIM MAPPING WHEN ... [SET DEFAULT_DATABASE = <id>] [ADD DATABASES [...]] [ADD ROLES [...]]` — Rules mapping JWT claims to NodeDB identity
 
 NodeDB fetches the JWKS once, caches it in memory, and refreshes it when:
 - A token arrives with an unknown key ID (`kid`)
 - The cache TTL expires (typically 24 hours)
-- You explicitly reload via `ALTER OIDC PROVIDER ... REFRESH JWKS`
 
 ## Claim Mapping
 
-Claim mapping rules translate JWT claims into NodeDB identity fields and access grants. Each rule specifies:
+Claim mapping rules translate JWT claims into NodeDB identity fields and access grants. Each rule in the `CLAIM MAPPING` clause specifies:
 
-- `claim_name` — JWT claim name to match (e.g., `email`, `groups`, `org_id`)
-- `claim_value` — (optional) specific value to match; if omitted, rule applies to all values
-- `effect` — what happens when the rule matches:
-  - `default_database` — set as the user's default database for queries
-  - `add_databases` — grant access to these databases
-  - `add_roles` — assign these roles to the session
+- `WHEN <claim> = '<value>'` — JWT claim name and value to match (e.g., `WHEN email = 'alice@example.com'` or `WHEN groups = 'engineering'`)
+- `SET DEFAULT_DATABASE = <db_id>` — (optional) set as the user's default database (numeric ID)
+- `ADD DATABASES [<id>, ...]` — (optional) grant access to these databases (numeric IDs)
+- `ADD ROLES ['<role>', ...]` — (optional) assign these roles to the session (quoted role names)
 
 **Example**: An Okta JWT like:
 
@@ -73,18 +59,11 @@ Claim mapping rules translate JWT claims into NodeDB identity fields and access 
 Maps to:
 
 ```sql
-claim_mapping = [
-    { claim_name = 'email', claim_value = null, effect = {
-        default_database = 'analytics'
-      } },
-    { claim_name = 'groups', claim_value = 'engineering', effect = {
-        add_databases = ['engineering_db'],
-        add_roles = ['data_analyst']
-      } },
-    { claim_name = 'groups', claim_value = 'admins', effect = {
-        add_roles = ['cluster_admin']
-      } }
-]
+CREATE OIDC PROVIDER okta ISSUER 'https://yourorgname.okta.com/' JWKS_URI 'https://...' AUDIENCE 'api'
+  CLAIM MAPPING
+    WHEN email = 'alice@acme.com' SET DEFAULT_DATABASE = 2
+    WHEN groups = 'engineering' ADD DATABASES [3] ADD ROLES ['data_analyst']
+    WHEN groups = 'admins' ADD ROLES ['cluster_admin'];
 ```
 
 The session inherits all matching rules' effects. If multiple rules grant database access, the union is used.
@@ -96,25 +75,15 @@ The session inherits all matching rules' effects. If multiple rules grant databa
 
 ## Updating a Provider
 
-Modify JWKS URL, audience, or claim mappings after creation:
+Replace the claim mapping rules after creation:
 
 ```sql
-ALTER OIDC PROVIDER okta SET (
-    audience = 'https://api.example.com'
-);
-
-ALTER OIDC PROVIDER okta SET (
-    claim_mapping = [
-        { claim_name = 'email', claim_value = null, effect = {
-            default_database = 'analytics'
-          } },
-        { claim_name = 'dept_name', claim_value = 'sales', effect = {
-            add_databases = ['sales_db'],
-            add_roles = ['sales_role']
-          } }
-    ]
-);
+ALTER OIDC PROVIDER okta SET CLAIM MAPPING
+    WHEN email = 'alice@acme.com' SET DEFAULT_DATABASE = 2
+    WHEN dept_name = 'sales' ADD DATABASES [5] ADD ROLES ['sales_role'];
 ```
+
+`ALTER OIDC PROVIDER ... SET CLAIM MAPPING` replaces the full rule set. To change the issuer, JWKS URI, or audience, drop and recreate the provider.
 
 Changes take effect immediately for new logins. Existing sessions tied to the provider remain valid until token expiry.
 
@@ -126,23 +95,14 @@ See all configured OIDC providers:
 SHOW OIDC PROVIDERS;
 ```
 
-**Output columns:**
-
-| Column | Meaning |
-|--------|---------|
-| `name` | Provider name (e.g., `okta`) |
-| `issuer` | Token issuer URL |
-| `audience` | Expected `aud` claim |
-| `jwks_url` | Public key set URL |
-| `claim_mapping` | Array of mapping rules (summary) |
-| `created_at` | Timestamp |
+**Output includes provider name, issuer, audience, JWKS URI, claim mapping rules, and creation timestamp.**
 
 ## Removing a Provider
 
 Drop a provider:
 
 ```sql
-DROP OIDC PROVIDER okta;
+DROP OIDC PROVIDER IF EXISTS okta;
 ```
 
 Existing sessions using tokens from that provider are revoked at their next request.
@@ -167,19 +127,13 @@ NodeDB validates tokens in this order:
 ### Step 1: Configure the Provider
 
 ```sql
-CREATE OIDC PROVIDER auth0 WITH (
-    issuer   = 'https://your-tenant.us.auth0.com/',
-    jwks_url = 'https://your-tenant.us.auth0.com/.well-known/jwks.json',
-    audience = 'https://api.example.com',
-    claim_mapping = [
-        { claim_name = 'email', claim_value = null, effect = {
-            default_database = 'production'
-          } },
-        { claim_name = 'https://api.example.com/roles', claim_value = 'readwrite', effect = {
-            add_roles = ['readwrite']
-          } }
-    ]
-);
+CREATE OIDC PROVIDER auth0
+  ISSUER 'https://your-tenant.us.auth0.com/'
+  JWKS_URI 'https://your-tenant.us.auth0.com/.well-known/jwks.json'
+  AUDIENCE 'https://api.example.com'
+  CLAIM MAPPING
+    WHEN email = null SET DEFAULT_DATABASE = 1
+    WHEN https://api.example.com/roles = 'readwrite' ADD ROLES ['readwrite'];
 ```
 
 ### Step 2: Get a Token from Auth0
@@ -204,14 +158,14 @@ curl -H "Authorization: Bearer eyJhbGciOi..." \
      -d '{"sql": "SELECT 1"}'
 ```
 
-Or via native protocol (e.g., with `nodedb-client`):
+Or via native protocol (e.g., with `nodedb-client`) on port 6433:
 
 ```rust
 let auth = AuthMethod::OidcBearer {
     token: "eyJhbGciOi...".to_string(),
     provider: "auth0".to_string(),
 };
-let session = nodedb_client::connect("localhost:6432", auth).await?;
+let session = nodedb_client::connect("localhost:6433", auth).await?;
 ```
 
 ### Step 4: Query as the Authenticated User
@@ -301,7 +255,7 @@ Regular users cannot modify providers.
 ## Troubleshooting
 
 **Token rejected: invalid signature**
-- JWKS cache may be stale. Manually refresh: `ALTER OIDC PROVIDER <name> REFRESH JWKS`
+- JWKS cache may be stale; it will auto-refresh on next unknown key ID
 - Check that the issuer matches exactly (including trailing `/`)
 
 **Token rejected: audience mismatch**

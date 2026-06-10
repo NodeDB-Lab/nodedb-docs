@@ -21,8 +21,8 @@ CREATE DATABASE emp_prod WITH (
 
 -- Drop database
 DROP DATABASE emp_prod;          -- errors if non-empty
-DROP DATABASE emp_prod CASCADE;  -- drops all collections
-DROP DATABASE emp_prod FORCE;    -- forces materialization of dependent clones, then drops
+DROP DATABASE emp_prod CASCADE;  -- cascades drop to all collections
+DROP DATABASE emp_prod FORCE;    -- synonym for CASCADE: forces materialization of dependent clones, then drops
 
 -- Rename database
 ALTER DATABASE emp_prod RENAME TO emp_prod_old;
@@ -86,6 +86,8 @@ GRANT DATABASE_EDITOR ON DATABASE emp_prod TO bob;
 GRANT DATABASE_READER ON DATABASE emp_prod TO charlie;
 GRANT CREATE COLLECTION ON DATABASE emp_prod TO developers_role;
 GRANT SELECT ON DATABASE emp_prod TO analysts_role;
+GRANT SELECT ON COLLECTION users TO analysts_role;
+GRANT SELECT ON TABLE users TO analysts_role;
 ALTER USER alice SET DEFAULT DATABASE emp_prod;
 
 -- API keys with database scope
@@ -99,15 +101,17 @@ ALTER SERVICE ACCOUNT sa_prod SET DATABASES (emp_prod, emp_staging);
 DROP SERVICE ACCOUNT sa_prod;
 
 -- OIDC / SSO providers
-CREATE OIDC PROVIDER corp_sso WITH (
-    issuer = 'https://idp.corp.com',
-    jwks_uri = 'https://idp.corp.com/.well-known/jwks.json',
-    audience = 'nodedb-prod'
-);
-ALTER OIDC PROVIDER corp_sso SET CLAIM MAPPING (
-    { claim: 'groups', value: 'eng', effect: 'add_databases = (emp_prod)' }
-);
-DROP OIDC PROVIDER corp_sso;
+CREATE OIDC PROVIDER corp_sso
+  ISSUER 'https://idp.corp.com'
+  JWKS_URI 'https://idp.corp.com/.well-known/jwks.json'
+  AUDIENCE 'nodedb-prod'
+  CLAIM MAPPING
+    WHEN groups = 'eng' ADD DATABASES [1];
+
+ALTER OIDC PROVIDER corp_sso SET CLAIM MAPPING
+    WHEN groups = 'eng' ADD DATABASES [1, 2];
+
+DROP OIDC PROVIDER IF EXISTS corp_sso;
 SHOW OIDC PROVIDERS;
 ```
 
@@ -202,12 +206,14 @@ CONVERT COLLECTION logs TO document_schemaless;
 
 ```sql
 CREATE INDEX idx_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_email ON users(email);
 CREATE UNIQUE INDEX ON users(username);
 CREATE VECTOR INDEX ON articles METRIC cosine DIM 384 M 16 EF_CONSTRUCTION 200;
 CREATE SEARCH INDEX ON articles FIELDS title, body ANALYZER 'english' FUZZY true;
 CREATE SPATIAL INDEX ON locations(geom);
 CREATE SORTED INDEX lb ON scores (score DESC) KEY player_id;
 DROP INDEX idx_email;
+DROP INDEX IF EXISTS idx_email;
 
 -- Rebuild all indexes on a collection (non-blocking concurrent path recommended)
 REINDEX CONCURRENTLY articles;
@@ -218,6 +224,8 @@ REINDEX INDEX idx_email CONCURRENTLY users;
 -- Blocking rebuild (holds write lock for the duration — use only in maintenance windows)
 REINDEX articles;
 ```
+
+`CREATE INDEX ... IF NOT EXISTS` and `DROP INDEX ... IF EXISTS` make DDL idempotent — re-running a script does not error if the index already exists (or does not exist).
 
 `REINDEX CONCURRENTLY` builds the new index in a shadow location while reads and writes continue against the live index. Cutover is a single atomic swap. Supported for HNSW vector indexes, FTS LSM indexes, and Graph CSR indexes. Secondary B-tree indexes use the blocking path regardless of `CONCURRENTLY` (rebuild is fast for B-tree).
 

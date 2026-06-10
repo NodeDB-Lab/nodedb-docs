@@ -11,8 +11,8 @@ description: Role-based access control with GRANT, REVOKE, and built-in role hie
 | -------------- | ------------------------------ |
 | `readonly`     | SELECT on all collections      |
 | `readwrite`    | SELECT, INSERT, UPDATE, DELETE |
-| `admin`        | All operations + DDL           |
 | `tenant_admin` | Admin within a tenant          |
+| `monitor`      | Read metrics, health, audit; no data access |
 | `superuser`    | Unrestricted (cross-tenant)    |
 | `cluster_admin` | Cluster-wide admin operations without full superuser capabilities |
 
@@ -78,18 +78,26 @@ Certain administrative DDL operations are gated by required roles. Attempting an
 
 ```sql
 CREATE ROLE analyst;
+CREATE ROLE IF NOT EXISTS analyst;
 CREATE ROLE data_engineer;
+DROP ROLE analyst;
+DROP ROLE IF EXISTS analyst;
 ```
+
+`CREATE ROLE ... IF NOT EXISTS` and `DROP ROLE ... IF EXISTS` make role DDL idempotent.
 
 ## Granting Permissions
 
 ```sql
-GRANT SELECT ON orders TO analyst;
-GRANT INSERT, UPDATE ON orders TO data_engineer;
+GRANT SELECT ON COLLECTION orders TO analyst;
+GRANT SELECT ON TABLE orders TO analyst;
+GRANT INSERT, UPDATE ON COLLECTION orders TO data_engineer;
 GRANT ALL ON orders TO admin;
 GRANT EXECUTE ON FUNCTION full_name TO analyst;
 GRANT BACKUP ON TENANT acme TO ops_user;
 ```
+
+`ON COLLECTION <name>` and `ON TABLE <name>` are explicit object-type keywords (default is collection if neither specified).
 
 ## Revoking
 

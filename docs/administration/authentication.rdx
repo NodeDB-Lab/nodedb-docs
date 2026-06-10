@@ -11,8 +11,13 @@ NodeDB supports multiple authentication methods simultaneously.
 
 ```sql
 CREATE USER alice WITH PASSWORD 'strong_password';
+CREATE USER IF NOT EXISTS alice WITH PASSWORD 'strong_password';
 CREATE USER bob WITH PASSWORD 'secret' ROLE readonly;
+DROP USER alice;
+DROP USER IF EXISTS alice;
 ```
+
+`CREATE USER ... IF NOT EXISTS` and `DROP USER ... IF EXISTS` make user DDL idempotent.
 
 ```bash
 psql -h localhost -p 6432 -U alice
@@ -20,29 +25,26 @@ psql -h localhost -p 6432 -U alice
 
 ## API Keys
 
-### Basic API Key Usage
+API keys enable programmatic access for services and applications:
 
 ```sql
-CREATE API KEY 'my-service' ROLE readwrite;
-DROP API KEY 'my-service';
+CREATE API KEY FOR alice [EXPIRES <seconds>] [WITH SCOPES '<scope>', ...] [WITH DATABASES (<db1>, <db2>)];
+LIST API KEYS FOR alice;        -- or SHOW API KEYS FOR alice
+REVOKE API KEY <key_id>;
 ```
+
+- `FOR <user>` is mandatory
+- Key is shown once; store it securely
+- `EXPIRES` is seconds until revocation (optional)
+- `WITH SCOPES` restricts operations (e.g., 'read:collections', 'write:data')
+- `WITH DATABASES` restricts collection access (optional; empty = user's default databases)
+
+Example:
 
 ```bash
-curl -H "Authorization: Bearer <api-key>" http://localhost:6480/v1/query
+curl -H "Authorization: Bearer <api-key>" http://localhost:6480/v1/query \
+     -d '{"sql": "SELECT 1"}'
 ```
-
-### Database Scoping
-
-API keys can be scoped to specific databases, restricting the key's access:
-
-```sql
-CREATE API KEY 'web-app' FOR user alice WITH DATABASES (prod_orders, prod_users);
-CREATE API KEY 'analytics' FOR user bob WITH DATABASES (analytics_db);
-
-SHOW API KEYS;    -- displays accessible_databases for each key
-```
-
-An API key with an empty database list inherits the owner's accessible databases at bind time. A non-empty list is an explicit restriction — the key can only access the listed databases.
 
 ### Service Accounts
 
@@ -52,7 +54,7 @@ Service accounts are privileged accounts designed for application-to-database co
 CREATE SERVICE ACCOUNT etl_worker FOR DATABASE analytics_db;
 ALTER SERVICE ACCOUNT etl_worker SET DATABASES (analytics_db, staging_db);
 
-CREATE API KEY 'etl-key' FOR SERVICE ACCOUNT etl_worker;
+CREATE API KEY FOR etl_worker WITH DATABASES (analytics_db);
 ```
 
 Service accounts are scoped to a single tenant (inherited from the caller) and support per-database access control, inheriting or narrowing their scope when API keys are created on them.

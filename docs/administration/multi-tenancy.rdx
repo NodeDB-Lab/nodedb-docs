@@ -24,6 +24,16 @@ CREATE TENANT acme;
 CREATE USER alice WITH PASSWORD 'secret' ROLE readwrite TENANT 42;
 ```
 
+### Superuser Session Tenant Switching
+
+A superuser can switch the session tenant at runtime:
+
+```sql
+SET TENANT = 'acme' | 1234 | DEFAULT;
+```
+
+This changes which tenant's data is visible for subsequent queries in the session. Non-superusers cannot use `SET TENANT`.
+
 ## Quotas
 
 ```sql

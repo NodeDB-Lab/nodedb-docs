@@ -9,18 +9,25 @@ SQL constraints are checked on Origin at sync time, not on the device. This keep
 
 ## Enforced Constraints
 
-- **UNIQUE** — Duplicate key → `CompensationHint::Rename` or `CompensationHint::Merge`
-- **FOREIGN KEY** — Dangling reference → `CompensationHint::CreateParent` or `CompensationHint::Discard`
-- **CHECK** — Constraint violation → `CompensationHint::Adjust`
+- **UNIQUE** — Duplicate key → `CompensationHint::UniqueViolation`
+- **FOREIGN KEY** — Dangling reference → `CompensationHint::ForeignKeyMissing`
+- **CHECK / schema** — Type or CHECK violation → `CompensationHint::SchemaViolation`
+- **Integrity** — Other integrity-rule violation → `CompensationHint::IntegrityViolation`
+- **Permission** — Insufficient privilege → `CompensationHint::PermissionDenied`
+- **Rate limit** — Quota exceeded → `CompensationHint::RateLimited`
+- **Custom** — Application-defined handling → `CompensationHint::Custom`
 
 ## Compensation Hints
 
 When a local write violates a constraint on Origin, a typed `CompensationHint` is sent back to the device. The application handles the conflict:
 
-- **Rename** — The document ID or key already exists. Offer the user to rename.
-- **Merge** — Concurrent edits to the same document. Offer to merge.
-- **CreateParent** — A FK target doesn't exist. Offer to create it or discard the child.
-- **Adjust** — A CHECK constraint failed. Show the violation and let the user fix it.
+- **UniqueViolation** — The document ID or key already exists. Offer the user to rename or merge.
+- **ForeignKeyMissing** — A FK target doesn't exist. Offer to create it or discard the child.
+- **SchemaViolation** — A CHECK constraint or type rule failed. Show the violation and let the user fix it.
+- **IntegrityViolation** — Another integrity rule was violated. Surface the error for manual resolution.
+- **PermissionDenied** — The operation exceeds the user's role. Show the denial and suggest re-authentication.
+- **RateLimited** — A quota or rate limit was exceeded. Retry after cooldown.
+- **Custom** — Application-specific handling via custom compensation logic.
 
 No silent data loss — the application always decides.
 

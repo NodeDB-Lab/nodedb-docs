@@ -43,10 +43,11 @@ FROM cpu_metrics WHERE ts > now() - INTERVAL '24 hours';
 Incrementally maintained views — no full re-scan on refresh:
 
 ```sql
-CREATE CONTINUOUS AGGREGATE cpu_hourly ON cpu_metrics AS
-    SELECT time_bucket('1 hour', ts) AS hour, host, AVG(cpu_usage), ts_percentile(cpu_usage, 0.99)
-    FROM cpu_metrics GROUP BY hour, host
-WITH (refresh_interval = '1m');
+CREATE CONTINUOUS AGGREGATE cpu_hourly ON cpu_metrics
+  BUCKET '1 hour'
+  AGGREGATE time_bucket('1 hour', ts) AS hour, host, AVG(cpu_usage), ts_percentile(cpu_usage, 0.99)
+  GROUP BY hour, host
+  WITH (refresh_interval = '1m');
 
 REFRESH CONTINUOUS AGGREGATE cpu_hourly;
 ```

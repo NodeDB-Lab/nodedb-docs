@@ -50,14 +50,30 @@ FROM articles
 LIMIT 10;
 ```
 
-## Quantization Selection
+## Quantization & Storage Precision
 
-| Type        | Memory (384d) | Recall  | Best for                   |
-| ----------- | ------------- | ------- | -------------------------- |
-| HNSW (FP32) | ~1.5 KB       | ~99%    | < 1M vectors, max accuracy |
-| HNSW + SQ8  | ~384 B        | ~98%    | 1-10M vectors              |
-| HNSW + PQ   | ~96 B         | ~95%    | 10-50M vectors             |
-| IVF-PQ      | ~16 B         | ~85-95% | 50M+ vectors               |
+**Storage Precision** (`storage_dtype` — raw HNSW structural storage):
+
+| Type    | Bytes/dim | Best for                           |
+| ------- | --------- | ---------------------------------- |
+| `F32`   | 4         | Maximum accuracy, small indexes    |
+| `F16`   | 2         | Balanced memory vs accuracy        |
+| `BF16`  | 2         | Better dynamic range than F16 (preferred for embeddings) |
+
+**Quantization** (`quantization` — index-level compression, independent of storage_dtype):
+
+Codes are traversed for speed, then top candidates are re-ranked against full-precision vectors. Memory is the per-vector code size at 384 dimensions; smaller codes trade recall for footprint and scale.
+
+| `quantization` | Code size (384d)        | Best for                                  |
+| -------------- | ----------------------- | ----------------------------------------- |
+| `none`         | 1536 B (`dim×4`)        | < 1M vectors, maximum accuracy            |
+| `sq8`          | 384 B (`dim×1`)         | 1–10M vectors, near-lossless              |
+| `pq`           | `m` B (default `m`=16)  | 10M+ vectors, classic Product Quantization |
+| `opq`          | `m` B (rotation + PQ)   | PQ + learned rotation, minor accuracy bump |
+| `binary`       | 48 B (`dim/8`)          | Massive scale, sign-bit asymmetric search |
+| `rabitq`       | 48 B + scalars          | 1-bit frontier with bounded error         |
+| `bbq`          | 62 B (`dim/8` + 14 B)   | Centroid-asymmetric 1-bit + corrective    |
+| `ternary`      | ~77 B (`dim/5`)         | BitNet b1.58 trit-packed                   |
 
 ## How It Works
 

@@ -45,17 +45,20 @@ MATCH (a:Person)-[:knows]->(b:Person) OPTIONAL MATCH (b)-[:works_at]->(c:Company
 ## Algorithms
 
 ```sql
-GRAPH ALGO PAGERANK ON social DAMPING 0.85 ITERATIONS 20 TOLERANCE 1e-7;
-GRAPH ALGO WCC ON knowledge_graph;
-GRAPH ALGO SSSP ON routes FROM 'city:chicago';
-GRAPH ALGO COMMUNITY ON products ITERATIONS 10 RESOLUTION 1.0;
-GRAPH ALGO BETWEENNESS ON network SAMPLE 500;
-GRAPH ALGO KCORE ON collaboration;
-GRAPH ALGO TRIANGLES ON social MODE global;
-GRAPH ALGO DIAMETER ON web;
+GRAPH ALGO PAGERANK ON 'social' DAMPING 0.85 ITERATIONS 20 TOLERANCE 1e-7;
+GRAPH ALGO PAGERANK ON 'social' DAMPING 0.85 PERSONALIZATION {"alice": 1.0, "bob": 0.5};
+GRAPH ALGO WCC ON 'knowledge_graph';
+GRAPH ALGO SSSP ON 'routes' FROM 'city:chicago';
+GRAPH ALGO COMMUNITY ON 'products' ITERATIONS 10 RESOLUTION 1.0;
+GRAPH ALGO BETWEENNESS ON 'network' SAMPLE 500;
+GRAPH ALGO KCORE ON 'collaboration';
+GRAPH ALGO TRIANGLES ON 'social' MODE global;
+GRAPH ALGO DIAMETER ON 'web';
 ```
 
-Available: `pagerank`, `wcc`, `label_propagation`, `lcc`, `sssp`, `betweenness`, `closeness`, `harmonic`, `degree`, `louvain`, `triangles`, `diameter`, `kcore`.
+Available: `PAGERANK`, `WCC`, `COMMUNITY` (or `LABEL_PROPAGATION` alias), `LCC`, `SSSP`, `BETWEENNESS`, `CLOSENESS`, `HARMONIC`, `DEGREE`, `LOUVAIN`, `TRIANGLES`, `DIAMETER`, `KCORE`.
+
+**Personalized PageRank** uses the optional `PERSONALIZATION` clause to bias node importance toward specified seed nodes. The JSON object maps node IDs to seed weights (higher weight = more biased teleport probability toward that node). Example: `PERSONALIZATION {"alice": 1.0, "bob": 0.5}` makes PageRank favor paths leading to Alice twice as much as Bob.
 
 ## GraphRAG
 
