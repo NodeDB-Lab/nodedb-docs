@@ -25,7 +25,7 @@
           '<a class="ndb-nav-link" href="/use-cases">Use Cases</a>' +
           '<a class="ndb-nav-icon" href="' + github + '" target="_blank" rel="noopener" aria-label="GitHub">' + GITHUB + '</a>' +
           '<a class="ndb-nav-icon" href="' + discord + '" target="_blank" rel="noopener" aria-label="Discord">' + DISCORD + '</a>' +
-          '<a class="ndb-nav-cta" href="#waitlist">Join Waitlist</a>' +
+          '<a class="ndb-nav-cta" href="#get-started">Get Started</a>' +
         "</div>" +
       "</nav>";
   }

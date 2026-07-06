@@ -22,6 +22,15 @@
       '  <span class="cw-kw">FINAL_TOP_K</span>     <span class="cw-nm">10</span>\n' +
       '  <span class="cw-kw">RRF_K</span>           (<span class="cw-nm">60.0</span>, <span class="cw-nm">35.0</span>)\n' +
       '  <span class="cw-kw">MAX_VISITED</span>     <span class="cw-nm">1000</span>;',
+    "quickstart":
+      '<span class="cw-cm"># Start NodeDB — PostgreSQL wire protocol on 6432</span>\n' +
+      '<span class="cw-kw">docker run</span> -d --name nodedb \\\n' +
+      '  -p <span class="cw-nm">6432</span>:<span class="cw-nm">6432</span> -p <span class="cw-nm">6433</span>:<span class="cw-nm">6433</span> -p <span class="cw-nm">6480</span>:<span class="cw-nm">6480</span> \\\n' +
+      '  -v nodedb-data:/var/lib/nodedb \\\n' +
+      '  <span class="cw-st">farhansyah/nodedb:latest</span>\n' +
+      "\n" +
+      '<span class="cw-cm"># Connect with any Postgres client</span>\n' +
+      '<span class="cw-kw">psql</span> -h localhost -p <span class="cw-nm">6432</span>',
   };
 
   function build(host) {

@@ -139,12 +139,17 @@ WHERE ST_DWithin(location, ST_Point(-73.99, 40.75), 2000)
 <Faq />
 </Section>
 
-<Section id="waitlist" class="ndb-final">
-<CTA title="Ship AI products, not plumbing." description="Get early access to the launch. We'll send you the repo, the benchmarks, and the design-partner invite." />
+<Section id="get-started" class="ndb-final">
+<CTA title="Ship AI products, not plumbing." description="NodeDB is in public preview and already running in real projects. Pull the image, point any Postgres client at it, and start building." />
+
+<CodeWindow snippet="quickstart" title="run it in 30 seconds" lang="bash" />
+
+Pre-1.0 and moving fast — follow the [road to 1.0](https://github.com/orgs/NodeDB-Lab/projects/7).
 
 <WaitlistForm
   action="https://assets.mailerlite.com/jsonp/2289342/forms/185571144953234582/subscribe"
   github="https://github.com/NodeDB-Lab/nodedb"
+  quickstart="/docs/introduction/quickstart"
   discord="https://discord.gg/s54gDMVc7B"
   producthunt="https://www.producthunt.com/products/nodedb"
 />

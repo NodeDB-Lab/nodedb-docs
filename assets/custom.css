@@ -791,6 +791,22 @@ body:has(.oxidoc-landing) .oxidoc-skip-nav { display: none !important; }
   justify-content: center;
 }
 
+/* Get-started actions + release-updates form (reworked <WaitlistForm>) */
+.oxidoc-landing waitlistform { max-width: 40rem; min-height: 0; }
+.oxidoc-landing .ndb-final .cw { max-width: 38rem; margin: 0 auto 1.5rem; text-align: left; }
+.oxidoc-landing .ndb-final .cw-body { text-align: left; }
+.ndb-wl-btn-primary {
+  background: var(--ndb-indigo-600);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+.ndb-wl-btn-primary:hover { background: var(--ndb-indigo-500); }
+.ndb-wl-updates { margin-top: 2.25rem; }
+.ndb-wl-updates-title { font-size: 1.05rem; font-weight: 600; color: #fff; margin: 0 0 0.2rem; }
+.ndb-wl-updates-sub { font-size: 0.85rem; color: var(--ndb-text-3); margin: 0 0 1.1rem; }
+.ndb-wl-ph-row { display: flex; justify-content: center; margin-top: 1.6rem; }
+
 /* ── Banner / Product Hunt strip ───────────────────────────────────── */
 
 body:has(.oxidoc-landing) .oxidoc-banner {

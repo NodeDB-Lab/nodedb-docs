@@ -43,7 +43,7 @@
         '<p class="ndb-hero-sub">' + sub + "</p>" +
         '<div class="ndb-hero-actions">' +
           '<a class="ndb-btn ndb-btn-primary" href="' + github + '" target="_blank" rel="noopener">' + GITHUB + "<span>Star on GitHub</span></a>" +
-          '<a class="ndb-btn ndb-btn-soft" href="#waitlist"><span>Get Early Access</span></a>' +
+          '<a class="ndb-btn ndb-btn-soft" href="#get-started"><span>Get Started</span></a>' +
           '<a class="ndb-btn ndb-btn-outline" href="' + discord + '" target="_blank" rel="noopener">' + DISCORD + "<span>Join Discord</span></a>" +
         "</div>" +
       "</div>";
