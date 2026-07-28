@@ -40,7 +40,7 @@ WHERE ST_Within(location, ST_GeomFromGeoJSON('{
 }'));
 
 -- H3 hexagonal binning
-SELECT h3_to_string(h3_encode(40.748, -73.985, 9)) AS hex;
+SELECT h3_latlngtocell(40.748, -73.985, 9) AS hex;
 
 -- Spatial join
 SELECT r.name, z.zone_name
@@ -54,9 +54,17 @@ WHERE ST_DWithin(location, ST_Point(-73.990, 40.750), 2000) AND embedding <-> $q
 LIMIT 10;
 ```
 
-## OGC Predicates
+## Geometry Functions
 
-`ST_Contains`, `ST_Intersects`, `ST_Within`, `ST_DWithin`, `ST_Distance`, `ST_Intersection`, `ST_Buffer`, `ST_Envelope`, `ST_Union`.
+- **Predicates** — `ST_Contains`, `ST_Within`, `ST_Intersects`, `ST_Disjoint`, `ST_DWithin`, `ST_IsValid`
+- **Constructors** — `ST_Point`, `ST_MakePoint`, `ST_GeomFromText`, `ST_GeomFromWKB`, `ST_GeomFromGeoJSON`, `ST_MakeLine`, `ST_MakePolygon`, `ST_MakeEnvelope`
+- **Accessors** — `ST_AsText`, `ST_AsGeoJSON`, `ST_X`, `ST_Y`, `ST_GeometryType`, `ST_NPoints`, `ST_SRID`
+- **Measures** — `ST_Distance`, `ST_Length`, `ST_Perimeter`, `ST_Area` (geodesic, meters)
+- **Operations** — `ST_Buffer`, `ST_Envelope`, `ST_Centroid`, `ST_Union`, `ST_Intersection`
+
+Each works in every geometry position — `INSERT` values, projections, and
+predicate arguments — and constructors nest. See
+[Spatial Queries](/docs/sql/spatial-queries) for the full reference.
 
 ## Format Support
 

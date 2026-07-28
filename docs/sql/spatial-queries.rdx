@@ -26,17 +26,72 @@ WHERE ST_Within(location, ST_GeomFromGeoJSON('{
 
 ## OGC Predicates
 
-| Function          | Description                         |
-| ----------------- | ----------------------------------- |
-| `ST_Contains`     | Geometry A contains geometry B      |
-| `ST_Intersects`   | Geometries share any space          |
-| `ST_Within`       | Geometry A is within geometry B     |
-| `ST_DWithin`      | Within a given distance             |
-| `ST_Distance`     | Distance between two geometries     |
-| `ST_Intersection` | Intersection geometry               |
-| `ST_Buffer`       | Buffer around geometry              |
-| `ST_Envelope`     | Bounding box                        |
-| `ST_Union`        | Union of geometries                 |
+| Function          | Description                                          |
+| ----------------- | ---------------------------------------------------- |
+| `ST_Contains`     | Geometry A contains geometry B                       |
+| `ST_Within`       | Geometry A is within geometry B                      |
+| `ST_Intersects`   | Geometries share any space                           |
+| `ST_Disjoint`     | Geometries share no space                            |
+| `ST_DWithin`      | Within a given geodesic distance in meters           |
+| `ST_IsValid`      | Whether a geometry is well-formed                    |
+
+## Constructors
+
+| Function                                            | Result                                                        |
+| --------------------------------------------------- | ------------------------------------------------------------- |
+| `ST_Point(lng, lat)`                                | Point                                                          |
+| `ST_MakePoint(x, y [, z])`                          | Point                                                          |
+| `ST_GeomFromText(wkt [, srid])`                     | Geometry from WKT                                              |
+| `ST_GeomFromGeoJSON(json)`                          | Geometry from GeoJSON                                          |
+| `ST_GeomFromWKB(bytes [, srid])`                    | Geometry from WKB; accepts `X'...'` or its hex string          |
+| `ST_MakeLine(point, point, ...)`                    | LineString                                                     |
+| `ST_MakePolygon(ring, ...)`                         | Polygon from arrays of `[lng, lat]` pairs                      |
+| `ST_MakeEnvelope(min_lng, min_lat, max_lng, max_lat)` | Rectangular Polygon                                          |
+
+## Accessors and Measures
+
+Measures are geodesic — meters, and square meters for area.
+
+| Function                | Result                                                              |
+| ----------------------- | ------------------------------------------------------------------- |
+| `ST_AsText(geom)`       | WKT rendering                                                        |
+| `ST_AsGeoJSON(geom)`    | GeoJSON rendering                                                    |
+| `ST_X(geom)` / `ST_Y(geom)` | Ordinate of a Point; NULL for any other geometry                 |
+| `ST_GeometryType(geom)` | Type name, e.g. `Point`                                              |
+| `ST_NPoints(geom)`      | Total vertex count                                                   |
+| `ST_SRID(geom)`         | Always `4326` — geometry is stored as GeoJSON, i.e. WGS 84           |
+| `ST_Distance(a, b)`     | Distance between two geometries                                      |
+| `ST_Length(geom)`       | Length of linear components                                          |
+| `ST_Perimeter(geom)`    | Boundary length of areal components                                  |
+| `ST_Area(geom)`         | Area of areal components, less holes                                 |
+
+## Geometry Operations
+
+| Function                             | Result                                        |
+| ------------------------------------ | --------------------------------------------- |
+| `ST_Buffer(geom, meters [, segments])` | Geometry grown by a distance                |
+| `ST_Envelope(geom)`                  | Bounding box                                  |
+| `ST_Centroid(geom)`                  | Centroid, weighted by highest dimension       |
+| `ST_Union(a, b)`                     | Union of geometries                           |
+| `ST_Intersection(a, b)`              | Intersection geometry                         |
+
+## Reading Stored Geometry
+
+Every function above works in every position a geometry expression may appear —
+an `INSERT` value, a `SELECT` projection, and a predicate's query-geometry
+argument. Constructors nest, so a buffered point is a valid search area, and a
+bare string literal is read as WKT or GeoJSON.
+
+```sql
+SELECT name, ST_AsText(location), ST_X(location), ST_Y(location)
+FROM restaurants;
+
+SELECT name FROM restaurants
+WHERE ST_Within(location, ST_Buffer(ST_Point(-73.990, 40.750), 1000));
+
+SELECT name FROM restaurants
+WHERE ST_DWithin(location, 'POINT(-73.990 40.750)', 1000);
+```
 
 ## Spatial Join
 
@@ -48,7 +103,7 @@ WHERE ST_Contains(z.boundary, r.location);
 ## H3 Hexagonal Indexing
 
 ```sql
-SELECT h3_to_string(h3_encode(40.748, -73.985, 9)) AS hex;
+SELECT h3_latlngtocell(40.748, -73.985, 9) AS hex;
 ```
 
 ## Hybrid Spatial-Vector
