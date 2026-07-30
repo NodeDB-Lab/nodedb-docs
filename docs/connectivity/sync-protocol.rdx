@@ -28,6 +28,36 @@ Schema changes (new columns, new collections) are discovered automatically by co
 5. Origin validates constraints (UNIQUE, FK, CHECK) via Raft
 6. Committed deltas are broadcast to all connected clients with matching shape subscriptions
 
+## Replica Identity
+
+Every CRDT operation is attributed to the **peer id** of the replica that made it. A peer id must belong to exactly one replica of one collection.
+
+Two replicas that share a peer id number their operations from the same counter range. The merge cannot tell those apart from a client re-sending history it has already delivered, so it discards whichever arrives second — the writes are gone, and to the client they looked accepted.
+
+Origin therefore binds each peer id to the first producer that uses it in a collection, and refuses any other producer:
+
+```
+DeltaReject: PEER_ID_COLLISION: peer id 1 on collection 'notes' is already
+owned by another replica; generate a new peer id and resync
+```
+
+To recover, generate a fresh peer id for the replica and resync. Applications should:
+
+- Derive a peer id that is unique per **installation**, not per user or per device model.
+- Generate a **new** peer id whenever the local store is reset, reinstalled, or restored from a backup taken by another replica. A replica that keeps its old peer id after wiping its store collides with its own earlier history, which Origin cannot refuse — it owns that peer id — and the writes are reported as duplicates rather than applied.
+
+The same peer id in two different collections is not a collision; each collection is a separate document whose counter ranges never meet.
+
+### Observing discarded operations
+
+Each sync session's close line reports what the merge absorbed:
+
+```
+sync: session closed session=... applied=40 rejected=0 deduplicated=10 ops_trimmed=120
+```
+
+`ops_trimmed` counts operations that arrived already known to Origin. A healthy resync re-sends a prefix and then advances, so `applied` rises alongside it. A session whose deltas are all deduplicated with nothing applied is the peer-id collision shape.
+
 ## Shape Subscriptions
 
 Devices subscribe to a subset of data via shape subscriptions (wire-level sync feature, not SQL):
@@ -48,6 +78,6 @@ If a local write violates a constraint on Origin, a typed `CompensationHint` is 
 - `IntegrityViolation` — other integrity-rule violation
 - `PermissionDenied` — insufficient privilege
 - `RateLimited` — quota or rate limit exceeded
-- `Custom` — application-specific handling
+- `Custom` — application-specific handling, including `peer_id_collision` (see [Replica Identity](#replica-identity))
 
 The application handles the conflict — no silent data loss.
