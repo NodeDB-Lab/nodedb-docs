@@ -9,19 +9,25 @@ NodeDB uses `NodeDbError` — a struct with numeric `ErrorCode`, human-readable 
 
 ## Error Categories
 
-| Code Range | Category   | Examples                          |
-| ---------- | ---------- | --------------------------------- |
-| 1000–1099  | Write path | Constraint violation, deadline    |
-| 1100–1199  | Read path  | Collection not found              |
-| 1200–1299  | Query      | Parse error, plan error           |
-| 2000–2099  | Auth       | Authorization denied              |
-| 3000–3099  | Sync       | Delta rejected, sync error        |
-| 4000–4099  | Storage    | Segment corrupted, WAL error      |
-| 5000–5099  | Config     | Bad request, invalid config       |
-| 6000–6099  | Cluster    | No quorum, shard unavailable      |
-| 7000–7099  | Memory     | Budget exceeded                   |
-| 8000–8099  | Encryption | Key error, decrypt failure        |
-| 9000–9099  | Internal   | Unexpected internal error         |
+| Code Range | Category          | Examples                                  |
+| ---------- | ----------------- | ----------------------------------------- |
+| 1000–1099  | Write path        | Constraint violation, deadline            |
+| 1100–1199  | Read path         | Collection not found, database not found  |
+| 1200–1299  | Query             | Plan error, undefined function            |
+| 1300–1399  | Engine            | Array engine error                        |
+| 1400–1499  | Quota and overload | Quota exceeded, server overload          |
+| 1500–1599  | Clone             | Clone depth exceeded                      |
+| 1600–1699  | Move tenant       | Drain timeout, already at target          |
+| 1700–1799  | Mirror            | Mirror read-only                          |
+| 1800–1899  | Backup            | Tenant or key mismatch                    |
+| 2000–2099  | Auth              | Authorization denied, tenant limits       |
+| 3000–3099  | Sync              | Delta rejected, sync error                |
+| 4000–4299  | Storage           | Segment corrupted, WAL error, codec error |
+| 5000–5099  | Config            | Bad request, invalid config               |
+| 6000–6099  | Cluster           | No leader, node unreachable               |
+| 7000–7099  | Memory            | Memory exhausted                          |
+| 8000–8099  | Encryption        | Key error, decrypt failure                |
+| 9000–9099  | Internal          | Unexpected internal error                 |
 
 ## Common Errors
 
@@ -40,51 +46,87 @@ NodeDB uses `NodeDbError` — a struct with numeric `ErrorCode`, human-readable 
 
 | Error | Code | Resolution |
 | --- | --- | --- |
-| `DATABASE_NOT_FOUND` | 1101 | Verify database name; check `SHOW DATABASES` |
-| `CANNOT_DROP_DEFAULT_DATABASE` | 1102 | The `default` database is reserved; drop user databases instead |
+| `DATABASE_NOT_FOUND` | 1110 | Verify database name; check `SHOW DATABASES` |
+| `CANNOT_DROP_DEFAULT_DATABASE` | 1710 | The `default` database is reserved; drop user databases instead |
 
-## Database Quota Errors (7000–7099)
-
-| Error | Code | Resolution |
-| --- | --- | --- |
-| `SERVER_OVERLOAD` | 7000 | Cluster under heavy pressure; retry with exponential backoff |
-| `TENANT_QUOTA_EXCEEDED` | 7001 | Tenant's rate/concurrency/memory limit exhausted; reduce load or raise quota via `ALTER TENANT … IN DATABASE … SET QUOTA` |
-| `DATABASE_QUOTA_EXCEEDED` | 7002 | Database's rate/concurrency/memory limit exhausted; reduce load or raise quota via `ALTER DATABASE … SET QUOTA` |
-| `QUOTA_OVERCOMMIT` | 5001 | Sum of tenant quotas exceeds database quota, or database quota exceeds global; rebalance quotas |
-| `TENANT_VECTOR_DIM_EXCEEDED` | 1023 | Vector embedding dimensionality exceeds tenant's `max_vector_dim`; reduce dimensionality or raise quota |
-| `TENANT_GRAPH_DEPTH_EXCEEDED` | 1024 | Graph traversal depth exceeds tenant's `max_graph_depth`; reduce traversal depth or raise quota |
-| `SESSION_CAP_EXCEEDED` | 7003 | Cluster session capacity exhausted; close idle sessions or raise `max_active_sessions` |
-
-## Database Clone Errors (5000–5099)
+## Quota and Overload Errors (1400–1499)
 
 | Error | Code | Resolution |
 | --- | --- | --- |
-| `CLONE_DEPTH_EXCEEDED` | 5002 | Clone lineage exceeds `MAX_CLONE_DEPTH = 8`; promote source clone to materialize and flatten lineage |
-| `CLONE_DEPENDENCY` | 5003 | Source database has dependent clones; `DROP` clones first or use `DROP DATABASE source FORCE` to trigger materialization |
-| `CANNOT_CLONE_MIRROR` | 5004 | Mirrors are read-only and create ambiguous bitemporal lineage; `PROMOTE` the mirror first, then clone |
+| `QUOTA_OVERCOMMIT` | 1400 | Sum of tenant quotas exceeds database quota, or database quota exceeds global; rebalance quotas |
+| `TENANT_QUOTA_EXCEEDED` | 1401 | Tenant's rate/concurrency/memory limit exhausted; reduce load or raise quota via `ALTER TENANT … IN DATABASE … SET QUOTA` |
+| `DATABASE_QUOTA_EXCEEDED` | 1402 | Database's rate/concurrency/memory limit exhausted; reduce load or raise quota via `ALTER DATABASE … SET QUOTA` |
+| `SERVER_OVERLOAD` | 1403 | A dispatch queue is at capacity. Nothing ran. Retry with exponential backoff. See [Transient capacity refusal](#transient-capacity-refusal-server_overload). |
+| `TENANT_VECTOR_DIM_EXCEEDED` | 2010 | Vector embedding dimensionality exceeds tenant's `max_vector_dim`; reduce dimensionality or raise quota |
+| `TENANT_GRAPH_DEPTH_EXCEEDED` | 2011 | Graph traversal depth exceeds tenant's `max_graph_depth`; reduce traversal depth or raise quota |
 
-## Database Mirror Errors (1100–1199, 6000–6099)
+A login past the cluster session cap (`max_active_sessions`) answers `BAD_REQUEST` (5001). Close idle sessions or raise the cap.
+
+## Transient capacity refusal (`SERVER_OVERLOAD`)
+
+The bridge dispatcher refuses a request when one of its capacity limits is full:
+
+| Scope | Limit |
+| --- | --- |
+| `tenant_inflight` | The tenant holds its fair share of in-flight requests. The share is the total queue capacity divided by the tenants with requests in flight, and at least two. |
+| `database_suspended` | The database's queue on the target core holds 95% or more of its fair share. |
+| `queue_full` | The target core's queue holds its full capacity. |
+
+The refusal is transient and retryable:
+
+- The server enqueued nothing and ran nothing. Resending the same request is safe.
+- Retry with exponential backoff. The same request succeeds once in-flight requests finish and free capacity.
+- The error message names the scope and its counts.
+
+Each protocol answers the refusal with one class:
+
+| Protocol | Answer |
+| --- | --- |
+| pgwire | SQLSTATE `57P03` (`cannot_connect_now`) |
+| Native | Error frame with SQLSTATE `57P03` and `ndb_code` 1403 |
+| HTTP | `503 Service Unavailable`, `Retry-After: 1`, body `code` `NDB-1403` |
+| RESP | `BUSY` error prefix |
+
+`57P03` is distinct from `XX000` (internal error). A client backs off and retries on `57P03`, and aborts on `XX000`. A collection that is draining and a migration in progress also answer `57P03`, with the same retry contract.
+
+The counter `nodedb_dispatch_capacity_busy_total{scope}` counts each refusal by scope, including the ones the server waits out before it answers. A rising rate means clients send more than the cores drain. See [Monitoring](../administration/monitoring).
+
+A cross-shard (Calvin) transaction does not fail on this refusal. The Calvin scheduler holds the refused transaction with its locks and re-sends it once capacity frees. `nodedb_calvin_dispatch_deferred_total{vshard}` counts those deferrals.
+
+## Database Clone Errors (1500–1599)
 
 | Error | Code | Resolution |
 | --- | --- | --- |
-| `MIRROR_READ_ONLY` | 1103 | Mirror is read-only until promoted; use `ALTER DATABASE <mirror> PROMOTE` to switch to writable mode |
-| `STALE_READ_NOT_LEADER` | 1104 | `Strong` consistency requested on a mirror (which is stale); use `BoundedStaleness` or `Eventual` consistency, or connect to the source database for strong reads |
-| `MIRROR_DEGRADED` | 6001 | Mirror lag exceeds threshold (default: 5 s async, 100 ms sync); check source–mirror network and availability |
-| `MIRROR_DISCONNECTED` | 6002 | Mirror disconnected from source; reconnecting with exponential backoff |
+| `CLONE_DEPTH_EXCEEDED` | 1500 | Clone lineage exceeds `MAX_CLONE_DEPTH = 8`; promote source clone to materialize and flatten lineage |
+| `CLONE_DEPENDENCY` | 1502 | Source database has dependent clones; `DROP` clones first or use `DROP DATABASE source FORCE` to trigger materialization |
+| `CANNOT_CLONE_MIRROR` | 1501 | Mirrors are read-only and create ambiguous bitemporal lineage; `PROMOTE` the mirror first, then clone |
+
+## Database Mirror Errors (1700–1799)
+
+| Error | Code | SQLSTATE | Resolution |
+| --- | --- | --- | --- |
+| `MIRROR_READ_ONLY` | 1700 | `25006` | Mirror is read-only until promoted; use `ALTER DATABASE <mirror> PROMOTE` to switch to writable mode |
+| `STALE_READ_NOT_LEADER` | 1701 | `55P03` | `Strong` consistency requested on a mirror (which is stale); use `BoundedStaleness` or `Eventual` consistency, or connect to the source database for strong reads |
+
+A lagging or disconnected mirror is a mirror status (`Degraded`, `Disconnected`), not an error. Queries against it keep the codes above.
 
 ## Move Tenant Errors
 
 | Error | Code | Resolution |
 | --- | --- | --- |
-| `MOVE_TENANT_ALREADY_AT_TARGET` | 5005 | Tenant already moved to target database; re-issuing is idempotent (safe to retry) |
+| `MOVE_TENANT_ALREADY_AT_TARGET` | 1604 | Tenant already moved to target database; re-issuing is idempotent (safe to retry) |
 
-## Session Lifecycle Errors (2000–2099)
+## Session Lifecycle Errors
 
-| Error | Code | Resolution |
-| --- | --- | --- |
-| `SESSION_REVOKED` | 2001 | Session terminated due to identity change (DROP USER, role revocation, or soft-delete via `is_active=false`); reconnect to authenticate |
-| `SESSION_IDLE_TIMEOUT` | 2002 | Session closed due to inactivity exceeding `idle_session_timeout_secs`; reconnect and keep activity |
-| `SESSION_NOT_FOUND` | 1105 | `KILL SESSION` targeted a non-existent session ID; verify `SHOW SESSIONS` for active session IDs |
+Session lifecycle conditions carry no dedicated code. Each answers the code and SQLSTATE below, and the message names the condition.
+
+| Condition | Code | SQLSTATE | Resolution |
+| --- | --- | --- | --- |
+| Session closed: user account dropped | `BAD_REQUEST` (5001) | `42601` | Reconnect with a valid user |
+| Session closed: idle timeout exceeded | `BAD_REQUEST` (5001) | `42601` | Reconnect; keep the session active within `idle_session_timeout_secs` |
+| Session closed by `KILL SESSION` | `BAD_REQUEST` (5001) | `42601` | Reconnect |
+| Session closed: OIDC token expired | `AUTH_EXPIRED` (2001) | `28000` | Re-authenticate with a fresh token |
+| `KILL SESSION` names an unknown session ID | `UNDEFINED_OBJECT` (1111) | `42704` | Check active session IDs with `SHOW SESSIONS` |
 
 ## Error Construction
 

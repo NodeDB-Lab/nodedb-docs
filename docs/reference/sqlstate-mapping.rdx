@@ -20,16 +20,20 @@ NodeDB maps internal error codes to PostgreSQL SQLSTATE codes for pgwire compati
 | Permission denied     | 42501    | Insufficient privilege       |
 | Numeric overflow      | 22003    | Numeric value out of range   |
 | Division by zero      | 22012    | Division by zero             |
-| Rate limit exceeded   | 54001    | Too many resources           |
-| Tenant quota exceeded | 54001    | Too many resources           |
-| Database quota exceeded | 54001  | Too many resources           |
-| Server overload       | 54001    | Too many resources           |
-| Quota overcommit      | 54000    | Program limit exceeded       |
-| Database not found    | 42P01    | Undefined table              |
+| Rate limit exceeded   | 53300    | Too many connections         |
+| Tenant quota exceeded | 53400    | Configuration limit exceeded |
+| Database quota exceeded | 53400  | Configuration limit exceeded |
+| Server overload (`SERVER_OVERLOAD`, dispatch capacity) | 57P03 | Cannot connect now |
+| Quota overcommit      | 53400    | Configuration limit exceeded |
+| Database not found    | 3D000    | Invalid catalog name (HTTP 404) |
 | Mirror read only      | 25006    | Read-only SQL transaction    |
-| Stale read on mirror  | 0A000    | Feature not supported        |
-| Clone depth exceeded  | 54000    | Program limit exceeded       |
+| Stale read on mirror  | 55P03    | Lock not available (redirect to source) |
+| Clone depth exceeded  | 54011    | Program limit exceeded (class 54) |
 | Session not found     | 42704    | Undefined object             |
-| Session idle timeout  | 08006    | Connection failure           |
-| Session revoked       | 08006    | Connection failure           |
+| Session idle timeout  | 42601    | Syntax error (`BAD_REQUEST`) |
+| Session closed: user dropped or `KILL SESSION` | 42601 | Syntax error (`BAD_REQUEST`) |
 | Internal error        | XX000    | Internal error               |
+
+## Retryable capacity refusal (57P03)
+
+`57P03` is a transient refusal. Its usual cause is a Data Plane dispatch queue at capacity: the server enqueued nothing and ran nothing. A collection that is draining and a migration in progress answer `57P03` too. Retry the same statement with backoff. See [Error Codes](./error-codes) for the full contract.

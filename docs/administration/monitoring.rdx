@@ -119,6 +119,15 @@ These metrics are emitted from the dispatch layer (qps), memory governor (memory
 | `nodedb_backpressure_critical_total{engine}` | counter | Write handlers that entered the Critical-pressure flush path |
 | `nodedb_backpressure_emergency_total{engine}` | counter | Write handlers rejected by Emergency-pressure |
 
+## Dispatch capacity metrics
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `nodedb_dispatch_capacity_busy_total{scope}` | counter | Requests the dispatcher refused at a capacity limit, by `scope`: `tenant_inflight`, `database_suspended`, `queue_full` |
+| `nodedb_calvin_dispatch_deferred_total{vshard}` | counter | Calvin dispatches deferred at a capacity limit and re-sent once capacity freed |
+
+`nodedb_dispatch_capacity_busy_total` counts every refusal, including the ones the server waits out itself: a write fan-out waits for capacity until its deadline, and the Calvin scheduler defers. A refusal that reaches the client is the retryable `SERVER_OVERLOAD` (SQLSTATE `57P03`). Nothing ran, and the client retries with backoff. A steady rise means clients send more than the Data Plane cores drain. See [Error Codes](../reference/error-codes).
+
 ## IO priority metrics
 
 | Metric | Type | Description |

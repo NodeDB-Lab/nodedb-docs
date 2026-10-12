@@ -164,7 +164,7 @@ Quota enforcement produces these errors:
 |-------|---------|
 | `TENANT_QUOTA_EXCEEDED` | Tenant rate limit or concurrency exhausted |
 | `DATABASE_QUOTA_EXCEEDED` | Database rate limit or concurrency exhausted |
-| `SERVER_OVERLOAD` | Global cluster backpressure (queue > 95%) |
+| `SERVER_OVERLOAD` | A dispatch queue is at capacity (SQLSTATE `57P03`, code 1403). Nothing ran. Retry with backoff. |
 | `QUOTA_OVERCOMMIT` | Sum of tenant quotas > database quota (or database > global) |
 | `TENANT_VECTOR_DIM_EXCEEDED` | Vector dimension exceeds tenant `max_vector_dim` |
 | `TENANT_GRAPH_DEPTH_EXCEEDED` | Graph traversal depth exceeds tenant `max_graph_depth` |
