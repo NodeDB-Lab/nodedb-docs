@@ -63,11 +63,52 @@ CREATE SORTED INDEX lb_global ON scores (score DESC, updated_at ASC) KEY player_
 
 SELECT RANK(lb_global, 'player-123');
 SELECT * FROM TOPK(lb_global, 10);
+SELECT * FROM RANGE(lb_global, 100, 250.5);
 SELECT SORTED_COUNT(lb_global);
 
 -- Time-windowed leaderboard
-CREATE SORTED INDEX lb_daily ON scores (score DESC) KEY player_id WINDOW DAILY ON updated_at;
+CREATE SORTED INDEX lb_daily ON scores (score DESC, updated_at ASC) KEY player_id
+  WINDOW DAILY ON updated_at;
+
+-- Fixed-range window: bounds are milliseconds or ISO 8601
+CREATE SORTED INDEX lb_season ON scores (score DESC, updated_at ASC) KEY player_id
+  WINDOW CUSTOM START '2026-01-01' END '2026-04-01' ON updated_at;
 ```
+
+### Sort Order
+
+Each sort column orders its values by type first, then by value:
+
+| Order | Type | Order within the type |
+| ----- | ---- | --------------------- |
+| 1 | null | — |
+| 2 | boolean | `false` before `true` |
+| 3 | number | numeric value |
+| 4 | string | byte order of the UTF-8 text |
+| 5 | array or object | byte order of the JSON text |
+
+- Integers and floats share one numeric order. `10.5` sorts between `10` and `11`.
+- The order is exact for every 64-bit integer and every float. Integers above 2^53 keep their order.
+- An integer and a float of equal value are equal. `11` and `11.0` hold one position.
+- `-0.0` equals `0`.
+- A non-finite float is stored as the text `NaN`, `Infinity` or `-Infinity`, so it sorts as a string.
+- `RANGE(index, min, max)` is inclusive at both ends and reads the first sort column. An integer bound matches a float row of equal value.
+- `DESC` reverses all of the above for that column.
+
+### Window Rules
+
+- The window timestamp column must be one of the sort columns. `CREATE SORTED INDEX` refuses the index otherwise (SQLSTATE `42601`).
+- `ON` defaults to `updated_at` when the clause names no column.
+- `DAILY`, `WEEKLY` (from Monday) and `MONTHLY` windows start at 00:00 UTC of the current period.
+- A `CUSTOM` window is the half-open range `[START, END)`. `END` must be after `START`.
+- A `CUSTOM` bound is integer milliseconds since the Unix epoch or an ISO 8601 date or instant.
+- A timestamp value is one of:
+  - an integer: milliseconds since the Unix epoch;
+  - a float: fractional milliseconds since the Unix epoch;
+  - a string: an ISO 8601 date or instant.
+- Integers are milliseconds. A value in epoch seconds lands in January 1970 and falls outside current windows.
+- A row whose timestamp is null, a boolean, an array, an object, or a non-ISO 8601 string is hidden from every window.
+- A row without the timestamp field is not indexed.
 
 ## Rate Gates
 
