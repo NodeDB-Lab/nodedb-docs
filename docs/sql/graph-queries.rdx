@@ -17,11 +17,67 @@ The `IN '<collection>'` clause is **required** — edges are overlays on a named
 ## Traversal
 
 ```sql
-GRAPH TRAVERSE FROM 'alice' DEPTH 3;
-GRAPH TRAVERSE FROM 'alice' DEPTH 2 LABEL 'follows' DIRECTION out;
-GRAPH NEIGHBORS OF 'bob' LABEL 'follows' DIRECTION both;
-GRAPH PATH FROM 'alice' TO 'charlie' MAX_DEPTH 5 LABEL 'knows';
+GRAPH TRAVERSE IN 'edges' FROM 'alice' DEPTH 3;
+GRAPH TRAVERSE IN 'edges' FROM 'alice' DEPTH 2 LABEL 'follows' DIRECTION out;
+GRAPH TRAVERSE IN 'edges' FROM 'alice' DEPTH 2 LABEL 'follows', 'knows' DIRECTION out;
+GRAPH NEIGHBORS IN 'edges' OF 'bob' LABEL 'follows' DIRECTION both;
+GRAPH PATH IN 'edges' FROM 'alice' TO 'charlie' MAX_DEPTH 5 LABEL 'knows', 'works_with';
+GRAPH TRAVERSE IN 'edges' FROM 'alice' DEPTH 2 LABEL 'follows' EDGE WHERE since >= 2020 AND active = TRUE;
+GRAPH PATH IN 'roads' FROM 'a' TO 'z' MAX_DEPTH 6 EDGE WHERE "kind" IN ('road', 'rail') AND NOT (closed = TRUE);
 ```
+
+Syntax:
+
+```sql
+GRAPH TRAVERSE IN '<collection>' FROM '<node>' [DEPTH <n>]
+  [LABEL '<label>'[, '<label>' ...]] [DIRECTION in|out|both]
+  [EDGE WHERE <predicate>];
+GRAPH NEIGHBORS IN '<collection>' OF '<node>'
+  [LABEL '<label>'[, '<label>' ...]] [DIRECTION in|out|both];
+GRAPH PATH IN '<collection>' FROM '<src>' TO '<dst>' [MAX_DEPTH <n>]
+  [LABEL '<label>'[, '<label>' ...]] [EDGE WHERE <predicate>];
+```
+
+- `IN '<collection>'` is required. The walk reads only that collection's edges. A statement without `IN` fails to parse.
+- `LABEL` takes one or more quoted labels. `LABEL 'a', 'b'` and `LABEL ('a', 'b')` are the same.
+- An edge passes when its label is any listed label.
+- An omitted `LABEL` clause follows every edge.
+- A label no edge carries adds nothing. A list of only such labels follows no edge.
+- `LABEL` with no quoted label, or with a bare word (`LABEL knows`), fails with SQLSTATE `42601`.
+- `DEPTH` defaults to 2. `MAX_DEPTH` defaults to 10. `DIRECTION` defaults to `out`.
+
+### Edge property predicate
+
+`EDGE WHERE` filters the edges a walk crosses by their properties. Only `GRAPH TRAVERSE` and `GRAPH PATH` accept it. Any other `GRAPH` statement with `EDGE WHERE` fails to parse.
+
+- `EDGE WHERE` is the last clause of the statement.
+- An edge the predicate rejects is not crossed. Its far endpoint is reached only through another edge.
+- Comparisons: `=`, `<>`, `!=`, `>`, `>=`, `<`, `<=` between a property name and a literal. The literal can stand on either side.
+- `IN (...)`, `NOT IN (...)`, `IS NULL`, `IS NOT NULL`.
+- `AND`, `OR`, `NOT` and parentheses combine terms.
+- Literals: `NULL`, `TRUE`, `FALSE`, single-quoted strings, integers, finite floats.
+- A property name is one identifier. An unquoted name folds to lower case. Quote it with `"…"` to keep its case.
+- A missing property compares as follows:
+  - `= NULL` and `IS NULL` match. `=` with any other value does not.
+  - `>`, `>=`, `<`, `<=` never match a missing or `NULL` property.
+  - `IN` never matches. `NOT IN` always matches.
+- An edge without properties evaluates as an empty object.
+- A comparison between two properties, `LIKE`, and function calls fail with SQLSTATE `42601`.
+- `GRAPH PATH` tests each edge in its stored direction.
+
+### Traversal result
+
+`GRAPH TRAVERSE` returns one `result` column holding JSON:
+
+```json
+{
+  "nodes": [{ "id": "alice", "depth": 0 }, { "id": "bob", "depth": 1 }],
+  "edges": [{ "from": "alice", "to": "bob", "label": "follows", "properties": { "since": 2020 } }]
+}
+```
+
+- Each edge carries its current properties. An edge without properties carries `{}`.
+- Nodes at the last depth are not expanded. Their edges to nodes already in the result are included.
 
 ## MATCH Pattern Queries
 

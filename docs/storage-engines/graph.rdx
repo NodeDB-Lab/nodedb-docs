@@ -32,15 +32,20 @@ GRAPH INSERT EDGE IN 'people' FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { si
 
 ```sql
 -- BFS traversal
-GRAPH TRAVERSE FROM 'alice' DEPTH 3;
-GRAPH TRAVERSE FROM 'alice' DEPTH 2 LABEL 'follows' DIRECTION out;
+GRAPH TRAVERSE IN 'people' FROM 'alice' DEPTH 3;
+GRAPH TRAVERSE IN 'people' FROM 'alice' DEPTH 2 LABEL 'follows' DIRECTION out;
+
+-- Follow any of several labels
+GRAPH TRAVERSE IN 'people' FROM 'alice' DEPTH 2 LABEL 'follows', 'knows' DIRECTION out;
 
 -- Immediate neighbors
-GRAPH NEIGHBORS OF 'bob' LABEL 'follows' DIRECTION both;
+GRAPH NEIGHBORS IN 'people' OF 'bob' LABEL 'follows' DIRECTION both;
 
 -- Shortest path
-GRAPH PATH FROM 'alice' TO 'charlie' MAX_DEPTH 5 LABEL 'knows';
+GRAPH PATH IN 'people' FROM 'alice' TO 'charlie' MAX_DEPTH 5 LABEL 'knows';
 ```
+
+Every walk requires `IN '<collection>'` and reads only that collection's edges. `LABEL` takes one or more quoted labels: an edge passes when its label is any listed label. An omitted `LABEL` follows every edge. See [Graph Queries](/docs/sql/graph-queries) for the full syntax.
 
 ## MATCH Pattern Queries
 
