@@ -1,0 +1,72 @@
+---
+title: Array Sync Rejects
+description: How Origin answers array ops it does not apply, and what a client does with each reject reason.
+---
+
+# Array Sync Rejects
+
+A client pushes array ops to Origin over the sync WebSocket. Origin answers each op it does not apply with a typed reason. Each reason has one fixed class. The class tells the client what to do next. A client never parses the `detail` text.
+
+## Frames
+
+| Frame | Opcode | Direction | Origin's answer |
+| ----- | ------ | --------- | --------------- |
+| `ArrayDelta` | `0x90` | client → server | Nothing when the op applies. One `ArrayReject` when it does not. |
+| `ArrayDeltaBatch` | `0x91` | client → server | Always one `ArrayOpResults`, with one result per op. |
+| `ArraySchema` | `0x94` | client → server | Nothing when the schema commits. One `ArrayReject` when it does not. |
+| `ArrayAck` | `0x95` | client → server | Nothing when recorded. One `ArrayAdvisoryRefused` when refused. |
+| `ArrayCatchupRequest` | `0x97` | client → server | Snapshot or op frames when served. One `ArrayAdvisoryRefused` when refused. |
+| `ArrayReject` | `0x96` | server → client | Names the op by HLC, plus the reason and a detail string. |
+| `ArrayOpResults` | `0x98` | server → client | One result per op, in the order the ops arrived. |
+| `ArrayAdvisoryRefused` | `0x99` | server → client | Names the array, the refused request (`Ack` or `CatchupRequest`), the reason, and a detail string. |
+
+An array frame whose body does not decode draws an `ArrayReject` with reason `ShapeInvalid`, an empty array name, and an all-zero HLC. That reject names no single op. The client holds every op it has in flight.
+
+## Advisory Refusals
+
+An `ArrayAck` or `ArrayCatchupRequest` names no local op. Origin refuses one with `ArrayAdvisoryRefused`, never with `ArrayReject`, so a refusal never touches the client's push window. Its reason and class follow the table below. A catch-up for an array Origin does not hold draws `ArrayUnknown`. A catch-up that fails while Origin serves it draws the reason of the typed error.
+
+## Batches
+
+Each op in an `ArrayDeltaBatch` applies on its own. A rejected op never stops the ops after it. Array ops are independent CRDT writes ordered by HLC, so no op in a batch depends on an earlier one.
+
+`ArrayOpResults.results` holds one entry per entry of `op_payloads`, in the same order. Each entry carries the op's HLC and one outcome:
+
+| Outcome | Meaning |
+| ------- | ------- |
+| `Applied` | The op committed and applied. |
+| `Duplicate` | Origin already held the op's HLC. Nothing changed. |
+| `Rejected { reason, detail }` | The op did not apply. The reason's class names the next action. |
+
+An op whose payload does not decode carries an all-zero HLC. Its position in `results` still names it.
+
+An inbound array snapshot answers the same way. When the last chunk arrives, Origin attempts every op in the snapshot and sends one `ArrayOpResults`.
+
+## Reasons and Classes
+
+| Reason | Class | Cause |
+| ------ | ----- | ----- |
+| `EngineUnavailable` | `Transient` | The cluster gave the op no verdict: dispatch capacity refusal (`SERVER_OVERLOAD`, SQLSTATE `57P03`), leader change, lost quorum, deadline, rate gate, or an unknown commit outcome. |
+| `SnapshotCapacity` | `Transient` | The session's inbound snapshot buffers are full. |
+| `SnapshotBufferLost` | `Transient` | A fault on Origin discarded the session's partial inbound snapshots. Re-send the whole snapshot, header first. |
+| `SchemaTooNew` | `SchemaRequired` | The op's schema HLC is newer than Origin's copy of the schema. |
+| `ArrayUnknown` | `SchemaRequired` | Origin holds no schema for the array. |
+| `Unauthenticated` | `Reauthenticate` | The frame arrived before the session authenticated. |
+| `RetentionFloor` | `CatchUp` | This replica's catch-up cursor is below Origin's op-log GC floor. |
+| `ShapeInvalid` | `Permanent` | The op failed decoding or shape validation. |
+| `EngineRefused` | `Permanent` | The engine refused the op on its merits: constraint, type, producer epoch fence, or an encoding error. |
+| `PermissionDenied` | `Permanent` | The session identity lacks the permission the op needs. |
+
+Origin derives the reason from the typed engine error. It shares that classification with every other sync engine ack. A failure that applied nothing and can land later is `EngineUnavailable`.
+
+## Client Actions
+
+| Class | Action |
+| ----- | ------ |
+| `Transient` | Keep the op queued. Re-send it unchanged after a short backoff, in the same session. |
+| `SchemaRequired` | Send `ArraySchema` for the array, then re-send the op. |
+| `Reauthenticate` | Complete the handshake or token refresh, then re-send. |
+| `CatchUp` | Send `ArrayCatchupRequest`. The pending queue stays unchanged. |
+| `Permanent` | Remove the op from the queue and dead-letter it. |
+
+Re-sending an op that did commit is safe. Origin dedups array ops by HLC, so the second apply reports `Duplicate` and changes nothing.

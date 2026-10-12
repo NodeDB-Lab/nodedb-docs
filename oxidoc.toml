@@ -200,6 +200,7 @@ navigation = [
       "crdt-sync/conflict-policies",
       "crdt-sync/constraint-validation",
       "crdt-sync/dead-letter-queue",
+      "crdt-sync/array-sync",
       "crdt-sync/offline-sync",
     ] },
 

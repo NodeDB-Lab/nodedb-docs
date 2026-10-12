@@ -39,4 +39,6 @@ All eight engines now participate in CRDT sync:
 - **Overlay engines** — Graph traversal and Full-Text Search built on synced collections
 - **Schema changes** — DDL (new columns, collections) broadcast to connected Lite clients after Origin catalog commit; embedded clients auto-discover schema
 
+Array ops carry typed reject reasons. Each reason has a fixed class: resend, push the schema, re-authenticate, catch up, or drop. See [Array Sync Rejects](./array-sync).
+
 All engines work locally on NodeDB-Lite with sub-millisecond reads and no network dependency.
