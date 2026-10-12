@@ -45,6 +45,8 @@ GRAPH PATH IN '<collection>' FROM '<src>' TO '<dst>' [MAX_DEPTH <n>]
 - A label no edge carries adds nothing. A list of only such labels follows no edge.
 - `LABEL` with no quoted label, or with a bare word (`LABEL knows`), fails with SQLSTATE `42601`.
 - `DEPTH` defaults to 2. `MAX_DEPTH` defaults to 10. `DIRECTION` defaults to `out`.
+- `DEPTH` or `MAX_DEPTH` above 64 fails with SQLSTATE `22023`.
+- A value above the tenant quota `max_graph_depth` fails with SQLSTATE `42P17`. A quota of 0 sets no limit.
 
 ### Edge property predicate
 
@@ -56,11 +58,14 @@ GRAPH PATH IN '<collection>' FROM '<src>' TO '<dst>' [MAX_DEPTH <n>]
 - `IN (...)`, `NOT IN (...)`, `IS NULL`, `IS NOT NULL`.
 - `AND`, `OR`, `NOT` and parentheses combine terms.
 - Literals: `NULL`, `TRUE`, `FALSE`, single-quoted strings, integers, finite floats.
+- An integer literal that does not fit `i64` becomes a float.
+- A bare `TRUE` accepts every edge. A bare `FALSE` accepts no edge.
 - A property name is one identifier. An unquoted name folds to lower case. Quote it with `"…"` to keep its case.
 - A missing property compares as follows:
   - `= NULL` and `IS NULL` match. `=` with any other value does not.
   - `>`, `>=`, `<`, `<=` never match a missing or `NULL` property.
   - `IN` never matches. `NOT IN` always matches.
+  - `<>` and `!=` with a non-`NULL` literal match. `IS NOT NULL` does not match.
 - An edge without properties evaluates as an empty object.
 - A comparison between two properties, `LIKE`, and function calls fail with SQLSTATE `42601`.
 - `GRAPH PATH` tests each edge in its stored direction.
