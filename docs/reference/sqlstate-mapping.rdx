@@ -36,4 +36,4 @@ NodeDB maps internal error codes to PostgreSQL SQLSTATE codes for pgwire compati
 
 ## Retryable capacity refusal (57P03)
 
-`57P03` is a transient refusal. Its usual cause is a Data Plane dispatch queue at capacity: the server enqueued nothing and ran nothing. A collection that is draining and a migration in progress answer `57P03` too. Retry the same statement with backoff. See [Error Codes](./error-codes) for the full contract.
+`57P03` is a transient refusal. Its usual cause is a Data Plane dispatch queue at capacity: the server enqueued nothing and ran nothing. A collection that is draining and a migration in progress answer `57P03` too. Retry the same statement with backoff. `nodedb_server_overload_responses_total{protocol}` counts each `57P03` answer sent. See [Error Codes](./error-codes) for the full contract.

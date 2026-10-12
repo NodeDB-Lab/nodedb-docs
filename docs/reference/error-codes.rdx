@@ -89,7 +89,12 @@ Each protocol answers the refusal with one class:
 
 `57P03` is distinct from `XX000` (internal error). A client backs off and retries on `57P03`, and aborts on `XX000`. A collection that is draining and a migration in progress also answer `57P03`, with the same retry contract.
 
-The counter `nodedb_dispatch_capacity_busy_total{scope}` counts each refusal by scope, including the ones the server waits out before it answers. A rising rate means clients send more than the cores drain. See [Monitoring](../administration/monitoring).
+Two counters track the refusal:
+
+- `nodedb_dispatch_capacity_busy_total{scope}` counts each refusal by scope, including the ones the server waits out before it answers. It measures dispatch pressure.
+- `nodedb_server_overload_responses_total{protocol}` counts each overload answer a client receives. It measures client impact.
+
+A gap between the two means the server absorbs the pressure. See [Monitoring](../administration/monitoring).
 
 A cross-shard (Calvin) transaction does not fail on this refusal. The Calvin scheduler holds the refused transaction with its locks and re-sends it once capacity frees. `nodedb_calvin_dispatch_deferred_total{vshard}` counts those deferrals.
 
