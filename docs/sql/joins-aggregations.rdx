@@ -26,6 +26,37 @@ SELECT * FROM users u WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id =
 
 JOINs work across collections of different storage types — you can join a KV collection with a strict document collection.
 
+### Unqualified Column Names
+
+An unqualified column in a join resolves to the one relation that has it. This applies to the SELECT list, WHERE, ON, GROUP BY, HAVING, ORDER BY, and aggregate arguments.
+
+| The column is…                                              | Result                         |
+| ----------------------------------------------------------- | ------------------------------ |
+| Declared by exactly one relation                            | Resolves to that relation      |
+| Declared by two or more relations                           | Refused: SQLSTATE `42702`      |
+| Declared by none, and exactly one relation is schemaless    | Resolves to the schemaless one |
+| Declared by none, and two or more relations are schemaless  | Refused: SQLSTATE `42702`      |
+| Accepted by no relation                                     | Refused: SQLSTATE `42703`      |
+
+A declared column wins over a schemaless relation. A schemaless collection accepts any field name, so when two schemaless collections are joined, NodeDB cannot know which one holds a field. The query is refused rather than reading NULL from the wrong side:
+
+```text
+ERROR:  column reference "region" is ambiguous
+SQLSTATE: 42702
+```
+
+Qualify the column with its table name or alias:
+
+```sql
+-- Refused when both events and devices are schemaless
+SELECT region, COUNT(*) FROM events e JOIN devices d ON e.device_id = d.id GROUP BY region;
+
+-- Qualified: reads region from devices
+SELECT d.region, COUNT(*) FROM events e JOIN devices d ON e.device_id = d.id GROUP BY d.region;
+```
+
+`USING (col)` names the column on both sides, so it is never ambiguous. Both sides must have the column.
+
 ## LATERAL Joins
 
 `LATERAL` allows the right-hand subquery to reference columns from the outer table. See [Lateral Subqueries](lateral-subqueries) for the full reference. Quick example:
