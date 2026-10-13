@@ -154,18 +154,14 @@ WHERE metric = 'co2_ppm'
 Raw readings age out via the collection's `retention`. A continuous aggregate keeps incrementally-maintained hourly summaries — no cron job, no separate pipeline.
 
 ```sql
-CREATE CONTINUOUS AGGREGATE sensor_hourly ON sensor_readings AS
-  SELECT
-    time_bucket('1h', ts) AS bucket,
-    device_id,
-    metric,
-    avg(value) AS avg_val,
-    min(value) AS min_val,
-    max(value) AS max_val
-  FROM sensor_readings
-  GROUP BY bucket, device_id, metric
-WITH (refresh_interval = '5m');
+CREATE CONTINUOUS AGGREGATE sensor_hourly ON sensor_readings
+  BUCKET '1h'
+  AGGREGATE avg(value) AS avg_val, min(value) AS min_val, max(value) AS max_val
+  GROUP BY device_id, metric
+  WITH (refresh_interval = '5m');
 ```
+
+The aggregate keeps its history after retention removes the raw rows. `SELECT * FROM sensor_hourly` returns one row per bucket, device, and metric. The aggregate is read-only.
 
 ## Why not InfluxDB + TileDB?
 

@@ -156,15 +156,17 @@ CROSS JOIN LATERAL (
 ```
 
 <Callout kind="tip" title="Continuous aggregates">
-Define a continuous aggregate once and NodeDB refreshes it incrementally as new ticks arrive — no cron job, no separate aggregation pipeline:
+Define a continuous aggregate once and NodeDB folds new ticks into it as partitions flush — no cron job, no separate aggregation pipeline:
 
 ```sql
-CREATE CONTINUOUS AGGREGATE ohlcv_1m ON ticks AS
-  SELECT time_bucket('1m', ts) AS bucket, symbol,
-         min(price) AS low, max(price) AS high, sum(volume) AS volume
-  FROM ticks GROUP BY bucket, symbol
-WITH (refresh_interval = '5s');
+CREATE CONTINUOUS AGGREGATE ohlcv_1m ON ticks
+  BUCKET '1m'
+  AGGREGATE first(price) AS open, max(price) AS high, min(price) AS low,
+            last(price) AS close, sum(volume) AS volume
+  GROUP BY symbol;
 ```
+
+`SELECT * FROM ohlcv_1m` returns one row per minute and symbol.
 </Callout>
 
 ## Why not a dedicated time-series database?

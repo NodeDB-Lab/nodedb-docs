@@ -277,9 +277,12 @@ PUBLISH TO alerts 'message';
 CREATE MATERIALIZED VIEW order_stats AS SELECT status, COUNT(*), SUM(total) FROM orders GROUP BY status;
 REFRESH MATERIALIZED VIEW order_stats;
 
-CREATE CONTINUOUS AGGREGATE cpu_hourly ON cpu_metrics AS
-    SELECT time_bucket('1 hour', ts) AS hour, host, AVG(cpu) FROM cpu_metrics GROUP BY hour, host
-WITH (refresh_interval = '1m');
+CREATE CONTINUOUS AGGREGATE cpu_hourly ON cpu_metrics
+    BUCKET '1h'
+    AGGREGATE avg(cpu) AS avg_cpu
+    GROUP BY host
+    WITH (refresh_interval = '1m');
+REFRESH CONTINUOUS AGGREGATE cpu_hourly;
 ```
 
 ## Cron Scheduler
