@@ -45,7 +45,7 @@ NodeDB has eight peer engines. Seven of them are picked per collection via `WITH
 | `timeseries`          | `WITH (engine='timeseries')`        | Append-only metrics, retention, continuous aggs    |
 | `spatial`             | `WITH (engine='spatial')`           | Geo-primary workloads, R*-tree, OGC predicates    |
 | `kv`                  | `WITH (engine='kv')`                | Sessions, caches, counters, key-dominant access   |
-| `vector`              | `WITH (engine='vector', vector_field='emb')` | Vector-primary collections                |
+| `vector`              | `WITH (engine='vector', vector_field='emb', dim=384)` | Vector-primary collections       |
 
 Column modifiers add capabilities to any engine:
 

@@ -112,7 +112,7 @@ CREATE COLLECTION corpus (
     tenant_id UUID,
     created_at TIMESTAMP DEFAULT now()
 ) WITH (
-    primary='vector',
+    engine='vector',
     vector_field='embedding',
     dim=384,
     metric='cosine',
@@ -126,8 +126,8 @@ CREATE COLLECTION corpus (
 
 | Option            | Notes                                                                |
 | ----------------- | -------------------------------------------------------------------- |
-| `primary`         | `'document_schemaless'` (default), `'document_strict'`, `'kv'`, `'columnar'`, `'timeseries'`, `'spatial'`, `'vector'` |
-| `vector_field`    | Required when `primary='vector'`. Column name of the embedding.       |
+| `engine`          | `'vector'` selects vector-primary mode and implies `primary='vector'`. |
+| `vector_field`    | Required. Column name of the embedding.                               |
 | `dim`             | Required. Embedding dimensionality.                                   |
 | `metric`          | `'cosine'`, `'l2'`, `'inner_product'`, etc.                          |
 | `storage_dtype`   | Raw HNSW storage precision: `'F32'` (4 B/dim, default), `'F16'` (2 B/dim), `'BF16'` (2 B/dim bfloat16, better dynamic range, preferred for embeddings). |
@@ -135,9 +135,11 @@ CREATE COLLECTION corpus (
 | `m`, `ef_construction` | HNSW build-time parameters.                                     |
 | `payload_indexes` | Per-field equality / range / boolean indexes over the metadata sidecar for filtered ANN. Replaces Pinecone metadata filters. |
 
-In vector-primary mode the planner treats the vector index as the source of truth for IDs; metadata fetches only happen for hit IDs. Cross-engine queries, CRDT sync, and SQL semantics all keep working — `primary='vector'` is purely an *access-path* hint, not a different engine.
+In vector-primary mode the planner treats the vector index as the source of truth for IDs; metadata fetches only happen for hit IDs. Cross-engine queries, CRDT sync, and SQL semantics all keep working.
 
-Default `primary='document'` is unchanged: the existing `CREATE VECTOR INDEX ON ...` syntax continues to work for vector-as-side-index workloads.
+`engine='vector'` implies `primary='vector'`. It requires `vector_field` and `dim`, and a missing one is refused with SQLSTATE `42601`. `engine='vector'` with a different `primary` is a contradiction and is refused the same way. `DESCRIBE` reports the collection's engine as `vector`.
+
+Default `primary='document'` is unchanged: the existing `CREATE VECTOR INDEX ON ...` syntax continues to work for vector-as-side-index workloads. A document collection searched through a vector index uses `engine='document_schemaless'`, never `engine='vector'`.
 
 ## Hybrid Vector + Text (RRF)
 
