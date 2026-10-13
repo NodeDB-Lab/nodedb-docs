@@ -57,6 +57,37 @@ SELECT d.region, COUNT(*) FROM events e JOIN devices d ON e.device_id = d.id GRO
 
 `USING (col)` names the column on both sides, so it is never ambiguous. Both sides must have the column.
 
+### Derived Tables
+
+A subquery can be a join side. It works on either side and in every join type: inner, `LEFT`, `RIGHT`, `FULL`, and `CROSS`. It can also be any side of a multi-way join.
+
+```sql
+-- Join each customer to the total of their orders
+SELECT c.region, t.total
+FROM customers c
+JOIN (SELECT cust, SUM(amount) AS total FROM orders GROUP BY cust) t ON c.id = t.cust;
+
+-- A derived table on the FROM side, with its own WHERE, ORDER BY and LIMIT
+SELECT c.id, o.id
+FROM (SELECT id FROM customers WHERE region = 'east' ORDER BY id LIMIT 10) c
+JOIN orders o ON o.cust = c.id;
+
+-- Aggregate over a join with a derived side
+SELECT c.region, SUM(t.total)
+FROM customers c
+JOIN (SELECT cust, SUM(amount) AS total FROM orders GROUP BY cust) t ON c.id = t.cust
+GROUP BY c.region;
+```
+
+- **Alias:** a derived side must have one. The alias qualifies its columns, so `t.total` reads the column the subquery projects. An unqualified column resolves to the derived side when that side is the only relation that projects it, as described above.
+- **Access rules:** row-level security and redaction apply to the collections the subquery reads.
+- **No correlation:** a derived side cannot refer to another relation of the same FROM clause. Such a query is refused with SQLSTATE `42601`. Use `JOIN LATERAL`, described below, to correlate a subquery with the rows before it:
+
+```text
+ERROR:  invalid reference to FROM-clause entry for table "c": a subquery in FROM cannot refer to other relations of the same query level; write JOIN LATERAL (SELECT ...) to correlate it
+SQLSTATE: 42601
+```
+
 ## LATERAL Joins
 
 `LATERAL` allows the right-hand subquery to reference columns from the outer table. See [Lateral Subqueries](lateral-subqueries) for the full reference. Quick example:
