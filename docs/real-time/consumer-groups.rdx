@@ -21,6 +21,23 @@ COMMIT OFFSETS ON order_changes CONSUMER GROUP analytics;
 DROP CONSUMER GROUP analytics ON order_changes;
 ```
 
+## Stream Partitions
+
+`SHOW PARTITIONS ON <stream>` lists every partition that holds events in the stream's buffer:
+
+```sql
+SHOW PARTITIONS ON order_changes;
+```
+
+| Column            | Meaning                                       |
+| ----------------- | --------------------------------------------- |
+| `partition_id`    | The partition the offsets belong to.          |
+| `earliest_offset` | The oldest buffered event's offset.           |
+| `latest_offset`   | The newest buffered event's offset.           |
+| `event_count`     | The number of buffered events.                |
+
+`SHOW PARTITIONS FOR <timeseries>` is a different statement: it lists a timeseries collection's storage partitions (see [Timeseries Engine](../storage-engines/timeseries)).
+
 ## On Topics
 
 Consumer groups also work with durable topics:
