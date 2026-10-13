@@ -38,7 +38,7 @@ Rows land in an in-memory buffer first. A flush of that buffer writes one sealed
 | `AUTO`               | Starts at one day. It narrows to one hour once a core ingests more than 100,000 rows a second. |
 
 - `ALTER TIMESERIES <name> SET (partition_by = '…')` applies to later flushes only. A partition already on disk keeps the interval it was cut at.
-- A late row, one whose interval an earlier flush already sealed, forms a new partition in that interval. A sealed partition is never rewritten to take it.
+- A late row, one whose interval an earlier flush already sealed, forms a new partition in that interval. A sealed partition is never rewritten to take it. The maintenance tick later merges the partitions of that interval (see [Merging](#merging)).
 
 ```sql
 -- List the partitions of a timeseries collection
@@ -63,6 +63,28 @@ REWRITE PARTITIONS FOR cpu_metrics;
 `REWRITE PARTITIONS FOR` rewrites each sealed partition and drops every column the collection no longer has. The rows do not change. The statement returns after the last partition is rewritten and reports how many partitions it rewrote. It needs the `ALTER` privilege on the collection.
 
 Both statements read the collection in the current database. Neither runs inside a transaction. `SHOW PARTITIONS ON <stream>` is a different statement: it lists a change stream's partitions (see [Consumer Groups](../real-time/consumer-groups)).
+
+### Merging
+
+Late rows leave an interval with several partitions that overlap in time. The maintenance tick merges the partitions of one interval into one `Merged` partition. A merge moves rows and never changes them.
+
+- A merge runs on the core that owns the collection, and on each replica for its own partitions. Partition names differ between replicas. Rows do not.
+- An interval merges once it ended `merge_quiet_ms` ago, so late rows still arriving for it flush first. `COMPACT <name>` runs every merge at once, including the merge of an interval that has not ended.
+- A merged partition stays within one interval, so retention removes its rows at most one interval later than it would remove the separate partitions. On a bitemporal collection, partitions whose system times lie more than one interval apart do not merge.
+- A `UNBOUNDED` collection has no interval to merge within. Its partitions do not merge.
+- A crash at any point leaves every row in exactly one partition. Restart finishes a merge that committed and discards one that did not.
+- Encrypted partitions merge with the segment key, and the merged partition is encrypted with it.
+
+A merge keeps every continuous aggregate exact. It waits while an aggregate has folded some partitions of the interval and not others:
+
+- An `on_flush` or `on_seal` aggregate folds the missing partitions on the next tick, and the interval merges after that.
+- An interval-refreshed or `manual` aggregate folds them at its next refresh. A `manual` aggregate that is never refreshed keeps such an interval unmerged.
+
+| `[tuning.timeseries]` key | Default | Meaning |
+| ------------------------- | ------- | ------- |
+| `merge_groups_per_tick`   | `2`         | Partition groups one maintenance tick merges. `0` turns merging off. `COMPACT` ignores it. |
+| `merge_max_rows`          | `4000000`   | Most rows one merge reads and writes. A larger interval merges in several groups. |
+| `merge_quiet_ms`          | `60000`     | How long after an interval ends its partitions merge. |
 
 ## Queries
 
