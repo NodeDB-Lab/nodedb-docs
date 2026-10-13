@@ -38,16 +38,25 @@ CREATE TYPEGUARD ON users (
     email STRING REQUIRED CHECK (email LIKE '%@%.%'),
     age INT CHECK (age >= 0 AND age <= 150),
     role STRING DEFAULT 'user',
-    updated_at TIMESTAMP VALUE now()
+    slug STRING VALUE LOWER(REPLACE(title, ' ', '-'))
 );
 ```
 
-| Modifier   | Behavior                                        |
-| ---------- | ----------------------------------------------- |
-| `REQUIRED` | Field must be present and non-null               |
-| `DEFAULT`  | Inject a value when the field is absent          |
-| `VALUE`    | Always inject/overwrite (computed fields)        |
-| `CHECK`    | SQL boolean expression validated at write time   |
+| Modifier   | Behavior                                                  |
+| ---------- | --------------------------------------------------------- |
+| `REQUIRED` | Field must be present and non-null                        |
+| `DEFAULT`  | Inject a value when the field is absent or null           |
+| `VALUE`    | Always inject/overwrite (computed fields)                 |
+| `CHECK`    | SQL boolean expression validated at write time            |
+
+Every write form enforces the guards: `INSERT … VALUES`, `INSERT … { }`, `INSERT … SELECT`, `UPSERT`, `UPDATE`, `MERGE`, and native puts, batches and updates.
+
+| Rule                     | Behavior                                                                                                   |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| Deterministic expressions | `DEFAULT` and `VALUE` are evaluated on every write. `now()`, `uuid_v7()` and `nextval()` are refused.      |
+| `UPDATE`                 | `VALUE` recomputes. `DEFAULT` refills a field that is absent or set to null.                               |
+| `UPDATE` validation      | `REQUIRED` and type are checked for the assigned and injected fields. `CHECK` runs whenever its field is present. |
+| CRDT collections         | Only `REQUIRED`, type and `CHECK` are accepted. Every replica merges the state, so nothing is injected. The guards judge the merged row each write produces. |
 
 ```sql
 -- Modify guards
@@ -60,6 +69,17 @@ VALIDATE TYPEGUARD ON users;
 -- Graduate to strict schema
 CONVERT COLLECTION users TO document_strict;
 ```
+
+`CONVERT … TO document_strict` carries each guard onto the converted schema:
+
+| Guard clause           | Converted to                                                        |
+| ---------------------- | ------------------------------------------------------------------- |
+| `VALUE expr`           | A `GENERATED ALWAYS AS (expr)` column                               |
+| Constant `DEFAULT`     | A column `DEFAULT`                                                  |
+| Cross-field `DEFAULT`  | Refused: a column `DEFAULT` is evaluated with no row in scope       |
+| `CHECK`                | A `CHECK` constraint                                                |
+
+The converted schema keeps the source primary key. A column list that omits it is refused.
 
 ## Schema Evolution (Strict Mode)
 
