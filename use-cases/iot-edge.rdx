@@ -59,23 +59,24 @@ echo "env,device=device-001 temperature=23.4,humidity=61.2 1735689600000000000" 
 Instruments like spectrometers, LiDAR scanners, and thermal cameras produce ND arrays of readings. The Array engine stores them in compressed Z-order tiles with per-tile ND-MBR statistics — replacing a separate TileDB or Zarr deployment. It uses its own DDL family (`CREATE ARRAY`), not `CREATE COLLECTION`.
 
 ```sql
--- A 3D spectrometry array: (device, wavelength, time). Dimensions are
--- integer-typed with half-open domains [lo, hi).
+-- A 3D spectrometry array: (device, wavelength, time). Dimension domains
+-- are closed ranges [lo..hi].
 CREATE ARRAY spectral_readings
   DIMS (
-    device_id     INT64 DOMAIN [0, 100000),
-    wavelength_nm INT32 DOMAIN [300, 1100),
-    ts_epoch      INT64 DOMAIN [0, 9223372036854775807)
+    device_id     INT64 [0..99999],
+    wavelength_nm INT64 [300..1099],
+    ts_epoch      INT64 [0..9223372036854775807]
   )
-  ATTRS (intensity FLOAT32, noise_floor FLOAT32)
+  ATTRS (intensity FLOAT64, noise_floor FLOAT64)
   TILE_EXTENTS (1, 128, 3600)
-  WITH (cell_order = 'Z-ORDER', audit_retain_ms = 7776000000);  -- 90 days
+  CELL_ORDER ZORDER
+  WITH (audit_retain_ms = 7776000000);  -- 90 days
 
--- Insert cells from a scan session
-INSERT INTO ARRAY spectral_readings (device_id, wavelength_nm, ts_epoch, intensity, noise_floor) VALUES
-  ($dev, 500, $t, 0.41, 0.02),
-  ($dev, 501, $t, 0.43, 0.02),
-  ($dev, 502, $t, 0.40, 0.02);
+-- Insert cells from a scan session: COORDS are the dims, VALUES are the attrs
+INSERT INTO ARRAY spectral_readings
+  COORDS (7, 500, 1700000000) VALUES (0.41, 0.02),
+  COORDS (7, 501, 1700000000) VALUES (0.43, 0.02),
+  COORDS (7, 502, 1700000000) VALUES (0.40, 0.02);
 
 -- Force in-memory tiles to durable storage
 SELECT ARRAY_FLUSH('spectral_readings');
@@ -84,14 +85,14 @@ SELECT ARRAY_FLUSH('spectral_readings');
 SELECT wavelength_nm, avg(intensity) AS avg_intensity
 FROM ARRAY_SLICE(
   'spectral_readings',
-  { device_id: [$dev, $dev + 1), wavelength_nm: [500, 600), ts_epoch: [$t0, $t1) },
+  '{device_id: [7, 7], wavelength_nm: [500, 600], ts_epoch: [1700000000, 1700003600]}',
   ['intensity']
 )
 GROUP BY wavelength_nm
 ORDER BY wavelength_nm;
 
--- Reduce a dimension: total intensity per wavelength, collapsing time
-SELECT * FROM ARRAY_AGG('spectral_readings', 'intensity', 'SUM', 'ts_epoch');
+-- Reduce an attribute grouped by a dimension: total intensity per wavelength
+SELECT * FROM ARRAY_AGG('spectral_readings', 'intensity', 'SUM', 'wavelength_nm');
 ```
 
 ## Edge deployment — NodeDB-Lite

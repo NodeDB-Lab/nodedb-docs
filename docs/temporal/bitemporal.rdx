@@ -112,7 +112,7 @@ CREATE ARRAY climate_grid
 -- Cells as committed yesterday
 SELECT lon, lat, temp_c FROM ARRAY_SLICE(
     'climate_grid',
-    {lon: [-10, 10), lat: [0, 20)},
+    '{lon: [-10, 9], lat: [0, 19]}',
     ['temp_c']
 )
 AS OF SYSTEM TIME '2026-06-06T00:00:00Z';
@@ -127,7 +127,7 @@ AS OF SYSTEM TIME NULL  -- returns every system-time version, ascending
 ORDER BY _ts_system ASC;
 ```
 
-`AS OF SYSTEM TIME NULL` returns every system-time version of each matching row, ascending, with the `_ts_system` column projected. Supported on the Document (strict and schemaless), Columnar, and Timeseries engines; not supported on the Graph or Array engines, nor through a database clone — those return a typed error rather than collapsing to a single version.
+`AS OF SYSTEM TIME NULL` returns every system-time version of each matching row, ordered ascending. Each version row carries the user columns plus three synthetic temporal columns: `_ts_system`, `_ts_valid_from`, and `_ts_valid_until`. Unbounded valid-time ends surface as the raw `i64::MIN` / `i64::MAX` sentinels (matching the Columnar and Timeseries engines). It is supported on the Document (strict and schemaless), Columnar, and Timeseries engines, and on `ARRAY_SLICE`. An `ARRAY_SLICE` version row carries the dimension and attribute columns plus `_ts_system` only. It is not supported on the Graph engine or on `ARRAY_AGG`, nor when reading through a database clone. Those return a typed error rather than collapsing to a single version.
 
 ## Index Engines and Temporal Composition
 
