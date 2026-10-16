@@ -171,7 +171,7 @@ ilp = 8086           # Optional: set to enable
 ./target/release/ndb
 
 # With psql
-psql -h localhost -p 6432 -U nodedb
+psql -h localhost -p 6432 -U nodedb -d default
 
 # Health check via HTTP
 curl http://localhost:6480/healthz

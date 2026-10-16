@@ -20,7 +20,7 @@ DROP USER IF EXISTS alice;
 `CREATE USER ... IF NOT EXISTS` and `DROP USER ... IF EXISTS` make user DDL idempotent.
 
 ```bash
-psql -h localhost -p 6432 -U alice
+psql -h localhost -p 6432 -U alice -d default
 ```
 
 ## API Keys
