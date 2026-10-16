@@ -1,89 +1,110 @@
 ---
 title: COPY FROM / COPY TO
-description: Bulk import and export of collections using NDJSON, JSON array, and CSV formats.
+description: Bulk import and export with COPY. Server-side files for collections and arrays, STDIN streaming for arrays.
 ---
 
 # COPY FROM / COPY TO
 
-`COPY` moves data between a NodeDB collection and a file on the server's filesystem. It is the fastest way to load or dump large datasets.
+`COPY` moves data between NodeDB and a file on the server's filesystem. `COPY <array> FROM STDIN` streams an array load from the client.
 
-## COPY FROM — import
+| Statement                         | Source or target                   | Supports                      |
+| --------------------------------- | ---------------------------------- | ----------------------------- |
+| `COPY <name> FROM '<path>'`       | File on the server                 | Collections and arrays        |
+| `COPY <array> FROM STDIN`         | Client stream over pgwire          | Arrays only                   |
+| `COPY <name> TO '<path>'`         | File on the server                 | Collections                   |
+| `COPY (SELECT ...) TO '<path>'`   | File on the server                 | Any query                     |
+
+## Paths
+
+A path must be absolute and must not contain `..`. A relative path is refused with `42601`. A path with `..` is refused with `42501`. The path resolves on the server. The client never sends file bytes for a path form.
+
+## COPY FROM a file
 
 ```sql
-COPY <collection> FROM '<path>' [WITH (FORMAT <fmt> [, DELIMITER '<char>'] [, HEADER <bool>])]
+COPY <name> FROM '<path>' [WITH (FORMAT <fmt> [, DELIMITER '<char>'] [, HEADER <bool>])]
 ```
 
-Reads the file at `<path>` on the server and inserts every record into `<collection>`. The format is either specified explicitly or auto-detected from the file extension.
+Reads the file at `<path>` and inserts every record into `<name>`. The format comes from the `WITH` clause or from the file extension. A path with an unknown extension and no `FORMAT` is an error.
 
-### Auto-detected formats
-
-| Extension           | Format       |
-| ------------------- | ------------ |
-| `.ndjson`, `.jsonl` | NDJSON       |
-| `.json`             | JSON array   |
-| `.csv`              | CSV          |
-
-### Examples
+| Extension           | Format   |
+| ------------------- | -------- |
+| `.ndjson`, `.jsonl` | `ndjson` |
+| `.json`             | `json`   |
+| `.csv`              | `csv`    |
 
 ```sql
--- NDJSON (one JSON object per line) — format auto-detected from extension
+-- NDJSON, one JSON object per line. The format comes from the extension.
 COPY users FROM '/data/users.ndjson';
 
--- JSON array (a single top-level array of objects)
-COPY users FROM '/data/users.json' WITH (FORMAT json_array);
+-- JSON array: one top-level array of objects.
+COPY users FROM '/data/users.json';
 
--- CSV with header row (default when FORMAT csv)
+-- CSV with a header row. This is the default for FORMAT csv.
 COPY orders FROM '/data/orders.csv' WITH (FORMAT csv);
 
--- CSV without header row
+-- CSV without a header row.
 COPY orders FROM '/data/orders.csv' WITH (FORMAT csv, HEADER false);
 
--- CSV with non-comma delimiter
+-- CSV with another delimiter.
 COPY products FROM '/data/products.tsv' WITH (FORMAT csv, DELIMITER '\t');
 ```
 
-### WITH options
+| Option      | Values                              | Default                 | Description                          |
+| ----------- | ----------------------------------- | ----------------------- | ------------------------------------ |
+| `FORMAT`    | `ndjson` (or `jsonl`), `json`, `csv` | From the file extension | File format                          |
+| `DELIMITER` | One character                       | `,`                     | Field separator (CSV only)           |
+| `HEADER`    | `true`, `false`                     | `true`                  | Whether the first CSV row is a header |
 
-| Option      | Values                          | Default           | Description                             |
-| ----------- | ------------------------------- | ----------------- | --------------------------------------- |
-| `FORMAT`    | `ndjson`, `json_array`, `csv`   | auto from extension | File format                           |
-| `DELIMITER` | Any single character            | `,`               | Field separator (CSV only)              |
-| `HEADER`    | `true` / `false`                | `true`            | Whether the first CSV row is a header   |
+Rules:
 
-## COPY TO — export
+- The statement needs write permission on the target.
+- A file larger than 16 GiB is refused with `54000`.
+- A row error names the format and the row number.
+- Each row loads as an `INSERT`. The collection's triggers, defaults, and checks apply to each row.
+- A collection with joined trigger bodies loads in an implicit transaction outside a transaction block. The rows and the trigger writes commit together or not at all.
+- A collection on the `timeseries` or `spatial` engine refuses `COPY` with `0A000`. Use ILP or `INSERT` for timeseries, and `INSERT` with a WKT or GeoJSON value for spatial.
+
+### Arrays from a file
+
+`COPY <array> FROM '<path>'` loads CSV rows only. Use `WITH (FORMAT csv)`. Any other format is refused with `0A000`. The columns are the dimensions in schema order, then the attributes in schema order. The file streams through the same load as `COPY <array> FROM STDIN`. See [Bulk Load](/docs/storage-engines/array#bulk-load) for the row checks, error codes, and chunking.
+
+## COPY FROM STDIN
+
+`COPY <array> FROM STDIN` streams rows from the client over the pgwire COPY protocol.
+
+```sql
+COPY scene FROM STDIN WITH (FORMAT csv);
+COPY scene FROM STDIN WITH (FORMAT csv, DELIMITER ';', HEADER);
+COPY scene FROM STDIN;
+```
+
+- The target must be an array. See [Bulk Load](/docs/storage-engines/array#bulk-load).
+- `FORMAT` is `csv` or `text`. The default is `text`, tab-delimited. `HEADER` is off unless given, and a bare `HEADER` turns it on. This differs from the file form, where `HEADER` defaults to `true`.
+- `COPY <collection> FROM STDIN` is refused with `0A000`. Load a collection with `COPY <collection> FROM '<path>'`.
+- `COPY tenant_restore(<id>) FROM STDIN` is the restore path. It needs the `BACKUP` permission on the tenant.
+
+## COPY TO
 
 ```sql
 COPY <collection> TO '<path>' [WITH (FORMAT <fmt> [, DELIMITER '<char>'] [, HEADER <bool>])]
 COPY (SELECT ...) TO '<path>' [WITH (...)]
 ```
 
-Writes every row from `<collection>` (or the result of a SELECT) to a file at `<path>` on the server. The format is auto-detected from the extension or specified explicitly.
-
-### Examples
+Writes every row of the collection, or the rows of the query, to a file at `<path>` on the server. The format comes from the `WITH` clause or from the extension, as for `COPY FROM`. A named collection must exist, or the statement fails with `42P01`. The server writes a temporary file `<path>.tmp` and renames it to `<path>`, so a reader never sees a partial file. The command tag is `COPY <row count>`.
 
 ```sql
--- Export entire collection as NDJSON
+-- Export a whole collection as NDJSON
 COPY users TO '/exports/users.ndjson';
 
--- Export with explicit format
-COPY users TO '/exports/users.json' WITH (FORMAT json_array);
+-- Export as a JSON array
+COPY users TO '/exports/users.json';
 
--- Export as CSV with header
+-- Export as CSV with a header
 COPY orders TO '/exports/orders.csv' WITH (FORMAT csv);
 
--- Export the result of a query
+-- Export a query
 COPY (SELECT id, name, email FROM users WHERE status = 'active')
     TO '/exports/active_users.csv' WITH (FORMAT csv);
-
--- Query export as NDJSON
-COPY (SELECT * FROM orders WHERE created_at > '2025-01-01')
-    TO '/exports/recent_orders.ndjson';
 ```
 
-## Notes
-
-- Paths are resolved on the **server** filesystem. The client never streams file bytes — this is not `\copy` (psql client-side copy).
-- `COPY FROM STDIN` is reserved for the backup/restore path and is not available as a general import mechanism.
-- Rows that fail type coercion during import are rejected with a parse error; no partial-row insertion occurs.
-- `COPY TO` is non-transactional: the file is written even if the session is later rolled back.
-- The `COPY (SELECT ...) TO` form supports all SELECT features including JOINs, CTEs, and WHERE clauses.
+`COPY TO` is non-transactional. The file is written even if the session rolls back later. The query form accepts any `SELECT`, including joins, CTEs, and `WHERE` clauses.
