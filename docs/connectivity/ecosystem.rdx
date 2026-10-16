@@ -10,7 +10,7 @@ NodeDB's pgwire compatibility means most PostgreSQL tools work out of the box.
 ## psql
 
 ```bash
-psql -h localhost -p 6432
+psql -h localhost -p 6432 -U nodedb
 ```
 
 Full support for `\d`, `\dt`, prepared statements, COPY, and LISTEN/NOTIFY.

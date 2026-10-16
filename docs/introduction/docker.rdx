@@ -16,10 +16,11 @@ docker run -d --name nodedb \
   -p 6480:6480 \
   -p 9090:9090 \
   -v nodedb-data:/var/lib/nodedb \
+  -e NODEDB_SUPERUSER_PASSWORD=change-me \
   farhansyah/nodedb
 ```
 
-That's it. Connect with `psql -h localhost -p 6432` or `curl http://localhost:6480/healthz`.
+That's it. Connect with `psql -h localhost -p 6432 -U nodedb` (password from `NODEDB_SUPERUSER_PASSWORD`) or `curl http://localhost:6480/healthz`. Without the variable, the server generates a password into `/var/lib/nodedb/.superuser_password`.
 
 ## Ports
 
@@ -89,7 +90,7 @@ docker stop nodedb && docker rm nodedb
 ## Verify
 
 ```bash
-curl http://localhost:6480/health
+curl http://localhost:6480/healthz
 ```
 
 ## Environment Variables

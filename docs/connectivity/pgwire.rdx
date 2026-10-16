@@ -8,7 +8,7 @@ description: Standard PostgreSQL wire protocol. Any Postgres-compatible tool wor
 NodeDB speaks the PostgreSQL wire protocol on port 6432. Any tool that speaks Postgres works.
 
 ```bash
-psql -h localhost -p 6432
+psql -h localhost -p 6432 -U nodedb
 ```
 
 ## Supported Features
