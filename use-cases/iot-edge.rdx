@@ -67,7 +67,7 @@ CREATE ARRAY spectral_readings
     wavelength_nm INT64 [300..1099],
     ts_epoch      INT64 [0..9223372036854775807]
   )
-  ATTRS (intensity FLOAT64, noise_floor FLOAT64)
+  ATTRS (intensity FLOAT32, noise_floor FLOAT32)
   TILE_EXTENTS (1, 128, 3600)
   CELL_ORDER ZORDER
   WITH (audit_retain_ms = 7776000000);  -- 90 days
