@@ -32,7 +32,7 @@ WHERE ST_Within(location, ST_GeomFromGeoJSON('{
 | `ST_Within`       | Geometry A is within geometry B                      |
 | `ST_Intersects`   | Geometries share any space                           |
 | `ST_Disjoint`     | Geometries share no space                            |
-| `ST_DWithin`      | Within a given geodesic distance in meters           |
+| `ST_DWithin`      | Within a given distance in meters: geodesic for `4326`, planar for a projected SRID |
 | `ST_IsValid`      | Whether a geometry is well-formed                    |
 
 ## Constructors
@@ -50,7 +50,7 @@ WHERE ST_Within(location, ST_GeomFromGeoJSON('{
 
 ## Accessors and Measures
 
-Measures are geodesic — meters, and square meters for area.
+Measures are in meters, and square meters for area. A WGS 84 (`4326`) geometry is measured geodesically. A geometry in a projected SRID is measured in planar grid meters. `ST_Distance` needs both operands in the same SRID.
 
 | Function                | Result                                                              |
 | ----------------------- | ------------------------------------------------------------------- |
@@ -59,11 +59,47 @@ Measures are geodesic — meters, and square meters for area.
 | `ST_X(geom)` / `ST_Y(geom)` | Ordinate of a Point; NULL for any other geometry                 |
 | `ST_GeometryType(geom)` | Type name, e.g. `Point`                                              |
 | `ST_NPoints(geom)`      | Total vertex count                                                   |
-| `ST_SRID(geom)`         | Always `4326` — geometry is stored as GeoJSON, i.e. WGS 84           |
+| `ST_SRID(geom)`         | SRID of the geometry; `4326` unless the geometry carries another SRID. See [Spatial Reference Systems](#spatial-reference-systems) |
 | `ST_Distance(a, b)`     | Distance between two geometries                                      |
 | `ST_Length(geom)`       | Length of linear components                                          |
 | `ST_Perimeter(geom)`    | Boundary length of areal components                                  |
 | `ST_Area(geom)`         | Area of areal components, less holes                                 |
+
+## Spatial Reference Systems
+
+Every geometry carries an SRID. The default is `4326` (WGS 84, longitude and latitude in degrees). GeoJSON reads and writes a `crs` member for any SRID other than `4326`.
+
+| SRID    | System                                  | Unit    |
+| ------- | --------------------------------------- | ------- |
+| `4326`  | WGS 84 geographic                       | degrees |
+| `32647` | UTM zone 47N on WGS 84                  | metres  |
+| `32648` | UTM zone 48N on WGS 84                  | metres  |
+| `3375`  | GDM2000 Peninsula RSO                   | metres  |
+| `3376`  | GDM2000 East Malaysia (Borneo) RSO      | metres  |
+
+The set is closed. Any other SRID is refused.
+
+| Function                     | Result                                                              |
+| ---------------------------- | ------------------------------------------------------------------- |
+| `ST_SRID(geom)`              | SRID of the geometry                                                |
+| `ST_SetSRID(geom, srid)`     | Geometry relabeled with `srid`. Coordinates stay as they are.       |
+| `ST_Transform(geom, srid)`   | Geometry with every coordinate reprojected into `srid`              |
+
+`ST_GeomFromText` and `ST_GeomFromWKB` take an optional `srid` argument. `ST_SetSRID` and `ST_Transform` return NULL when `srid` is NULL.
+
+```sql
+SELECT ST_Transform(ST_Point(101.7117, 3.1579), 32647);
+```
+
+Geometry functions read the SRID of each operand. They never transform implicitly. These cases raise a data exception with SQLSTATE `22000`:
+
+- Two operands in different SRIDs. The error reads `operands have different SRIDs <left> and <right>; use ST_Transform`.
+- An SRID outside the supported set. The error lists the supported codes.
+- A coordinate outside the region the target projection is defined on.
+
+Call `ST_Transform` on one operand to bring both into the same SRID.
+
+A spatial index fixes its SRID at its first entry. It refuses geometries in any other SRID.
 
 ## Geometry Operations
 

@@ -59,12 +59,17 @@ LIMIT 10;
 - **Predicates** — `ST_Contains`, `ST_Within`, `ST_Intersects`, `ST_Disjoint`, `ST_DWithin`, `ST_IsValid`
 - **Constructors** — `ST_Point`, `ST_MakePoint`, `ST_GeomFromText`, `ST_GeomFromWKB`, `ST_GeomFromGeoJSON`, `ST_MakeLine`, `ST_MakePolygon`, `ST_MakeEnvelope`
 - **Accessors** — `ST_AsText`, `ST_AsGeoJSON`, `ST_X`, `ST_Y`, `ST_GeometryType`, `ST_NPoints`, `ST_SRID`
-- **Measures** — `ST_Distance`, `ST_Length`, `ST_Perimeter`, `ST_Area` (geodesic, meters)
+- **Spatial reference systems** — `ST_SRID`, `ST_SetSRID`, `ST_Transform`
+- **Measures** — `ST_Distance`, `ST_Length`, `ST_Perimeter`, `ST_Area` (meters; geodesic for `4326`, planar for a projected SRID)
 - **Operations** — `ST_Buffer`, `ST_Envelope`, `ST_Centroid`, `ST_Union`, `ST_Intersection`
 
 Each works in every geometry position — `INSERT` values, projections, and
 predicate arguments — and constructors nest. See
 [Spatial Queries](/docs/sql/spatial-queries) for the full reference.
+
+## SRID
+
+Every geometry carries an SRID, `4326` by default. Supported SRIDs are `4326`, `32647`, `32648`, `3375`, and `3376`. Operands in different SRIDs raise a data exception (SQLSTATE `22000`) instead of transforming implicitly. Use `ST_Transform` to convert. A spatial index fixes its SRID at its first entry and refuses geometries in another SRID. See [Spatial Reference Systems](/docs/sql/spatial-queries#spatial-reference-systems).
 
 ## Format Support
 
