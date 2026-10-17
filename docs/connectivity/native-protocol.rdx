@@ -29,9 +29,11 @@ Both modes produce the same `PhysicalPlan` and execute identically.
 
 ```bash
 # ndb CLI
-./target/release/ndb
-./target/release/ndb --host localhost --port 6433
+./target/release/ndb -w
+./target/release/ndb --host localhost --port 6433 -w
 ```
+
+`ndb` connects as user `nodedb` and sends no password unless given `-w`, which prompts for it. Set `NDB_PASSWORD` to skip the prompt. `NDB_USER` and `NDB_DATABASE` set the user and database.
 
 ## Handshake
 

@@ -12,6 +12,14 @@ SHOW AUDIT LOG;
 SHOW AUDIT LOG LIMIT 50;
 ```
 
+`SHOW AUDIT LOG`, `SHOW AUDIT WHERE` and `SHOW AUDIT IN DATABASE` are superuser only. They return the newest entries first, 100 rows without `LIMIT`. The columns are `seq`, `timestamp_us`, `event`, `tenant_id`, `database_id`, `source` and `detail`.
+
+The `event` column prints the snake_case event name, for example `auth_success`. `WHERE event_type = '...'` takes the same name.
+
+A read sees every entry recorded before it starts. There is no flush delay.
+
+`_system.audit_log` has the columns `seq`, `timestamp_us`, `event`, `tenant_id`, `source`, `detail` and `prev_hash`. Its `event` column prints the snake_case name too. A superuser or a role with `monitor` can read it.
+
 ## Audit Levels
 
 ```toml
@@ -30,19 +38,21 @@ level = "standard"
 
 ### Authentication & Session Events
 
-AuthSuccess, AuthFailure, PermissionDenied, SessionConnect/Disconnect, SessionRevoked, LockoutTriggered, LoginRateLimited.
+`auth_success`, `auth_failure`, `permission_denied`, `authz_denied`, `session_connect`, `session_disconnect`, `session_revoked`, `lockout_triggered`, `login_rate_limited`.
 
 ### Database Lifecycle Events
 
-DatabaseCreated, DatabaseDropped, DatabaseRenamed, DatabaseQuotaChanged, DatabaseCloned, DatabaseMirrored, DatabasePromoted, DatabaseMaterialized, TenantMoved, DatabaseBackedUp, DatabaseRestored, DatabaseAuditDmlChanged, DatabaseIdleTimeoutChanged.
+`database_created`, `database_dropped`, `database_renamed`, `database_quota_changed`, `database_cloned`, `database_mirrored`, `database_promoted`, `database_materialized`, `tenant_moved`, `database_backed_up`, `database_restored`, `database_audit_dml_changed`, `database_idle_timeout_changed`.
 
 ### Authorization & Audit Events
 
-PrivilegeChange, RlsRejected, AdminAction, TenantCreated/Deleted.
+`privilege_change`, `rls_rejected`, `rls_denied`, `admin_action`, `config_change`, `ddl_change`, `tenant_created`, `tenant_deleted`, `audit_checkpoint`, `audit_bus_lagged`.
 
 ### System Events
 
-SnapshotBegin/End, RestoreBegin/End, CertRotation, KeyRotation, NodeJoined/Left, QueryExec, RowChange, OidcProviderChanged.
+`snapshot_begin`, `snapshot_end`, `restore_begin`, `restore_end`, `cert_rotation`, `cert_rotation_failed`, `key_rotation`, `node_joined`, `node_left`, `query_exec`, `row_change`, `oidc_provider_changed`, `session_handle_fingerprint_mismatch`, `session_handle_resolve_miss_spike`.
+
+Each event has a minimum audit level. Denial and lockout events (`permission_denied`, `rls_rejected`, `lockout_triggered`, `login_rate_limited`, `session_revoked`, `audit_bus_lagged`, `audit_checkpoint`) record at every level. `query_exec` and `rls_denied` need `full`. `row_change` and `dml_audit` need `forensic`.
 
 All events carry `database_id` when applicable, enabling filtering of audit trails per database.
 
@@ -56,7 +66,7 @@ ALTER DATABASE production SET AUDIT_DML = 'all';      -- All queries
 ALTER DATABASE production SET AUDIT_DML = 'none';     -- Disabled (default)
 ```
 
-When enabled, every write produces a `DmlAudit` entry carrying:
+When enabled, every write produces a `dml_audit` entry carrying:
 - User ID, database, collection, operation type, row ID, LSN
 - Statement digest and execution timestamp
 - Sourced from the Event Plane (non-blocking to writers)
@@ -67,14 +77,34 @@ Filter audit entries by database:
 
 ```sql
 SHOW AUDIT IN DATABASE production;
-SHOW AUDIT IN DATABASE production WHERE event_type = 'DmlAudit';
+SHOW AUDIT IN DATABASE production LIMIT 100;
+SHOW AUDIT IN DATABASE production WHERE event_type = 'dml_audit';
+SHOW AUDIT WHERE event_type = 'dml_audit';
 ```
+
+`SHOW AUDIT LOG`, `SHOW AUDIT WHERE` and `SHOW AUDIT IN DATABASE <db>` all take `[WHERE event_type = '<snake_case_name>'] [LIMIT n]`. `SHOW AUDIT WHERE` requires the `WHERE` clause. Any other `WHERE` form is refused with SQLSTATE `42601`, and the message names the clause. A bad `LIMIT` value or a stray token is also refused with `42601`.
 
 ## Hash Chain Integrity
 
-Every audit entry includes a SHA-256 hash of the previous entry. The chain extends each entry's hash with `database_id` when scoped, preserving compatibility with pre-database entries whose `database_id` was null.
+Every audit entry includes a SHA-256 hash of the previous entry. The hash covers `database_id` when the entry has one. If any record is modified or deleted, the chain breaks.
 
-If any record is modified, the chain breaks and tampering is detected.
+Two superuser commands check the chain:
+
+```sql
+VERIFY AUDIT CHAIN;
+SELECT VERIFY_AUDIT_CHAIN(1, 5000);
+```
+
+- Both read the whole log: catalog rows plus the in-memory buffer.
+- `VERIFY AUDIT CHAIN` checks the whole chain. It returns `VALID` and the entry count, or the error `XX001` `audit chain broken at sequence N`.
+- `VERIFY_AUDIT_CHAIN(from, to)` checks a sequence range. It returns `valid`, `entries_checked`, `from_seq`, `to_seq`, `broken_at_seq` and `last_hash`.
+- `broken_at_seq` is the first sequence whose link fails. An altered entry is at that sequence or the one before it.
+
+## Retention Pruning
+
+`audit_retention_days` prunes entries older than that age. `audit_max_entries` prunes the oldest entries beyond that count. Age pruning runs first. Both default to 0, which keeps everything.
+
+Each prune that deletes entries first records an `audit_checkpoint` entry. It holds `pruned_count`, `oldest_kept_seq` and `anchor_hash`, the hash of the last deleted entry. The checkpoint is a normal chain link, so the chain still verifies after a prune.
 
 ## SIEM Export
 

@@ -81,7 +81,7 @@ Every session termination is tagged with a reason for audit and debugging:
 Check the audit log to see which sessions closed and why:
 
 ```sql
-SHOW AUDIT WHERE event_type = 'session_revoked' AND database = 'sales';
+SHOW AUDIT WHERE event_type = 'session_revoked';
 ```
 
 ## Session Revocation
@@ -190,9 +190,7 @@ Permission denials and session closures are logged with full context:
 Query the audit log to analyze denials:
 
 ```sql
-SHOW AUDIT WHERE event_type = 'permission_denied'
-    AND database = 'sales'
-    AND created_at > now() - interval '1 hour';
+SHOW AUDIT WHERE event_type = 'permission_denied' LIMIT 100;
 ```
 
 See [audit-logging](./audit-logging.rdx) for full details.

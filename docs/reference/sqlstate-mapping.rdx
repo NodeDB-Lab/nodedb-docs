@@ -13,6 +13,7 @@ NodeDB maps internal error codes to PostgreSQL SQLSTATE codes for pgwire compati
 | Collection not found  | 42P01    | Undefined table              |
 | Column not found      | 42703    | Undefined column             |
 | Type mismatch         | 42846    | Cannot coerce                |
+| Column outside GROUP BY and aggregates | 42803 | Grouping error  |
 | Unique violation      | 23505    | Unique violation             |
 | FK violation          | 23503    | Foreign key violation        |
 | Check violation       | 23514    | Check violation              |
@@ -33,6 +34,12 @@ NodeDB maps internal error codes to PostgreSQL SQLSTATE codes for pgwire compati
 | Session idle timeout  | 42601    | Syntax error (`BAD_REQUEST`) |
 | Session closed: user dropped or `KILL SESSION` | 42601 | Syntax error (`BAD_REQUEST`) |
 | Internal error        | XX000    | Internal error               |
+
+## Errors reported at Parse
+
+A planning error reaches a driver at Parse (prepare) with its SQLSTATE when the statement has no `$N` placeholders. Class `42` errors and `0A000` report at Parse. These errors defer to Execute: `42501` (insufficient privilege), data errors of class `22`, and retryable errors of class `40`.
+
+With placeholders, Parse plans each `$N` as `NULL`. It reports only these errors: `42P01` (unknown table), `42703` (unknown column), `42702` (ambiguous column), `42883` (unknown function), and `42803` (column outside GROUP BY). Every other error defers to Execute, which plans with the bound values.
 
 ## Retryable capacity refusal (57P03)
 

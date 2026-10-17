@@ -167,8 +167,8 @@ ilp = 8086           # Optional: set to enable
 ## Connect
 
 ```bash
-# With the ndb TUI client (source build)
-./target/release/ndb
+# With the ndb TUI client (source build). -w prompts for the password; NDB_PASSWORD also sets it.
+./target/release/ndb -w
 
 # With psql
 psql -h localhost -p 6432 -U nodedb -d default
