@@ -96,6 +96,10 @@ To prevent retry storms, each predicate class (the parsed predicate AST, ignorin
 
 Static predicates (`WHERE id IN (...)`, `WHERE id = ?`) compute a deterministic write set at parse time and never enter the OLLP path.
 
+### Predicate writes inside a transaction
+
+A predicate `UPDATE` or `DELETE` inside `BEGIN … COMMIT`, a trigger body, or a procedure body reads its matching rows at its own statement, as the transaction sees them. The statement fails at once if the rows change before it stages, after the same backoff and retry budget. At `COMMIT`, each participant checks the predicted rows again at the statement's turn in the transaction. If a concurrent commit changed them, the transaction aborts on every participant with SQLSTATE `40001`, and the client retries the whole transaction. A transaction cannot be retried in place, because its other statements read the data it saw.
+
 ## Admission limits
 
 The sequencer enforces caps to prevent a single transaction from monopolising the cluster:

@@ -96,4 +96,13 @@ SELECT id FROM articles ORDER BY embedding <=> $query LIMIT 10;
 
 ## Isolation Level
 
-Snapshot Isolation (SI). Reads see a consistent snapshot from `BEGIN` time. Write conflicts detected at `COMMIT`.
+Every transaction block is a serializable snapshot transaction. `BEGIN`, `START TRANSACTION`, `SET TRANSACTION` and `SET SESSION CHARACTERISTICS AS TRANSACTION` accept `SERIALIZABLE`, `REPEATABLE READ`, `READ COMMITTED` and `READ UNCOMMITTED`. Every level runs serializable, and `SHOW transaction_isolation` reports `serializable`.
+
+- A block reads one snapshot, taken at its first statement and not at `BEGIN`.
+- Every read in the block sees that snapshot plus the block's own writes.
+- `COMMIT` checks, at the moment the writes apply, that nothing the transaction read or overwrote changed after its snapshot. If something changed, `COMMIT` fails with SQLSTATE `40001`. Retry the whole block.
+- A read-only block commits without validation and never fails with `40001`.
+- A snapshot older than `[tuning.network] txn_snapshot_max_age_secs` (default 300) fails the next statement with `40001`.
+- A write that cannot be buffered inside a block is refused with SQLSTATE `25001`.
+- An autocommit statement reads the current state at a per-statement cut.
+- `AS OF SYSTEM TIME` works on every collection.

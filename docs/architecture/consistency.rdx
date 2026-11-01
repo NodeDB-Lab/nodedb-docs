@@ -1,6 +1,6 @@
 ---
 title: Consistency Model
-description: Read consistency levels, snapshot isolation, and cross-engine query consistency.
+description: Read consistency levels, serializable snapshot transactions, and cross-engine query consistency.
 ---
 
 # Consistency Model
@@ -33,11 +33,18 @@ SET read_consistency = 'eventual';
 | Bounded Staleness   | Follower read if lag within configured bound | Read replicas, analytics          |
 | Eventual            | Local read, monotonic convergence            | CRDT edge sync, NodeDB-Lite      |
 
-## Snapshot Isolation
+## Serializable Snapshot Transactions
 
 Cross-engine queries execute against a shared snapshot watermark. A query that combines vector search, graph traversal, and document field access sees a consistent point-in-time view across all engines.
 
-Default isolation: Snapshot Isolation (SI) per query. Write skew detection is enforced for UNIQUE and FK constraints at commit.
+Transaction blocks are serializable snapshot transactions. A block reads one snapshot, taken at its first statement. Every read sees that snapshot plus the block's own writes. At `COMMIT`, at the moment the writes apply, NodeDB checks that nothing the transaction read or overwrote changed after its snapshot. If something changed, `COMMIT` fails with SQLSTATE `40001` and the client retries the whole block.
+
+- A read-only block commits without validation and never fails with `40001`.
+- A snapshot older than `[tuning.network] txn_snapshot_max_age_secs` (default 300) fails the next statement with `40001`.
+- A write that cannot be buffered inside a block is refused with SQLSTATE `25001`.
+- Every isolation level a client requests runs serializable.
+- An autocommit statement reads the current state at a per-statement cut.
+- `AS OF SYSTEM TIME` works on every collection.
 
 ## Cross-Model Queries
 
