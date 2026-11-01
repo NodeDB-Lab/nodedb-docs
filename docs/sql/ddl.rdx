@@ -202,6 +202,8 @@ CONVERT COLLECTION users TO document_strict;
 CONVERT COLLECTION logs TO document_schemaless;
 ```
 
+On a bitemporal collection, `CONVERT` to `document_schemaless` or `document_strict` rewrites every version of every row, with its own system and valid times, so `AS OF` reads return the same rows after the conversion. `CONVERT` to `kv` is refused before any row moves, because a key-value collection holds no row versions.
+
 ## Indexes
 
 ```sql

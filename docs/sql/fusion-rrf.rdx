@@ -48,6 +48,8 @@ SEARCH entities USING FUSION(
 
 Vector search finds seed nodes, graph BFS expands context, RRF merges both rankings.
 
+Each result row's `node_id` is the row's primary key, the same key `SELECT … WHERE id = …` finds. A hit that sits in no edge is named by its key too. A vector hit, a text hit and a graph node of the same row fuse into one result. In a cluster, any node answers with the same keys.
+
 ## Three-Source Fusion (Vector + Text + Graph)
 
 When you want vector similarity, BM25 text relevance, and graph context all merged in one pass, add the `BM25 '<query>' ON '<field>'` leg to the `SEARCH … USING FUSION` DSL. The `RRF_K` tuple becomes a triple.

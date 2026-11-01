@@ -254,7 +254,14 @@ Operations are `'add'`, `'sub'`, `'mul'`, and `'div'`, case-insensitive. The arr
 
 On integer attributes, `add`, `sub`, and `mul` are exact 64-bit integers, and a result past the `bigint` range is refused with SQLSTATE `22003`. `div`, and every operation on a float attribute, yields a 64-bit float. Division by zero yields `NULL`.
 
-`ARRAY_AGG` and `ARRAY_ELEMENTWISE` return rows of their own shape, not dimensions and attributes. A query over them takes `*` or their own output columns, and `LIMIT`. Every other clause is refused with an error that names the clause. Use `ARRAY_SLICE` to filter, group, or order cells.
+`ARRAY_AGG` and `ARRAY_ELEMENTWISE` return rows of their own shape, not dimensions and attributes. `ARRAY_AGG` rows hold `result`, after `group` when the call groups by a dimension. `ARRAY_ELEMENTWISE` rows hold `coords` and `attrs`. Every `SELECT` clause applies to those rows, as it does to `ARRAY_SLICE` rows: `WHERE`, computed columns, `GROUP BY`, `ORDER BY`, `DISTINCT`, and `LIMIT`. A temporal call ends with one summary row that sets `truncated_before_horizon`.
+
+```sql
+SELECT "group" AS day, ROUND(result, 4) AS mean_nir
+FROM ARRAY_AGG('scene', 'nir', 'mean', 't')
+WHERE result > 0.2
+ORDER BY day;
+```
 
 ## Maintenance
 

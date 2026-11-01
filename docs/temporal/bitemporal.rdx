@@ -47,6 +47,17 @@ AS OF SYSTEM TIME 1700000000000
 AS OF VALID TIME 1700000001000;
 ```
 
+## Writes
+
+A write never rewrites history. Each write closes the row's current version and, for an insert or update, adds a new one at the statement's system time.
+
+- `UPDATE … WHERE` and `DELETE … WHERE` match the current version of each row, in autocommit and inside `BEGIN … COMMIT` alike.
+- `DELETE` closes the matched rows' current versions. `AS OF SYSTEM TIME` before the delete still returns them.
+- `TRUNCATE` closes every current version, the same as `DELETE` with no `WHERE`. The history stays readable with `AS OF`.
+- Only the retention purge (`audit_retain_ms`) removes old versions.
+
+An indexed equality under `AS OF` reads the versioned secondary index at the query's time, so it returns the rows as they stood then.
+
 ## Examples
 
 ### Audit Trail (System Time)
