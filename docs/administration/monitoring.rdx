@@ -134,6 +134,24 @@ The two counters form a pair:
 
 A gap between the two rates is pressure the server absorbs. Pressure that rises while client answers stay flat needs no client action. Rising client answers mean clients see the retryable `SERVER_OVERLOAD` (SQLSTATE `57P03`): nothing ran, and the client retries with backoff. A collection that is draining and a migration in progress also answer `57P03`, so they count in the second counter only. See [Error Codes](../reference/error-codes).
 
+## Graph write metrics
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `nodedb_graph_edges_written_total` | counter | Edge versions that writes applied on this node |
+| `nodedb_graph_edges_deleted_total` | counter | Live edges that deletes removed on this node. A delete of an absent edge adds nothing |
+| `nodedb_graph_edges` | gauge | Live edges this node stores |
+| `nodedb_graph_nodes` | gauge | Nodes with at least one live edge that this node stores |
+
+A bulk loader compares the rate of `nodedb_graph_edges_written_total` with its own send rate to pace itself. Unlike `qps`, the counter excludes reads.
+
+- An autocommit write counts when the Data Plane applies it.
+- A transaction counts once its commit settles. A rolled-back transaction adds nothing.
+- A dual-homed edge counts once, on its source home.
+- Restart replay adds nothing.
+- `TRUNCATE` cuts the edge collection without counting edges.
+- The two gauges refresh every 10 seconds.
+
 ## IO priority metrics
 
 | Metric | Type | Description |
